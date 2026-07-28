@@ -491,7 +491,6 @@ var piBlockedArgs = map[string]blockedArgMode{
 //	--session <path>            session log file (created upfront, reused on resume)
 //	--provider <name>           provider, when Model is "provider/id"
 //	--model <id>                model identifier
-//	--append-system-prompt <s>  extra system instructions
 //
 // Custom args appended before the positional prompt. The prompt is a
 // positional argument and must be last.
