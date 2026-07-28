@@ -1430,10 +1430,16 @@ function Leaderboard({
               // looking the id up in the agent list.
               //
               // Only the deleted bucket dashes out Time/Tasks — it genuinely
-              // never carries them (see bucketUnknownAgentRows). The restricted
+              // never carries them (see bucketUnknownAgentRows). The server's
               // bucket does: those agents are alive and ran, the server just
               // merged them (MUL-5409), so zeroing their columns would
               // under-report the workspace's run time.
+              //
+              // Its copy is the neutral "Other agents" rather than anything
+              // about permissions, because it covers two populations: agents
+              // this viewer may not see, and the hidden system carriers behind
+              // agent-builder sessions, which nobody can name — including the
+              // admin who owns them.
               const isDeletedBucket = row.agentId === DELETED_AGENTS_ROW_ID;
               const isRestrictedBucket = row.agentId === RESTRICTED_AGENTS_ROW_ID;
               const isBucket = isDeletedBucket || isRestrictedBucket;
@@ -1458,7 +1464,7 @@ function Leaderboard({
                         <span className="truncate text-sm font-medium italic text-muted-foreground">
                           {isDeletedBucket
                             ? t(($) => $.leaderboard.deleted_agents)
-                            : t(($) => $.leaderboard.restricted_agents)}
+                            : t(($) => $.leaderboard.other_agents)}
                         </span>
                       </>
                     ) : (

@@ -286,6 +286,215 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	}
 }
 
+// TestDashboardPerAgentRollupsFoldSystemAgentCarriers covers the population the
+// first version of the MUL-5409 fix missed. `kind = 'system'` agents — the
+// hidden execution carriers behind agent-builder sessions — run real tasks and
+// book real usage, and the three rollup queries aggregate over
+// agent_task_queue / task_usage without any kind filter. But NO list endpoint
+// returns them (ListAgents / ListAllAgents both filter `kind = 'user'`), so no
+// client can resolve one to a name.
+//
+// That makes them the sharpest form of both bugs at once: a bare UUID that
+// leaks one member's builder session to every other member, and — once the
+// agent list loads — a live agent folded into the client's "Deleted agents"
+// row. They are therefore restricted for EVERYONE, workspace owner included,
+// which is what this test pins: the carrier's own owner must not get its UUID
+// either, and the totals must survive the fold.
+func TestDashboardPerAgentRollupsFoldSystemAgentCarriers(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	_, _, memberID := privateAgentTestFixture(t)
+	runtimeID := handlerTestRuntimeID(t)
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, creator_id, creator_type, number)
+		VALUES ($1, 'system carrier visibility', $2, 'member',
+		        (SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1))
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+
+	rollup := func(label string) {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, `
+			SELECT rollup_task_usage_hourly_window('1970-01-01'::timestamptz, now() + interval '1 hour')
+		`); err != nil {
+			t.Fatalf("rollup (%s): %v", label, err)
+		}
+	}
+
+	type totals struct {
+		tokens int64
+		secs   int64
+		tasks  int32
+		failed int32
+		runs   int32
+	}
+	// Sums the whole response rather than one row: the point is that the
+	// carrier's numbers are still IN there, just not attributable.
+	readTotals := func(userID string) (totals, []string) {
+		t.Helper()
+		var out totals
+		var bodies []string
+		read := func(name string, handler func(http.ResponseWriter, *http.Request), path string, decode func([]byte)) {
+			w := httptest.NewRecorder()
+			handler(w, newRequestAs(userID, "GET", path, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s as %s: expected 200, got %d: %s", name, userID, w.Code, w.Body.String())
+			}
+			bodies = append(bodies, w.Body.String())
+			decode(w.Body.Bytes())
+		}
+		read("usage/by-agent", testHandler.GetDashboardUsageByAgent,
+			"/api/dashboard/usage/by-agent?days=7", func(b []byte) {
+				var rows []struct {
+					InputTokens int64 `json:"input_tokens"`
+				}
+				if err := json.Unmarshal(b, &rows); err != nil {
+					t.Fatalf("decode usage/by-agent: %v", err)
+				}
+				for _, r := range rows {
+					out.tokens += r.InputTokens
+				}
+			})
+		read("agent-runtime", testHandler.GetDashboardAgentRunTime,
+			"/api/dashboard/agent-runtime?days=7", func(b []byte) {
+				var rows []struct {
+					TotalSeconds int64 `json:"total_seconds"`
+					TaskCount    int32 `json:"task_count"`
+					FailedCount  int32 `json:"failed_count"`
+				}
+				if err := json.Unmarshal(b, &rows); err != nil {
+					t.Fatalf("decode agent-runtime: %v", err)
+				}
+				for _, r := range rows {
+					out.secs += r.TotalSeconds
+					out.tasks += r.TaskCount
+					out.failed += r.FailedCount
+				}
+			})
+		read("failures/by-agent", testHandler.GetDashboardFailuresByAgent,
+			"/api/dashboard/failures/by-agent?days=7", func(b []byte) {
+				var rows []struct {
+					TaskCount int32 `json:"task_count"`
+				}
+				if err := json.Unmarshal(b, &rows); err != nil {
+					t.Fatalf("decode failures/by-agent: %v", err)
+				}
+				for _, r := range rows {
+					out.runs += r.TaskCount
+				}
+			})
+		return out, bodies
+	}
+
+	rollup("baseline")
+	ownerBefore, _ := readTotals(testUserID)
+	memberBefore, _ := readTotals(memberID)
+
+	// A builder carrier, shaped exactly like CreateAgentBuilder writes one:
+	// kind=system, permission_mode=private, owned by the workspace owner.
+	var carrierID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+			visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
+			custom_env, custom_args, kind, system_key
+		)
+		VALUES ($1, 'agent-builder-carrier', '', 'cloud', '{}'::jsonb, $2,
+		        'private', 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb,
+		        'system', 'agent_builder:' || gen_random_uuid()::text)
+		RETURNING id
+	`, testWorkspaceID, runtimeID, testUserID).Scan(&carrierID); err != nil {
+		t.Fatalf("create builder carrier: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, carrierID)
+	})
+
+	started := time.Now().UTC().Add(-30 * time.Minute)
+	completed := started.Add(10 * time.Minute) // 600s per run
+	for _, run := range []struct {
+		status, failureReason string
+		tokens                int64
+	}{
+		{"completed", "", 900},
+		{"failed", "agent_error.provider_quota_limit", 100},
+	} {
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, issue_id, runtime_id, status, failure_reason,
+				started_at, completed_at, created_at
+			)
+			VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, now())
+			RETURNING id
+		`, carrierID, issueID, runtimeID, run.status, run.failureReason, started, completed).Scan(&taskID); err != nil {
+			t.Fatalf("insert carrier %s task: %v", run.status, err)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		})
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
+			VALUES ($1, 'claude', 'system-carrier-model', $2, 0, now())
+		`, taskID, run.tokens); err != nil {
+			t.Fatalf("insert carrier task_usage: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM task_usage_hourly WHERE model = 'system-carrier-model'`)
+	})
+	rollup("after carrier")
+
+	for _, viewer := range []struct {
+		label  string
+		userID string
+		before totals
+	}{
+		{"workspace owner (the carrier's own owner)", testUserID, ownerBefore},
+		{"plain member", memberID, memberBefore},
+	} {
+		after, bodies := readTotals(viewer.userID)
+
+		for i, body := range bodies {
+			if strings.Contains(body, carrierID) {
+				t.Errorf("%s: endpoint #%d leaked system carrier id %s: %s",
+					viewer.label, i, carrierID, body)
+			}
+			if !strings.Contains(body, restrictedAgentsRowID) {
+				t.Errorf("%s: endpoint #%d has no restricted bucket to carry the carrier's rows: %s",
+					viewer.label, i, body)
+			}
+		}
+
+		// Folded, not dropped: every metric must have moved by exactly the
+		// carrier's contribution.
+		if got := after.tokens - viewer.before.tokens; got != 1000 {
+			t.Errorf("%s: usage/by-agent token delta = %d, want 1000 (900 + 100)", viewer.label, got)
+		}
+		if got := after.secs - viewer.before.secs; got != 1200 {
+			t.Errorf("%s: agent-runtime seconds delta = %d, want 1200 (two 600s runs)", viewer.label, got)
+		}
+		if got := after.tasks - viewer.before.tasks; got != 2 {
+			t.Errorf("%s: agent-runtime task delta = %d, want 2", viewer.label, got)
+		}
+		if got := after.failed - viewer.before.failed; got != 1 {
+			t.Errorf("%s: agent-runtime failed delta = %d, want 1", viewer.label, got)
+		}
+		if got := after.runs - viewer.before.runs; got != 2 {
+			t.Errorf("%s: failures/by-agent run delta = %d, want 2", viewer.label, got)
+		}
+	}
+}
+
 func dashboardAgentIDSet[T any](rows []T, idOf func(T) string) map[string]struct{} {
 	out := make(map[string]struct{}, len(rows))
 	for _, r := range rows {

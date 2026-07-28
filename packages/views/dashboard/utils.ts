@@ -243,13 +243,15 @@ export function mergeAgentDashboardRows(
 // placeholder instead of looking the id up in the agent list.
 export const DELETED_AGENTS_ROW_ID = "__deleted_agents__";
 
-// Synthetic agentId the SERVER sends for the bucket aggregating every agent the
-// viewer is not allowed to see (MUL-5409). Mirrors `restrictedAgentsRowID` in
+// Synthetic agentId the SERVER sends for the bucket aggregating every agent it
+// refuses to name (MUL-5409): agents the viewer may not see, plus the hidden
+// system carriers behind agent-builder sessions, which no client can resolve to
+// a name for anyone. Mirrors `restrictedAgentsRowID` in
 // server/internal/handler/dashboard.go — the two strings must stay in sync.
 //
 // Distinct from DELETED_AGENTS_ROW_ID on purpose: those agents are gone, these
-// are alive and simply not this member's to see. Labelling them "Deleted
-// agents" told the user something false about agents that are still running.
+// are alive and still running. Labelling them "Deleted agents" told the user
+// something false, which is why the bucket renders as a neutral "Other agents".
 export const RESTRICTED_AGENTS_ROW_ID = "__restricted_agents__";
 
 // Fold usage rows whose agent no longer exists in the workspace into a single

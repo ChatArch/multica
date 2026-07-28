@@ -80,7 +80,7 @@
     "caption_with_deleted": "{{count}} 件のエージェント · 削除済み {{deleted}} 件",
     "sort_label": "エージェントの並び順",
     "deleted_agents": "削除済みエージェント",
-    "restricted_agents": "非公開のエージェント",
+    "other_agents": "その他のエージェント",
     "header_agent": "エージェント",
     "header_tokens": "トークン",
     "header_cost": "コスト",

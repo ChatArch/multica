@@ -36,17 +36,16 @@ import (
 // see foldRestrictedAgents.
 // ---------------------------------------------------------------------------
 
-// restrictedAgentsRowID is the synthetic agent_id that every row belonging to
-// an agent the caller may not view is folded onto. Deliberately not a UUID, so
-// it can never collide with a real agent id, and distinct from the client's
-// "deleted agents" bucket: those agents are gone, these are alive and simply
-// not this member's to see.
+// restrictedAgentsRowID is the synthetic agent_id that every row this response
+// refuses to name is folded onto. Deliberately not a UUID, so it can never
+// collide with a real agent id, and distinct from the client's "deleted agents"
+// bucket: those agents are gone, these are alive and still running.
 const restrictedAgentsRowID = "__restricted_agents__"
 
-// foldRestrictedAgents rewrites every row whose agent the caller may not view
-// onto restrictedAgentsRowID, merging the rewritten rows that then collide on
-// whatever dimensions the row has left (provider+model, failure_reason, or
-// nothing at all).
+// foldRestrictedAgents rewrites every row named by `restricted` (see
+// restrictedAgentIDs) onto restrictedAgentsRowID, merging the rewritten rows
+// that then collide on whatever dimensions the row has left (provider+model,
+// failure_reason, or nothing at all).
 //
 // "Private" is a promise the rest of the codebase keeps — agent detail 403s,
 // ListAgents filters, even an admin cannot invoke someone else's private agent.
@@ -54,6 +53,11 @@ const restrictedAgentsRowID = "__restricted_agents__"
 // whole workspace, which told a plain member that a private agent exists, how
 // much it runs, and what it fails on. The client already collapsed those rows,
 // but client-side filtering is decoration: one curl bypasses it.
+//
+// The same fold covers the hidden `kind = 'system'` builder carriers, which no
+// list endpoint returns to anyone: aggregating over agent_task_queue /
+// task_usage picks them up regardless of kind, so without this they arrive as a
+// bare UUID no client can name.
 //
 // Folding rather than dropping: each of these responses is the per-agent half
 // of a pair whose other half (usage/daily, runtime/daily, failures/daily) is

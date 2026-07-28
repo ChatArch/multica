@@ -565,11 +565,12 @@ describe("DashboardPage — Errors card placement and density", () => {
   });
 });
 
-// MUL-5409. The server folds agents a plain member may not view onto one
-// sentinel row. The leaderboard used to have a single synthetic row, labelled
-// "Deleted agents" with a bin icon and dashed-out Time/Tasks — so a member was
-// told "N agents were deleted" about agents that are alive and still running.
-describe("DashboardPage — the leaderboard tells the truth about restricted agents", () => {
+// MUL-5409. The server folds every agent it won't name — those the viewer may
+// not see, plus the hidden system carriers behind agent-builder sessions — onto
+// one sentinel row. The leaderboard used to have a single synthetic row,
+// labelled "Deleted agents" with a bin icon and dashed-out Time/Tasks, so the
+// user was told "N agents were deleted" about agents that are alive and running.
+describe("DashboardPage — the leaderboard tells the truth about the server's bucket", () => {
   beforeEach(() => {
     queryKeys.length = 0;
     dashboardDataRef.current = true;
@@ -583,11 +584,11 @@ describe("DashboardPage — the leaderboard tells the truth about restricted age
     restrictedBucketRef.current = false;
   });
 
-  it("labels the restricted bucket for what it is, never as deleted", () => {
+  it("labels the bucket neutrally, never as deleted", () => {
     const { container } = renderDashboard();
 
     const list = within(screen.getByRole("list", { name: "Leaderboard" }));
-    expect(list.getByText("Restricted agents")).toBeInTheDocument();
+    expect(list.getByText("Other agents")).toBeInTheDocument();
     expect(list.queryByText("Deleted agents")).not.toBeInTheDocument();
     // The sentinel is a placeholder, not an id to render.
     expect(container).not.toHaveTextContent("__restricted_agents__");
@@ -611,7 +612,7 @@ describe("DashboardPage — the leaderboard tells the truth about restricted age
     const rows = within(
       screen.getByRole("list", { name: "Leaderboard" }),
     ).getAllByRole("listitem");
-    const bucket = rows.find((r) => r.textContent?.includes("Restricted agents"));
+    const bucket = rows.find((r) => r.textContent?.includes("Other agents"));
     expect(bucket).toBeDefined();
     expect(bucket).toHaveTextContent("2h");
     expect(bucket).toHaveTextContent("4");
