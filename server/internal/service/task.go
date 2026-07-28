@@ -3106,6 +3106,15 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	if failureReason == "" {
 		failureReason = taskfailure.Classify(errMsg).String()
 	}
+	// MUL-5370: daemons upgrade on their own cadence, so a fix that depends on
+	// a new daemon-side label only reaches hosts that happened to update. An
+	// older daemon reports a *non-empty* catchall for a failed skill-bundle
+	// download, which the branch above deliberately leaves alone — without this
+	// the retry and the actionable copy would both skip every un-upgraded host.
+	// Runs after the empty-reason branch so a legacy reason synthesised there
+	// is normalised too, and before the retry pre-compute below so the upgraded
+	// reason is what decides retry eligibility.
+	failureReason = taskfailure.NormalizeDaemonReason(failureReason, errMsg).String()
 
 	// Pre-compute the auto-retry so the retry child can be created inside the
 	// SAME transaction as the fail (MUL-4351). Doing it atomically closes the
@@ -3313,12 +3322,17 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // the platform retry it directly (MUL-4910). It is resume-safe (not in
 // resumeUnsafeFailureReason), so the retry child inherits the session and
 // continues the truncated conversation rather than restarting from scratch.
+// skill_bundle_unavailable is retryable for the same reason: the agent process
+// never started, so there is nothing to be idempotent about, and every bundle
+// that did download is already cached on disk — a retry resumes from there
+// instead of re-fetching the whole set (MUL-5370).
 var retryableReasons = map[string]bool{
 	"runtime_offline":           true,
 	"runtime_recovery":          true,
 	"timeout":                   true,
 	"codex_semantic_inactivity": true,
-	string(taskfailure.ReasonAgentProviderNetwork): true,
+	string(taskfailure.ReasonAgentProviderNetwork):   true,
+	string(taskfailure.ReasonSkillBundleUnavailable): true,
 }
 
 // Transient provider stream cuts (provider_network) get a bespoke three-tier
