@@ -259,8 +259,11 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Hermes emits interim narration and the final answer as the same ACP
+	// agent_message_chunk type; the tracker keeps Result.Output to the
+	// deliverable while provider-error detection still sees the complete
+	// stream (GH #6006). See acpDeliverableTracker.
+	var output acpDeliverableTracker
 	// streamingCurrentTurn gates all session updates so that history
 	// replay (Hermes sends full prior-turn transcripts on session/resume,
 	// and may flush queued chunks before our session/prompt response
@@ -289,11 +292,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			if !streamingCurrentTurn.Load() {
 				return
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			output.observe(msg)
 			trySend(msgCh, msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -586,9 +585,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 		streamingCurrentTurn.Store(false)
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := output.result()
 
 		// Hermes reports stopReason=end_turn even when the upstream
 		// LLM call ultimately fails (HTTP 429 rate-limit, expired
@@ -598,7 +595,9 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// warning), the agent text stream contains the synthetic
 		// "API call failed after N retries..." turn the adapter
 		// injects on give-up, or there's no output to fall back on.
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// Detection reads the complete stream, not the deliverable: the
+		// synthetic give-up turn can land before a tool boundary.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		// Build usage map.
 		c.usageMu.Lock()

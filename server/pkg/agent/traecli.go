@@ -158,8 +158,11 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	msgStream := newTraecliMessageStream(256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Trae emits interim narration and the final answer as the same ACP
+	// agent_message_chunk type; the tracker keeps Result.Output to the
+	// deliverable while provider-error detection still sees the complete
+	// stream (GH #6006). See acpDeliverableTracker.
+	var output acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
 
 	promptDone := make(chan hermesPromptResult, 1)
@@ -179,11 +182,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			if msg.Type == MessageToolUse {
 				msg.Tool = kimiToolNameFromTitle(msg.Tool)
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			output.observe(msg)
 			msgStream.send(msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -410,14 +409,14 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		// late send is dropped instead of panicking.
 		streamingCurrentTurn.Store(false)
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := output.result()
 
 		// Promote completed→failed when stderr or the agent text stream show a
 		// terminal upstream-LLM failure (HTTP 4xx / rate-limit / expired token).
-		// Mirrors hermes/kimi/kiro/qoder.
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// Mirrors hermes/kimi/kiro/qoder. Detection reads the complete stream,
+		// not the deliverable: the synthetic give-up turn can land before a
+		// tool boundary.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		c.usageMu.Lock()
 		u := c.usage

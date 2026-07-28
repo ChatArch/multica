@@ -104,8 +104,11 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Kiro emits interim narration and the final answer as the same ACP
+	// agent_message_chunk type; the tracker keeps Result.Output to the
+	// deliverable while provider-error detection still sees the complete
+	// stream (GH #6006). See acpDeliverableTracker.
+	var output acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
 	// Completion-preservation state for the -32603 close-handshake guard.
 	//
@@ -174,11 +177,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 					finishingMu.Unlock()
 				}
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			output.observe(msg)
 			trySend(msgCh, msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -445,17 +444,17 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// provider-error sniffer; see hermes.go for the failure mode.
 		<-stderrDone
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := output.result()
 
 		// Promote completed→failed when stderr or the agent text
 		// stream show a terminal upstream-LLM failure (HTTP 4xx /
 		// rate-limit / expired token). See the helper docs for the
 		// full signal set; the key safety property is that transient
 		// per-attempt warnings followed by a successful retry stay
-		// "completed".
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// "completed". Detection reads the complete stream, not the
+		// deliverable: the synthetic give-up turn can land before a
+		// tool boundary.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		c.usageMu.Lock()
 		u := c.usage

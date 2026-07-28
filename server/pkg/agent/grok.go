@@ -190,8 +190,11 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	msgStream := newGrokMessageStream(256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Grok emits interim narration and the final answer as the same ACP
+	// agent_message_chunk type; the tracker keeps Result.Output to the
+	// deliverable while provider-error detection still sees the complete
+	// stream (GH #6006). See acpDeliverableTracker.
+	var output acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
 
 	promptDone := make(chan hermesPromptResult, 1)
@@ -220,11 +223,7 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				// kimi/traecli do so the UI sees consistent snake_case names.
 				msg.Tool = kimiToolNameFromTitle(msg.Tool)
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			output.observe(msg)
 			msgStream.send(msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -486,13 +485,13 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		drainCancel()
 		streamingCurrentTurn.Store(false)
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := output.result()
 
 		// Promote completed→failed when stderr or the agent text stream show a
 		// terminal upstream-LLM failure (auth / rate-limit / HTTP 4xx).
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// Detection reads the complete stream, not the deliverable: the
+		// synthetic give-up turn can land before a tool boundary.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		c.usageMu.Lock()
 		u := c.usage
