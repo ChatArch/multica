@@ -1100,3 +1100,110 @@ func TestPerTurnContextBlocksOnAssignmentPath(t *testing.T) {
 		t.Errorf("assignment-triggered prompt lost the initiator block\n---\n%s", prompt)
 	}
 }
+
+// TestTurnModeMarkerAlwaysPresent is the regression guard for the review
+// finding on #6021: the brief's mode router keys off an explicit marker in the
+// per-turn prompt, so that marker must be emitted unconditionally from the same
+// branch that selects the code path.
+//
+// The dangerous case is a comment-triggered run whose comment body is empty (or
+// an older server that doesn't send one). Before this guard the prompt emitted
+// no `[NEW COMMENT]` block at all, the brief fell through to Ownership mode,
+// and the agent would change the issue status on a turn that must not.
+func TestTurnModeMarkerAlwaysPresent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		task Task
+		want string
+		deny string
+	}{
+		{
+			name: "comment-triggered with content",
+			task: Task{IssueID: "issue-1", TriggerCommentID: "c-1", TriggerCommentContent: "please look"},
+			want: "**Turn mode: Reply.**",
+			deny: "**Turn mode: Ownership.**",
+		},
+		{
+			name: "comment-triggered with EMPTY content",
+			task: Task{IssueID: "issue-1", TriggerCommentID: "c-1"},
+			want: "**Turn mode: Reply.**",
+			deny: "**Turn mode: Ownership.**",
+		},
+		{
+			name: "assignment-triggered",
+			task: Task{IssueID: "issue-1"},
+			want: "**Turn mode: Ownership.**",
+			deny: "**Turn mode: Reply.**",
+		},
+		{
+			name: "assignment-triggered with handoff note",
+			task: Task{IssueID: "issue-1", HandoffNote: "start with the API"},
+			want: "**Turn mode: Ownership.**",
+			deny: "**Turn mode: Reply.**",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prompt := BuildPrompt(tc.task, "claude")
+			if !strings.Contains(prompt, tc.want) {
+				t.Errorf("prompt missing turn-mode marker %q\n---\n%s", tc.want, prompt)
+			}
+			if strings.Contains(prompt, tc.deny) {
+				t.Errorf("prompt carries the wrong turn-mode marker %q\n---\n%s", tc.deny, prompt)
+			}
+		})
+	}
+}
+
+// The mode marker only makes sense for the two issue paths — the issue-less
+// kinds have no Reply/Ownership distinction and no issue status to protect.
+func TestTurnModeMarkerAbsentOnIssuelessKinds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		task Task
+	}{
+		{"chat", Task{ChatSessionID: "chat-1"}},
+		{"quick-create", Task{QuickCreatePrompt: "make an issue"}},
+		{"autopilot", Task{AutopilotRunID: "run-1"}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prompt := BuildPrompt(tc.task, "claude")
+			for _, banned := range []string{"**Turn mode: Reply.**", "**Turn mode: Ownership.**"} {
+				if strings.Contains(prompt, banned) {
+					t.Errorf("%s prompt must not carry %q\n---\n%s", tc.name, banned, prompt)
+				}
+			}
+		})
+	}
+}
+
+// The brief's router must describe the markers the prompt actually emits.
+// A drift here is exactly the bug this pair of changes fixes, and it is
+// invisible at runtime until an agent silently picks the wrong mode.
+func TestBriefModeRouterMatchesPromptMarkers(t *testing.T) {
+	t.Parallel()
+
+	brief, err := execenv.InjectRuntimeConfig(t.TempDir(), "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
+	if err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	for _, want := range []string{"`Turn mode: Reply.`", "`Turn mode: Ownership.`"} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief mode router does not name %s\n---\n%s", want, brief)
+		}
+	}
+	// The retired wording keyed off the prompt's first line, which was never
+	// actually the [NEW COMMENT] block.
+	if strings.Contains(brief, "It opens with a `[NEW COMMENT]` block") {
+		t.Error("brief still routes on the prompt's opening line; it must route on the explicit marker")
+	}
+}

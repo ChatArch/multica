@@ -458,10 +458,10 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // ctx.IsSquadLeader is agent configuration, not per-run state, so branching
 // on it does not break byte-stability across runs of one session.
 func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
-	b.WriteString("**Mode router — read this before acting.** This file is identical on every run, so it cannot tell you what triggered THIS turn. The user message at the start of this turn does:\n\n")
-	b.WriteString("- It opens with a `[NEW COMMENT]` block → **Reply mode**. That message carries the triggering comment's id, its content, and the exact `--parent` value for your reply.\n")
-	b.WriteString("- It does not → **Ownership mode** (an assignment or status change started this run).\n\n")
-	b.WriteString("Steps 1–6 below are the same in both modes. The mode blocks after them differ, and they differ on issue status in particular — **apply exactly one mode block, the one the user message selected. Never apply both.**\n\n")
+	b.WriteString("**Mode router — read this before acting.** This file is identical on every run, so it cannot tell you what triggered THIS turn. The user message for this turn names its mode on a line of its own:\n\n")
+	b.WriteString("- `Turn mode: Reply.` → **Reply mode**. That message also carries the triggering comment's id, the exact `--parent` value for your reply, and the comment's content when the platform supplied it.\n")
+	b.WriteString("- `Turn mode: Ownership.` → **Ownership mode** (an assignment or status change started this run).\n\n")
+	b.WriteString("Steps 1–6 below are the same in both modes. The mode blocks after them differ, and they differ on issue status in particular — **apply exactly one mode block, the one the user message named. Never apply both.** If neither line is present, treat the turn as Reply mode and do not change the issue status.\n\n")
 
 	b.WriteString("**Steps 1–6 — both modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)

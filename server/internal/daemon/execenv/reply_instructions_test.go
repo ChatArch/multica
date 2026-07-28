@@ -198,7 +198,8 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Mode router",
-		"`[NEW COMMENT]` block",
+		"`Turn mode: Reply.`",
+		"`Turn mode: Ownership.`",
 		"Use the `--parent` value the per-turn user message gives you for this turn",
 		"do NOT reuse a `--parent` from an earlier turn in this session",
 	} {
