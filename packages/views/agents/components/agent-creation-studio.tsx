@@ -214,9 +214,12 @@ export function AgentCreationStudio() {
   const shouldReduceMotion = useReducedMotion() ?? false;
 
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: runtimes = [], isLoading: runtimesLoading } = useQuery(
-    runtimeListOptions(wsId),
-  );
+  const {
+    data: runtimes = [],
+    isLoading: runtimesLoading,
+    isSuccess: runtimesLoaded,
+    isError: runtimesFailed,
+  } = useQuery(runtimeListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: workspaceSkills = [] } = useQuery(skillListOptions(wsId));
   const { data: templates = [], isLoading: templatesLoading } = useQuery(
@@ -248,7 +251,6 @@ export function AgentCreationStudio() {
     id: string;
     content: string;
   } | null>(null);
-  const duplicateAppliedRef = useRef(false);
   const appliedAssistantMessageRef = useRef<string | null>(null);
   const builderSessionIdRef = useRef("");
 
@@ -383,22 +385,24 @@ export function AgentCreationStudio() {
     setDraft((current) => ({ ...current, runtimeId: usableRuntimes[0]?.id ?? "" }));
   }, [draft.runtimeId, usableRuntimes]);
 
-  useEffect(() => {
-    if (!duplicateAgent || duplicateAppliedRef.current) return;
-    duplicateAppliedRef.current = true;
-    const duplicated = buildDuplicateDraft(duplicateAgent, {
-      runtimes,
-      currentUserId: currentUser?.id ?? null,
-      fallbackRuntimeId: usableRuntimes[0]?.id ?? "",
-      nameSuffix: t(($) => $.create_dialog.duplicate_copy_suffix),
-    });
-    // Only the forced fallback gets the notice; a later manual runtime switch
-    // is the user's own doing and needs no explanation.
-    setDuplicateRuntimeReset(
-      duplicated.runtimeId !== duplicateAgent.runtime_id,
-    );
-    setDraft(duplicated);
-  }, [currentUser?.id, duplicateAgent, runtimes, t, usableRuntimes]);
+  useDuplicateDraftSeed({
+    source: duplicateAgent,
+    // `buildDuplicateDraft` decides whether the copy can stay on the source
+    // runtime by looking it up in this list. An error is a decidable answer
+    // (the runtime cannot be confirmed, so the fallback is right); a pending
+    // query is not.
+    runtimesSettled: runtimesLoaded || runtimesFailed,
+    runtimes,
+    currentUserId: currentUser?.id ?? null,
+    fallbackRuntimeId: usableRuntimes[0]?.id ?? "",
+    nameSuffix: t(($) => $.create_dialog.duplicate_copy_suffix),
+    onSeed: (duplicated, runtimeReset) => {
+      // Only the forced fallback gets the notice; a later manual runtime switch
+      // is the user's own doing and needs no explanation.
+      setDuplicateRuntimeReset(runtimeReset);
+      setDraft(duplicated);
+    },
+  });
 
   const skillIdSet = useMemo(
     () => new Set(workspaceSkills.map((skill) => skill.id)),
@@ -1847,6 +1851,63 @@ export function buildDuplicateDraft(
     skillIds: new Set(source.skills.map((skill) => skill.id)),
     ...deriveDuplicateAccess(source),
   };
+}
+
+/**
+ * Seeds the duplicate draft exactly once, and only from a runtime list that has
+ * actually answered.
+ *
+ * The ordering matters: the agent list and the runtime list are independent
+ * queries, so on a cold start (a direct `?duplicate=<id>` link, or a refresh)
+ * the agent can arrive while runtimes are still pending. Seeding then would run
+ * `buildDuplicateDraft` against `[]`, read the source runtime as unavailable,
+ * and clear the model / thinking / speed that a same-runtime copy must keep —
+ * permanently, because seeding happens once. Re-running on every runtime change
+ * instead would overwrite edits the user already made, so the gate is on the
+ * query being decidable rather than on the data changing.
+ */
+export function useDuplicateDraftSeed({
+  source,
+  runtimesSettled,
+  runtimes,
+  currentUserId,
+  fallbackRuntimeId,
+  nameSuffix,
+  onSeed,
+}: {
+  source: Agent | null;
+  /** The runtime query resolved or failed — `false` while it is pending. */
+  runtimesSettled: boolean;
+  runtimes: RuntimeDevice[];
+  currentUserId: string | null;
+  fallbackRuntimeId: string;
+  nameSuffix: string;
+  onSeed: (draft: AgentDraft, runtimeReset: boolean) => void;
+}): void {
+  const seededRef = useRef(false);
+  // The callback is recreated every render by design (it closes over setState),
+  // so keep it out of the effect's dependency list.
+  const onSeedRef = useRef(onSeed);
+  onSeedRef.current = onSeed;
+
+  useEffect(() => {
+    if (seededRef.current || !source || !runtimesSettled) return;
+    seededRef.current = true;
+    const draft = buildDuplicateDraft(source, {
+      runtimes,
+      currentUserId,
+      fallbackRuntimeId,
+      nameSuffix,
+    });
+    onSeedRef.current(draft, draft.runtimeId !== source.runtime_id);
+  }, [
+    currentUserId,
+    fallbackRuntimeId,
+    nameSuffix,
+    runtimes,
+    runtimesSettled,
+    source,
+  ]);
 }
 
 /**
