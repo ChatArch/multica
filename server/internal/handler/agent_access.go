@@ -362,6 +362,48 @@ func (h *Handler) accessibleAgentIDs(ctx context.Context, workspaceID, actorType
 	return allowed, true
 }
 
+// restrictedAgentIDs returns the ids of agents that EXIST in the workspace but
+// the actor may NOT view — the complement of accessibleAgentIDs over the live
+// agent set. Aggregation endpoints that cannot simply drop a row (the dashboard
+// rollups, whose per-agent totals have to keep reconciling with the
+// workspace-level series rendered beside them) use it to fold those agents onto
+// a single sentinel instead.
+//
+// Hard-deleted agents are deliberately NOT in the set: they are already absent
+// from ListAllAgents, have no visibility left to protect, and the dashboard
+// renders them as their own "deleted agents" bucket — folding them in here
+// would relabel a real deletion as a permission boundary.
+//
+// Only a plain member can be restricted. Agent actors and workspace
+// owner/admin see every agent (canAccessPrivateAgent / memberAllowedToViewAgent
+// already grant that for governance), so both short-circuit to an empty set
+// before touching the database. A nil map is a valid empty set to look up in.
+func (h *Handler) restrictedAgentIDs(ctx context.Context, workspaceID, actorType, actorID, role string) (map[string]struct{}, bool) {
+	if actorType != "member" || roleAllowed(role, "owner", "admin") {
+		return nil, true
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return nil, false
+	}
+	agents, err := h.Queries.ListAllAgents(ctx, wsUUID)
+	if err != nil {
+		return nil, false
+	}
+	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
+	if !ok {
+		return nil, false
+	}
+	restricted := make(map[string]struct{})
+	for _, a := range agents {
+		if memberAllowedToViewAgent(a, targetsByAgent[uuidToString(a.ID)], actorID, role) {
+			continue
+		}
+		restricted[uuidToString(a.ID)] = struct{}{}
+	}
+	return restricted, true
+}
+
 // loadInvocationTargetsByAgent batch-loads invocation targets for a set of
 // agents and buckets them by agent id string. Avoids the per-agent query the
 // list / aggregation paths would otherwise incur.
