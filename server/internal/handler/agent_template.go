@@ -185,8 +185,11 @@ func (h *Handler) CreateAgentFromTemplate(w http.ResponseWriter, r *http.Request
 	if req.Visibility == "" {
 		req.Visibility = "private"
 	}
-	if req.MaxConcurrentTasks == 0 {
-		req.MaxConcurrentTasks = 6
+	if _, provided := rawFields["max_concurrent_tasks"]; !provided {
+		req.MaxConcurrentTasks = defaultAgentMaxConcurrentTasks
+	} else if err := validateAgentMaxConcurrentTasks(req.MaxConcurrentTasks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	tmpl, found := agentTemplates.Get(req.TemplateSlug)
