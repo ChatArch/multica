@@ -29,6 +29,11 @@ const editorDefaultValues = vi.hoisted(() => ({
 const focusCalls = vi.hoisted(() => ({ focused: 0, blurred: 0 }));
 const insertMarkdownSpy = vi.hoisted(() => vi.fn());
 const insertMarkdownBehavior = vi.hoisted(() => ({ succeed: true }));
+// Lets a test drop the editor's uploading placeholder out of the document
+// (Cmd+Z after a paste) without settling the upload behind it.
+const editorUploadSignal = vi.hoisted(
+  () => ({ notify: undefined as ((uploading: boolean) => void) | undefined }),
+);
 
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: apiUploadFile },
@@ -92,6 +97,7 @@ vi.mock("../../editor", async () => ({
     ref: Ref<unknown>,
   ) {
     editorDefaultValues.values.push(defaultValue);
+    editorUploadSignal.notify = onUploadingChange;
     const valueRef = useRef(defaultValue ?? "");
     // Mirrors the real editor's `uploading` node attrs: the placeholder exists
     // from before the await until the upload settles, `hasActiveUploads` reads
@@ -620,6 +626,30 @@ describe("comment composers — upload submit gate", () => {
 
     await act(async () => {
       pending.resolve(uploadAttachment("att-inline", "https://cdn.example/att-inline.png"));
+    });
+  });
+
+  it("shows a chip once the inline placeholder leaves the document mid-upload", async () => {
+    // Cmd+Z right after a paste deletes the placeholder node while the upload
+    // keeps running — and `gate.isBlocked` keeps blocking send on it. Without
+    // a chip the user faces a dead send button and nothing on screen saying
+    // why. The editor's own "am I showing one" signal is what catches this.
+    const { container } = renderCommentInput();
+    activateComposer("comment-composer-shell");
+
+    const pending = startPendingUpload(container, "undone.png");
+    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
+    expect(screen.queryByText(/Uploading undone\.png/)).toBeNull();
+
+    // The document no longer holds an uploading node.
+    act(() => {
+      editorUploadSignal.notify?.(false);
+    });
+
+    expect(await screen.findByText(/Uploading undone\.png/)).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve(uploadAttachment("att-undone", "https://cdn.example/att-undone.png"));
     });
   });
 

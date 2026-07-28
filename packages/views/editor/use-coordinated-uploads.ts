@@ -204,12 +204,16 @@ export interface CoordinatedUploads {
    * the same upload drawn twice, in two visual languages, shifting layout as
    * it appears and vanishes.
    *
-   * Two kinds fall through to the chips, and both are things the document
+   * Three kinds fall through to the chips, and all are things the document
    * genuinely cannot show:
    *  - inherited from the persisted draft — it outlived the mount that started
    *    it, and its placeholder node died with that mount;
    *  - failed or interrupted — `uploadAndInsertFile` removes the node on
-   *    failure, so without a chip the outcome would be invisible.
+   *    failure, so without a chip the outcome would be invisible;
+   *  - started here but no longer in the document — the user deleted the
+   *    placeholder (Cmd+Z right after a paste is the easy way). The upload
+   *    keeps running and `gate.isBlocked` keeps blocking send on it, so
+   *    hiding it would leave a dead send button with nothing explaining it.
    */
   orphanUploads: DraftUpload[];
   /** Completed attachment rows — the editor preview set; submit binds the
@@ -310,12 +314,17 @@ export function useCoordinatedUploads(
         // as a chip. Excluded here so a caller can gate the strip on
         // `orphanUploads.length` and get the answer it expects.
         if (u.status === "uploaded") return false;
-        // Still running AND started here → the document holds its placeholder.
-        if (u.status === "uploading") return !inlineUploadIdsRef.current.has(u.clientUploadId);
+        if (u.status === "uploading") {
+          // `editorGate.uploading` is the document's own answer to "am I
+          // showing a placeholder right now" — it is the only signal that
+          // survives the user deleting the node out from under a running
+          // upload. Started-here is necessary but not sufficient.
+          return !editorGate.uploading || !inlineUploadIdsRef.current.has(u.clientUploadId);
+        }
         // failed / interrupted: the node is gone, so the chip is all there is.
         return true;
       }),
-    [uploads],
+    [uploads, editorGate.uploading],
   );
   const attachments = useMemo(() => {
     const done: Attachment[] = [];
