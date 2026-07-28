@@ -134,6 +134,11 @@ const mockCreateSettingsStore = {
   manualCreateFields: DEFAULT_MANUAL_FIELDS as ManualCreateField[],
 };
 
+// The real handle mints an id when it inserts the placeholder and hands it to
+// the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
+// the same or the two records drift apart only in tests.
+let mockUploadIdSeq = 0;
+
 vi.mock("../navigation", () => ({
   useNavigation: () => ({ push: mockPush }),
 }));
@@ -297,7 +302,7 @@ vi.mock("../editor", async () => {
         inFlightRef.current += 1;
         if (inFlightRef.current === 1) onUploadingChange?.(true);
         try {
-          return await onUploadFile?.(file);
+          return await onUploadFile?.(file, `mock-upload-${++mockUploadIdSeq}`);
         } finally {
           inFlightRef.current -= 1;
           if (inFlightRef.current === 0) onUploadingChange?.(false);

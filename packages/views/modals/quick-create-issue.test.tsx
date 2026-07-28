@@ -84,6 +84,11 @@ const mockSquadsData = vi.hoisted(
   () => ({ list: [] as Array<{ id: string; name: string; leader_id: string; archived_at: string | null }> }),
 );
 
+// The real handle mints an id when it inserts the placeholder and hands it to
+// the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
+// the same or the two records drift apart only in tests.
+let mockUploadIdSeq = 0;
+
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: string[] }) => {
     // Workspace-scoped query keys carry the wsId as `queryKey[1]`; the
@@ -253,7 +258,7 @@ vi.mock("../editor", async () => {
       inFlightRef.current += 1;
       if (inFlightRef.current === 1) onUploadingChange?.(true);
       try {
-        return await onUploadFile?.(file);
+        return await onUploadFile?.(file, `mock-upload-${++mockUploadIdSeq}`);
       } finally {
         inFlightRef.current -= 1;
         if (inFlightRef.current === 0) onUploadingChange?.(false);

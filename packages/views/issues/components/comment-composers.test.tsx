@@ -36,6 +36,11 @@ const editorUploadSignal = vi.hoisted(
   () => ({ notify: undefined as ((uploading: boolean) => void) | undefined }),
 );
 
+// The real handle mints an id when it inserts the placeholder and hands it to
+// the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
+// the same or the two records drift apart only in tests.
+let mockUploadIdSeq = 0;
+
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: apiUploadFile },
 }));
@@ -90,7 +95,7 @@ vi.mock("../../editor", async () => ({
       defaultValue?: string;
       onUpdate?: (markdown: string) => void;
       placeholder?: string;
-      onUploadFile?: (file: File) => Promise<UploadResult | null>;
+      onUploadFile?: (file: File, uploadId: string) => Promise<UploadResult | null>;
       onUploadingChange?: (uploading: boolean) => void;
       onSubmit?: () => void;
       onReady?: () => void;
@@ -129,7 +134,7 @@ vi.mock("../../editor", async () => ({
         inFlightRef.current += 1;
         if (inFlightRef.current === 1) onUploadingChange?.(true);
         try {
-          const result = await onUploadFile?.(file);
+          const result = await onUploadFile?.(file, `mock-upload-${++mockUploadIdSeq}`);
           if (!result || destroyedRef.current) return;
           valueRef.current = `${valueRef.current}\n${result.url}`.trim();
           onUpdate?.(valueRef.current);
@@ -623,6 +628,24 @@ describe("comment composers — upload submit gate", () => {
   });
 
 
+
+  it("never asks the rebuild to draw an upload this mount started", async () => {
+    // The editor drew that node itself, synchronously, before the draft record
+    // existed. Registering the id at handleUpload rather than waiting for the
+    // effect to discover the node closes the window in which a delete could be
+    // undone by a redraw.
+    const { container } = renderCommentInput();
+    activateComposer("comment-composer-shell");
+    const pending = startPendingUpload(container, "mine.png");
+
+    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
+    expect(insertPlaceholderSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pending.resolve(uploadAttachment("att-mine", "https://cdn.example/att-mine.png"));
+    });
+    expect(insertPlaceholderSpy).not.toHaveBeenCalled();
+  });
 
   it("does not redraw a placeholder the user deleted mid-upload", async () => {
     // MUL-5181's rule: a placeholder the user removed stays removed. The

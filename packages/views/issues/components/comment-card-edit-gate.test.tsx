@@ -13,6 +13,11 @@ const editorDefaultValues = vi.hoisted(() => ({
   values: [] as Array<string | undefined>,
 }));
 
+// The real handle mints an id when it inserts the placeholder and hands it to
+// the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
+// the same or the two records drift apart only in tests.
+let mockUploadIdSeq = 0;
+
 vi.mock("@multica/core/api", () => ({
   // Uploads flow through the coordinator, which calls api.uploadFile (MUL-5181).
   api: { uploadFile: apiUploadFile },
@@ -72,7 +77,7 @@ vi.mock("../../editor", async () => ({
     }: {
       defaultValue?: string;
       onUpdate?: (markdown: string) => void;
-      onUploadFile?: (file: File) => Promise<UploadResult | null>;
+      onUploadFile?: (file: File, uploadId: string) => Promise<UploadResult | null>;
       onUploadingChange?: (uploading: boolean) => void;
       onSubmit?: () => void;
       placeholder?: string;
@@ -99,7 +104,7 @@ vi.mock("../../editor", async () => ({
         inFlightRef.current += 1;
         if (inFlightRef.current === 1) onUploadingChange?.(true);
         try {
-          const result = await onUploadFile?.(file);
+          const result = await onUploadFile?.(file, `mock-upload-${++mockUploadIdSeq}`);
           if (!result) return;
           valueRef.current = `${valueRef.current}\n${result.url}`.trim();
           onUpdate?.(valueRef.current);

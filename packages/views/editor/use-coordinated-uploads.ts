@@ -361,6 +361,14 @@ export function useCoordinatedUploads(
       // reaches a mount which did not start it can only find the node by id.
       // The fallback covers a caller with no editor placeholder to match.
       const clientUploadId = uploadId ?? createSafeId();
+      // An id handed in by the editor means it ALREADY drew the node, so this
+      // upload counts as rebuilt from here on. Registering it now rather than
+      // letting the effect discover the node closes the gap between the two:
+      // in that window the effect would see no node (the user could have
+      // deleted it) and draw a second one, resurrecting a placeholder the
+      // user removed. The window is sub-frame, but the rule reads better as
+      // "whoever drew it registers it" than as a race nobody can hit.
+      if (uploadId) rebuiltUploadIdsRef.current.add(uploadId);
       // Snapshot the target NOW: settle handlers must keep addressing the
       // draft the file landed in, no matter what is selected when they fire.
       const target = binding ? (resolveUploadTargetRef.current?.() ?? binding) : undefined;
