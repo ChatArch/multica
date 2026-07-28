@@ -294,6 +294,33 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.4.13",
+        date: "2026-07-28",
+        title: "Usage error insights, GitHub repo import, and drafts that stay put",
+        changes: [],
+        features: [
+          "The Usage page now shows how often agents fail, what went wrong, and which agents fail most.",
+          "You can now pick repositories straight from GitHub instead of pasting their URLs.",
+          "Unsent comments, replies, and new issues now keep their text and attachments until you send.",
+          "Pasting very long text into chat or a comment now turns it into an attachment.",
+          "The sub-issues header now shows which agents are working, even when the list is collapsed.",
+          "You can now set thinking level and Codex speed while creating an agent.",
+          "When the desktop app freezes, it can now report what got stuck.",
+        ],
+        improvements: [
+          "Autopilot webhook links now stay hidden until you choose to show them.",
+          "After you send a message, the cursor now lands where you expect.",
+          "Images and videos from chat now come through reliably when several arrive at once.",
+        ],
+        fixes: [
+          "Agents now resume long issues faster and at lower cost.",
+          "In Slack and Lark, agents now reply with just the answer, not their play-by-play.",
+          "A stalled skill download is now labelled as stalled, and the task retries on its own.",
+          "Deleting an issue now takes you back to the list you came from.",
+          "Agents on your machine now become available sooner after the service starts.",
+        ],
+      },
+      {
         version: "0.4.12",
         date: "2026-07-27",
         title: "Lark media, image zoom, and steadier agent tasks",
