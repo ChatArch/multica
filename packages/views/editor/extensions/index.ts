@@ -134,6 +134,12 @@ export interface EditorExtensionsOptions {
     ((file: File) => Promise<UploadResult | null>) | undefined
   >;
   /**
+   * Character count above which a plain-text paste becomes a .txt attachment
+   * instead of document text. A ref so the value can change without
+   * recreating the editor. Omitted (the default) keeps every paste as text.
+   */
+  pasteAsFileThresholdRef?: RefObject<number | undefined>;
+  /**
    * When true, the `@` suggestion picker is not attached. The mention node
    * type is still registered in the schema so any mention pasted in from
    * another Multica editor renders as the normal mention pill instead of
@@ -260,6 +266,6 @@ export function createEditorExtensions(
       return true;
     }),
     createBlurShortcutExtension(),
-    createFileUploadExtension(options.onUploadFileRef!),
+    createFileUploadExtension(options.onUploadFileRef!, options.pasteAsFileThresholdRef),
   ];
 }

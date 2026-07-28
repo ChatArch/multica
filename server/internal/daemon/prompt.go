@@ -7,6 +7,20 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
+// freshSessionRetryPrompt prefixes an explicit context-loss disclosure onto the
+// (already cold-rebuilt) prompt used for the daemon's single fresh-session
+// retry. When a resumed run is refused — the transcript is gone, belongs to
+// another account, or (GH #5975) carries history the provider now rejects —
+// the retry starts a brand-new provider session with none of the prior
+// conversation. Stating that up front stops the agent from assuming continuity
+// (e.g. "as I said earlier", relying on files/state it never created) and steers
+// it to re-read the issue and triggering thread before acting. The current user
+// prompt is preserved verbatim below the notice.
+func freshSessionRetryPrompt(prompt string) string {
+	const notice = "⚠️ Note: a previous provider session for this task could not be resumed, so this is a brand-new session. None of the earlier provider conversation context is available to you now. Do not assume any prior back-and-forth, in-memory state, or uncommitted work carried over — re-read the issue and the triggering thread to reconstruct what you need before acting.\n\n"
+	return notice + prompt
+}
+
 // BuildPrompt constructs the task prompt for an agent CLI.
 // Keep this minimal — detailed instructions live in CLAUDE.md / AGENTS.md
 // injected by execenv.InjectRuntimeConfig. The provider string is threaded
@@ -332,6 +346,12 @@ func buildChatPrompt(task Task) string {
 	// from the context the inbound enricher already injected, so it gets the
 	// awareness statement without the commands, and ChatInThread — which only ever
 	// picks between those two commands — does not apply to it (MUL-4899).
+	//
+	// The no-narration rule is a THIRD axis and belongs to neither half: it is a
+	// property of delivering to an IM channel at all, so it is emitted for every
+	// channel type. #4776 introduced it that way; the MUL-4899 split moved it into
+	// the Slack branch along with the read commands it happened to mention, which
+	// silently dropped it for Feishu/Lark (GH #6006).
 	if task.ChatChannelType != "" {
 		platform := channelDisplayName(task.ChatChannelType)
 		fmt.Fprintf(&b, "You are operating inside a %s conversation — not the Multica web app. This conversation and its history live in %s, NOT in Multica; never look in Multica issues or comments for it.\n", platform, platform)
@@ -347,10 +367,12 @@ func buildChatPrompt(task Task) string {
 			// These reads are the agent's private context-gathering; narrating them
 			// into a chat reply reads as noise (the user reported every reply being
 			// prefixed with "我先读取…"). Tell the agent to keep them out of its answer.
-			b.WriteString("Do these reads SILENTLY as an internal step — they are how you gather context, not part of your answer. Do NOT narrate them: your reply must not begin with what you are about to read or just read (no \"我先读取…\" / \"let me read the history / open the thread\"). Reply to the user with your answer only.\n")
+			b.WriteString("Do these reads SILENTLY as an internal step — they are how you gather context, not part of your answer.\n")
 		} else {
 			fmt.Fprintf(&b, "Work from the context already provided to you below — Multica has no history reader for %s, so there is no command that can fetch more of this conversation. If you genuinely need earlier context that is not here, ask the user for it rather than guessing.\n", platform)
 		}
+		// Scoped to process, not results — a completion confirmation IS the deliverable.
+		fmt.Fprintf(&b, "Reply to %s with the final outcome only. Do NOT narrate planned or in-progress steps (\"我先读取…\"); completed actions are part of the outcome.\n", platform)
 		b.WriteString("\n")
 	}
 	if task.Agent != nil && len(task.Agent.Skills) > 0 {

@@ -21,6 +21,7 @@ import type {
   CronPreviewResponse,
   GroupedIssuesResponse,
   GitHubConnectResponse,
+  GitHubPullRequest,
   InboxItem,
   InboxWorkspaceUnread,
   Label,
@@ -103,6 +104,50 @@ export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResp
   repositories: [],
   total_count: 0,
   next_page: null,
+};
+
+export const GitHubPullRequestSchema = z.object({
+  id: z.string(),
+  provider: z.string().optional().default("github"),
+  workspace_id: z.string(),
+  repo_owner: z.string(),
+  repo_name: z.string(),
+  number: z.number(),
+  title: z.string(),
+  state: z.string(),
+  html_url: z.string(),
+  branch: z.string().nullable(),
+  author_login: z.string().nullable(),
+  author_avatar_url: z.string().nullable(),
+  merged_at: z.string().nullable(),
+  closed_at: z.string().nullable(),
+  pr_created_at: z.string(),
+  pr_updated_at: z.string(),
+  mergeable: z.string().nullable().optional(),
+  merge_state_status: z.string().nullable().optional(),
+  snapshot_available: z.boolean().optional(),
+  checks_rollup: z.string().nullable().optional(),
+  checks_conclusion: z.string().nullable().optional(),
+  checks_total: z.number().optional().default(0),
+  checks_passed: z.number().optional().default(0),
+  checks_failed: z.number().optional().default(0),
+  checks_running: z.number().optional().default(0),
+  checks_pending: z.number().optional().default(0),
+  failed_check_names: z.array(z.string()).optional().default([]),
+  snapshot_stale: z.boolean().optional().default(false),
+  snapshot_fetched_at: z.string().nullable().optional(),
+  mergeable_state: z.string().nullable().optional(),
+  additions: z.number().optional().default(0),
+  deletions: z.number().optional().default(0),
+  changed_files: z.number().optional().default(0),
+}).loose();
+
+export const IssuePullRequestsResponseSchema = z.object({
+  pull_requests: z.array(GitHubPullRequestSchema).default([]),
+}).loose();
+
+export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: { pull_requests: GitHubPullRequest[] } = {
+  pull_requests: [],
 };
 
 // Label responses are consumed by settings tables and resource pickers. Keep
@@ -873,6 +918,32 @@ const DashboardRunTimeDailySchema = z.object({
 }).loose();
 
 export const DashboardRunTimeDailyListSchema = z.array(DashboardRunTimeDailySchema);
+
+// Failure rollups. `failure_reason` is an open string on purpose — it carries
+// the backend's canonical taxonomy, which grows as new classifier rules land
+// (server/pkg/taskfailure). Pinning it to a z.enum would make an installed
+// desktop client drop rows for a reason its build predates; the client folds
+// unrecognised reasons into an "other" display class instead. The empty
+// string is the succeeded bucket, so `.default("")` is a meaningful default
+// only for a row that already lost its reason — such a row lands in the
+// denominator rather than inventing a failure that never happened.
+const DashboardFailureDailySchema = z.object({
+  date: z.string().default(""),
+  failure_reason: z.string().default(""),
+  task_count: z.number().default(0),
+}).loose();
+
+export const DashboardFailureDailyListSchema = z.array(DashboardFailureDailySchema);
+
+const DashboardFailureByAgentSchema = z.object({
+  agent_id: z.string().default(""),
+  failure_reason: z.string().default(""),
+  task_count: z.number().default(0),
+}).loose();
+
+export const DashboardFailureByAgentListSchema = z.array(
+  DashboardFailureByAgentSchema,
+);
 
 // ---------------------------------------------------------------------------
 // Runtime usage schemas — the runtime-detail page's four usage endpoints

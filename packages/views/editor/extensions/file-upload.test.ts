@@ -1,10 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
+import { Slice } from "@tiptap/pm/model";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
-import { ImageExtension } from "./index";
-import { uploadAndInsertFile } from "./file-upload";
+import { ImageExtension, createEditorExtensions } from "./index";
+import { FileCardExtension } from "./file-card";
+import {
+  createFileUploadExtension,
+  uploadAndInsertFile,
+  pastedTextSource,
+  PASTED_TEXT_FILENAME,
+} from "./file-upload";
 
 const BLOB_URL = "blob:test-image";
 const FINAL_URL = "https://cdn.example.com/photo.png";
@@ -67,6 +74,31 @@ function makeUpload(
     ...overrides,
   };
 }
+
+// jsdom lays nothing out, so ProseMirror's scrollToSelection (reached via the
+// `focus()` in the fileCard insert) throws on the missing rect APIs. Same stub
+// set as suggestion-popup.test.tsx.
+beforeAll(() => {
+  const rect = () => new DOMRect(0, 0, 0, 0);
+  const rectList = () =>
+    ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as DOMRectList;
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: rect,
+  });
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: rectList,
+  });
+  Object.defineProperty(HTMLElement.prototype, "getClientRects", {
+    configurable: true,
+    value: rectList,
+  });
+  Object.defineProperty(Text.prototype, "getClientRects", {
+    configurable: true,
+    value: rectList,
+  });
+});
 
 beforeEach(() => {
   originalCreateObjectURL = URL.createObjectURL;
@@ -222,5 +254,190 @@ describe("uploadAndInsertFile", () => {
     expect(editor.getMarkdown().trimEnd()).toBe(`![photo.png](${STABLE_URL})`);
     expect(editor.getMarkdown()).not.toContain("?exp=");
     expect(editor.getMarkdown()).not.toContain("?sig=");
+  });
+});
+
+describe("paste-as-file", () => {
+  const THRESHOLD = 20;
+
+  function makePasteEditor(opts: {
+    handler?: (file: File) => Promise<UploadResult | null>;
+    threshold?: number;
+  }) {
+    const onUploadFileRef = { current: opts.handler };
+    const thresholdRef = { current: opts.threshold };
+    const element = document.createElement("div");
+    document.body.appendChild(element);
+    const editor = new Editor({
+      element,
+      extensions: [
+        StarterKit,
+        ImageExtension,
+        FileCardExtension,
+        Markdown.configure({ indentation: { style: "space", size: 3 } }),
+        createFileUploadExtension(
+          onUploadFileRef as React.RefObject<
+            ((file: File) => Promise<UploadResult | null>) | undefined
+          >,
+          thresholdRef as React.RefObject<number | undefined>,
+        ),
+      ],
+    });
+    editors.push(editor);
+    return editor;
+  }
+
+  /** Drive the plugin's handlePaste the way ProseMirror does, and report
+   *  whether any plugin claimed the event. */
+  function paste(editor: Editor, opts: { text?: string; files?: File[] }) {
+    const event = {
+      clipboardData: {
+        files: opts.files ?? [],
+        getData: (type: string) => (type === "text/plain" ? (opts.text ?? "") : ""),
+      },
+    } as unknown as ClipboardEvent;
+    let handled = false;
+    editor.view.someProp("handlePaste", (fn) => {
+      handled = fn(editor.view, event, Slice.empty) === true;
+      return handled;
+    });
+    return handled;
+  }
+
+  it("uploads an over-threshold plain-text paste as pasted-text.txt and keeps it out of the body", async () => {
+    const upload = deferred<UploadResult | null>();
+    const handler = vi.fn((_file: File) => upload.promise);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+    const long = "x".repeat(THRESHOLD + 1);
+
+    expect(paste(editor, { text: long })).toBe(true);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    const file = handler.mock.calls[0]![0];
+    expect(file.name).toBe(PASTED_TEXT_FILENAME);
+    expect(file.type).toBe("text/plain");
+    await expect(file.text()).resolves.toBe(long);
+
+    // The text itself never lands in the document — only the upload card.
+    expect(editor.getMarkdown()).not.toContain(long);
+
+    upload.resolve(
+      makeUpload({
+        id: "attachment-9",
+        link: "/api/attachments/attachment-9/download",
+        filename: PASTED_TEXT_FILENAME,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(editor.getMarkdown()).toContain("/api/attachments/attachment-9/download"),
+    );
+  });
+
+  it("leaves a paste at or below the threshold as ordinary text", () => {
+    const handler = vi.fn(async () => null);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+
+    expect(paste(editor, { text: "x".repeat(THRESHOLD) })).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not convert when the host passes no threshold", () => {
+    const handler = vi.fn(async () => null);
+    const editor = makePasteEditor({ handler, threshold: undefined });
+
+    expect(paste(editor, { text: "x".repeat(10_000) })).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not convert when the host wired no uploader", () => {
+    const editor = makePasteEditor({ handler: undefined, threshold: THRESHOLD });
+
+    // Degrades to a plain-text paste rather than swallowing the event.
+    expect(paste(editor, { text: "x".repeat(THRESHOLD + 1) })).toBe(false);
+  });
+
+  it("still takes the real-file path when the clipboard carries a file", async () => {
+    const handler = vi.fn(async (_file: File) => null);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+    const real = new File(["image"], "photo.png", { type: "image/png" });
+
+    expect(paste(editor, { text: "x".repeat(THRESHOLD + 1), files: [real] })).toBe(true);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]![0]).toBe(real);
+  });
+
+  it("tags the synthesised file with its source text so the draft owner can restore it", async () => {
+    const upload = deferred<UploadResult | null>();
+    const handler = vi.fn((_file: File) => upload.promise);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+    const long = "x".repeat(THRESHOLD + 1);
+
+    paste(editor, { text: long });
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    // The recovery path lives in useCoordinatedUploads (the only layer that
+    // outlives the mount and owns the draft); this is the channel it reads.
+    expect(pastedTextSource(handler.mock.calls[0]![0])).toBe(long);
+
+    upload.resolve(null);
+  });
+
+  it("does not tag a real dropped file", async () => {
+    const handler = vi.fn(async (_file: File) => null);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+    const real = new File(["image"], "photo.png", { type: "image/png" });
+
+    paste(editor, { files: [real] });
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    expect(pastedTextSource(real)).toBeUndefined();
+  });
+
+  it("wins the paste over markdownPaste in the REAL extension order", async () => {
+    // Both paste handlers are catch-alls, so which one ProseMirror consults
+    // first is the whole feature. Tiptap reverses the extension array before
+    // collecting plugins (@tiptap/core `get plugins()`), and neither extension
+    // sets a priority — so the ordering that decides this lives in
+    // createEditorExtensions, not in either file. Build the production array so
+    // a reorder there fails HERE instead of silently disabling the feature.
+    const upload = deferred<UploadResult | null>();
+    const handler = vi.fn((_file: File) => upload.promise);
+    const onUploadFileRef = { current: handler };
+    const thresholdRef = { current: THRESHOLD };
+    const element = document.createElement("div");
+    document.body.appendChild(element);
+    const editor = new Editor({
+      element,
+      extensions: createEditorExtensions({
+        onUploadFileRef: onUploadFileRef as React.RefObject<
+          ((file: File) => Promise<UploadResult | null>) | undefined
+        >,
+        pasteAsFileThresholdRef: thresholdRef as React.RefObject<number | undefined>,
+        disableMentions: true,
+      }),
+    });
+    editors.push(editor);
+
+    const long = "# heading\n\n" + "x".repeat(THRESHOLD + 1);
+    expect(paste(editor, { text: long })).toBe(true);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    expect(handler.mock.calls[0]![0].name).toBe(PASTED_TEXT_FILENAME);
+    // markdownPaste did NOT get to parse it into the body.
+    expect(editor.getMarkdown()).not.toContain("x".repeat(THRESHOLD + 1));
+
+    upload.resolve(null);
+  });
+
+  it("keeps a long paste inline inside a code block", () => {
+    const handler = vi.fn(async (_file: File) => null);
+    const editor = makePasteEditor({ handler, threshold: THRESHOLD });
+    editor.commands.setCodeBlock();
+
+    // Opening a fence IS the request to show the thing inline.
+    expect(paste(editor, { text: "x".repeat(THRESHOLD + 1) })).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
   });
 });

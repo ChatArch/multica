@@ -71,6 +71,8 @@ import type {
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
   RuntimeUpdate,
   RuntimeModelListRequest,
   RuntimeLocalSkillListRequest,
@@ -193,6 +195,8 @@ import {
   agentBuilderRuntimeSwitchFallback,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
   EMPTY_AGENT_TEMPLATE_DETAIL,
@@ -279,6 +283,8 @@ import {
   EMPTY_ISSUE_PROPERTY,
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
+  EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  IssuePullRequestsResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -1623,6 +1629,40 @@ export class ApiClient {
     );
   }
 
+  async getDashboardFailuresDaily(
+    params: { days?: number; project_id?: string | null; tz?: string },
+  ): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    if (params.days) search.set("days", String(params.days));
+    if (params.project_id) search.set("project_id", params.project_id);
+    // `tz` cuts the day buckets in the viewer's calendar so the Errors chart
+    // shares an x-axis with the other four metrics.
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/failures/daily?${search}`);
+    return parseWithFallback<DashboardFailureDaily[]>(
+      raw,
+      DashboardFailureDailyListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(
+    params: { days?: number; project_id?: string | null; tz?: string },
+  ): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    if (params.days) search.set("days", String(params.days));
+    if (params.project_id) search.set("project_id", params.project_id);
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/failures/by-agent?${search}`);
+    return parseWithFallback<DashboardFailureByAgent[]>(
+      raw,
+      DashboardFailureByAgentListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/failures/by-agent" },
+    );
+  }
+
   async initiateUpdate(
     runtimeId: string,
     targetVersion: string,
@@ -1700,15 +1740,22 @@ export class ApiClient {
   // already deduplicates running agents and returns only the display fields
   // consumers need. Callers may narrow the projection by task source and, for
   // issue work, the authenticated member's My Issues relation.
+  // `parentIssueId` narrows the projection to that issue's direct children,
+  // which is how the sub-issue header on issue detail reads the same source
+  // as the Issues list header. The server rejects combining it with `scope`,
+  // so callers pass one or the other.
   async getWorkspaceWorkingAgents(
     type?: WorkspaceWorkingAgentType,
     mineRelation?: WorkspaceWorkingAgentMineRelation,
+    parentIssueId?: string,
   ): Promise<WorkspaceWorkingAgent[]> {
     const search = new URLSearchParams();
     if (type) search.set("type", type);
     if (mineRelation) {
       search.set("scope", "mine");
       search.set("relation", mineRelation);
+    } else if (parentIssueId) {
+      search.set("parent", parentIssueId);
     }
     const query = search.toString();
     return this.fetch(`/api/working-agents${query ? `?${query}` : ""}`);
@@ -2052,6 +2099,11 @@ export class ApiClient {
   async uploadFile(
     file: File,
     opts?: { issueId?: string; commentId?: string; chatSessionId?: string },
+    // Optional abort signal so a module-level upload coordinator (MUL-5181)
+    // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
+    // with an AbortError, which the coordinator distinguishes from a real
+    // failure via `signal.aborted` / `err.name === "AbortError"`.
+    signal?: AbortSignal,
   ): Promise<Attachment> {
     const formData = new FormData();
     formData.append("file", file);
@@ -2068,6 +2120,7 @@ export class ApiClient {
       headers: this.authHeaders(),
       body: formData,
       credentials: "include",
+      signal,
     });
 
     if (!res.ok) {
@@ -2851,7 +2904,13 @@ export class ApiClient {
   }
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
-    return this.fetch(`/api/issues/${issueId}/pull-requests`);
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/pull-requests`);
+    return parseWithFallback(
+      raw,
+      IssuePullRequestsResponseSchema,
+      EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+      { endpoint: "GET /api/issues/:id/pull-requests" },
+    );
   }
 
   // VCS integration (Forgejo / Gitea / GitLab)

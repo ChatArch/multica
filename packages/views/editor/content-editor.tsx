@@ -122,6 +122,17 @@ interface ContentEditorBaseProps {
   onBlur?: () => void;
   onUploadFile?: (file: File) => Promise<UploadResult | null>;
   /**
+   * Character count above which a plain-text paste is uploaded as a
+   * `pasted-text.txt` attachment instead of being inserted as body text.
+   * Requires `onUploadFile`; without an uploader the paste stays text.
+   *
+   * Opt-in ON PURPOSE. It belongs to turn-based composers (chat, comments),
+   * where a wall of pasted text is context for one message and reads better
+   * as an attachment. Document-style editors — issue and project descriptions
+   * — must never pass it: there, a long paste IS the content.
+   */
+  pasteAsFileThreshold?: number;
+  /**
    * Fired whenever this editor's "any attachment still uploading" answer
    * flips. The document IS the upload queue — every path (paste, drop, the
    * upload button, the imperative `uploadFile`) inserts a node with
@@ -233,13 +244,28 @@ interface ContentEditorRef {
    * long documents.
    */
   focusAtAnchor: (anchor: TextAnchor) => void;
-  /** Drop focus from the editor — used by chat after send so the caret
-   *  stops competing with the StatusPill / streaming reply for the user's
-   *  attention. */
+  /** Drop focus from the editor. Used by `useComposerSubmit`'s
+   *  `afterAccepted: "blur"` on surfaces where a send ends the turn, so the
+   *  composer stops reading as "still writing". */
   blur: () => void;
   uploadFile: (file: File) => void;
   /** True when file uploads are still in progress. */
   hasActiveUploads: () => boolean;
+  /**
+   * Append a markdown fragment to the end of the document (parsed, not raw
+   * text), firing the normal `onUpdate` pipeline. For the upload write-back
+   * path (MUL-5181): an upload that outlived the mount that started it settles
+   * while a NEW editor instance is showing the same draft — that editor never
+   * owned the upload's promise, so this is how the finished attachment's link
+   * lands in the visible document instead of only in the persisted draft.
+   *
+   * Returns whether the insert actually landed. The imperative handle exists
+   * from the component's first commit, but the Tiptap instance is created in a
+   * passive effect — in that window (and after destroy) this is a no-op and
+   * returns false so the caller can fall back or retry instead of silently
+   * losing the fragment.
+   */
+  insertMarkdownAtEnd: (markdown: string) => boolean;
   /**
    * Cancel the pending debounced `onUpdate` and hand its markdown back to the
    * caller instead of firing it. Returns null when nothing is pending.
@@ -290,6 +316,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       onSubmit,
       onBlur,
       onUploadFile,
+      pasteAsFileThreshold,
       onUploadingChange,
       showBubbleMenu = true,
       currentIssueId,
@@ -318,6 +345,10 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const onUploadFileRef = useRef<
       ((file: File) => Promise<UploadResult | null>) | undefined
     >(undefined);
+    // Same reasoning as placeholderRef below: the extension array is built once
+    // at mount, so the paste-as-file threshold is read through a ref to stay
+    // live without remounting the editor.
+    const pasteAsFileThresholdRef = useRef<number | undefined>(pasteAsFileThreshold);
     const mentionContextItemsRef = useRef<MentionItem[]>(mentionContextItems ?? []);
     const lastEmittedRef = useRef<string | null>(null);
     // `content` already consumes the initial synchronized value when Tiptap
@@ -412,6 +443,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onReadyRef.current = onReady;
     onUploadingChangeRef.current = onUploadingChange;
     onUploadFileRef.current = wrappedOnUploadFile;
+    pasteAsFileThresholdRef.current = pasteAsFileThreshold;
     mentionContextItemsRef.current = mentionContextItems ?? [];
     flushPendingOnUnmountRef.current = flushPendingOnUnmount;
 
@@ -509,6 +541,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         queryClient,
         onSubmitRef,
         onUploadFileRef,
+        pasteAsFileThresholdRef,
         disableMentions,
         mentionMode,
         getMentionContextItems: () => mentionContextItemsRef.current,
@@ -801,6 +834,13 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         uploadAndInsertFile(editor, file, onUploadFileRef.current, endPos);
       },
       hasActiveUploads: () => (editor ? hasUploadingNode(editor) : false),
+      insertMarkdownAtEnd: (markdown: string) => {
+        if (!editor || editor.isDestroyed) return false;
+        editor.commands.insertContentAt(editor.state.doc.content.size, markdown, {
+          contentType: "markdown",
+        });
+        return true;
+      },
       flushPendingUpdate: () => {
         // No armed timer = nothing typed since the last emit. The editor is
         // already clean, so the host has nothing to re-route.
