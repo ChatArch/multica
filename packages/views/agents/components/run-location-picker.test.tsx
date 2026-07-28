@@ -17,10 +17,7 @@ vi.mock("../../runtimes/components/provider-logo", () => ({
 }));
 
 import { RuntimePicker } from "./runtime-picker";
-import {
-  resetCloudPreview,
-  setCloudUiPreview,
-} from "../../runtimes/components/cloud-preview";
+import { resetCloudPreview } from "../../runtimes/components/cloud-preview";
 
 const TEST_RESOURCES = {
   en: { common: enCommon, agents: enAgents, issues: enIssues },
@@ -79,7 +76,7 @@ function renderPicker(
   return { ...utils, onSelect };
 }
 
-describe("RuntimePicker run-location entry (MUL-5385 preview)", () => {
+describe("RuntimePicker run-location entry (MUL-5385)", () => {
   beforeEach(() => {
     cleanup();
     resetCloudPreview();
@@ -89,19 +86,7 @@ describe("RuntimePicker run-location entry (MUL-5385 preview)", () => {
     resetCloudPreview();
   });
 
-  // Production default: the flag is off, so the create flow keeps asking
-  // "which runtime?" exactly as before. This is the regression guard for the
-  // whole preview being additive.
-  it("renders the plain runtime list when the preview is off", () => {
-    const { container } = renderPicker();
-    expect(
-      container.querySelector('[data-slot="popover-trigger"]'),
-    ).not.toBeNull();
-    expect(screen.queryByRole("radio", { name: /Multica Cloud/ })).toBeNull();
-  });
-
-  it("asks where the agent should run when the preview is on", () => {
-    setCloudUiPreview(true);
+  it("asks where the agent should run", () => {
     renderPicker();
     expect(
       screen.getByRole("radio", { name: /Multica Cloud/ }),
@@ -115,7 +100,6 @@ describe("RuntimePicker run-location entry (MUL-5385 preview)", () => {
   // clear the selection (so the caller's Create stays disabled) and say why,
   // rather than pretend it can run.
   it("clears the selection and explains itself when Cloud has no runtime", () => {
-    setCloudUiPreview(true);
     const { onSelect } = renderPicker();
     fireEvent.click(screen.getByRole("radio", { name: /Multica Cloud/ }));
     expect(onSelect).toHaveBeenCalledWith("");
@@ -125,7 +109,6 @@ describe("RuntimePicker run-location entry (MUL-5385 preview)", () => {
   // When the workspace does have a managed cloud runtime, Cloud is the default
   // and binds to it without the user ever seeing a machine.
   it("defaults to Cloud and binds to the managed runtime when one exists", () => {
-    setCloudUiPreview(true);
     const { onSelect } = renderPicker({
       runtimes: [...LOCAL_RUNTIMES, CLOUD_RUNTIME],
       selectedRuntimeId: "",
@@ -141,7 +124,6 @@ describe("RuntimePicker run-location entry (MUL-5385 preview)", () => {
   // Escape hatch: picking "My computer" must reveal the untouched machine ×
   // CLI picker and reset the selection so its own seeding effect runs.
   it("reveals the machine picker under My computer", () => {
-    setCloudUiPreview(true);
     const { container, onSelect } = renderPicker({
       runtimes: [...LOCAL_RUNTIMES, CLOUD_RUNTIME],
       selectedRuntimeId: "rt-cloud",

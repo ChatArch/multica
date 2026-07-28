@@ -1,19 +1,17 @@
 /**
- * Cloud UI preview — product-review scaffolding for MUL-5385.
+ * Cloud state for the redesigned entry points (MUL-5385).
  *
  * This module deliberately contains NO capability wiring. It holds the
- * client-side state the redesigned Cloud entry points need so the product
- * shape ("Cloud is a workspace capability, not a machine you provision")
- * can be reviewed in a running app before any server / Fleet work starts.
+ * client-side state the Cloud UI needs so the product shape ("Cloud is a
+ * workspace capability, not a machine you provision") can be reviewed in a
+ * running app before any server / Fleet work starts.
  *
  * Everything here is a mock:
  *   - `cloudOn` flips locally; nothing is provisioned, nothing is charged.
  *   - the credit / concurrency numbers are illustrative placeholders.
- * The UI labels them as a preview so a reviewer never mistakes them for
- * live data.
- *
- * Rollout: OFF unless `NEXT_PUBLIC_CLOUD_UI_PREVIEW=true`, so production and
- * every existing surface keep their current behaviour byte-for-byte.
+ * The UI labels itself as a preview so a reviewer never mistakes these for
+ * live figures. This branch is for the test environment only — it is not
+ * meant to merge to main as-is.
  */
 import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
@@ -24,9 +22,6 @@ import { useStore } from "zustand";
 export type CloudSpeedTier = "standard" | "fast";
 
 export interface CloudPreviewState {
-  /** Renders the redesigned Cloud entry points instead of the legacy
-   *  "create a node" affordances. Env-seeded; overridable in tests. */
-  previewEnabled: boolean;
   /** Whether the workspace has "turned on" Multica Cloud (mock). */
   cloudOn: boolean;
   tier: CloudSpeedTier;
@@ -36,28 +31,9 @@ export interface CloudPreviewState {
   /** Illustrative elastic-capacity figures (mock). */
   activeRuns: number;
   concurrencyLimit: number;
-  setPreviewEnabled: (enabled: boolean) => void;
   setCloudOn: (on: boolean) => void;
   setTier: (tier: CloudSpeedTier) => void;
   reset: () => void;
-}
-
-/**
- * Reading NEXT_PUBLIC_* inside packages/views is safe: apps/web lists
- * `@multica/views` in `transpilePackages`, so Next inlines the value at build
- * time. Guarded anyway for non-Next consumers (mobile / bare vitest) where
- * `process` may be absent.
- */
-function previewEnabledFromEnv(): boolean {
-  try {
-    const raw =
-      typeof process !== "undefined"
-        ? process.env?.NEXT_PUBLIC_CLOUD_UI_PREVIEW
-        : undefined;
-    return raw === "true" || raw === "1";
-  } catch {
-    return false;
-  }
 }
 
 const MOCK_DEFAULTS = {
@@ -70,27 +46,14 @@ const MOCK_DEFAULTS = {
 };
 
 export const cloudPreviewStore = createStore<CloudPreviewState>((set) => ({
-  previewEnabled: previewEnabledFromEnv(),
   ...MOCK_DEFAULTS,
-  setPreviewEnabled: (previewEnabled) => set({ previewEnabled }),
   setCloudOn: (cloudOn) => set({ cloudOn }),
   setTier: (tier) => set({ tier }),
-  reset: () =>
-    set({ previewEnabled: previewEnabledFromEnv(), ...MOCK_DEFAULTS }),
+  reset: () => set({ ...MOCK_DEFAULTS }),
 }));
 
 export function useCloudPreview<T>(selector: (state: CloudPreviewState) => T): T {
   return useStore(cloudPreviewStore, selector);
-}
-
-/** True when the redesigned Cloud entry points should render. */
-export function useCloudUiPreview(): boolean {
-  return useCloudPreview((state) => state.previewEnabled);
-}
-
-/** Test helper — flips the flag without touching env. */
-export function setCloudUiPreview(enabled: boolean): void {
-  cloudPreviewStore.getState().setPreviewEnabled(enabled);
 }
 
 /** Test helper — restores mock defaults between cases. */

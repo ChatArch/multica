@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Cloud, Loader2, Lock, Search } from "lucide-react";
 import { ProviderLogo } from "../../runtimes/components/provider-logo";
-import { useCloudUiPreview } from "../../runtimes/components/cloud-preview";
 import { RunLocationPicker, type RunLocation } from "./run-location-picker";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { runtimeDisplayName } from "@multica/core/runtimes";
@@ -41,20 +40,12 @@ export interface RuntimePickerProps {
 /**
  * RuntimePicker — public entry used by every agent-creation surface.
  *
- * Default behaviour is unchanged: the machine × CLI list below. When the
- * MUL-5385 Cloud UI preview is on, the same slot instead asks "where should
- * this agent run?" first and only reveals the machine list under "my
- * computer". Keeping the wrapper behind the existing export means all three
- * call sites (creation studio manual + builder, create dialog) pick the new
- * entry up with no changes.
+ * Leads with the one irreducible question — "where should this agent run?" —
+ * and only reveals the machine × CLI list under "my computer". Keeping the
+ * new entry behind the existing export means all three call sites (creation
+ * studio manual + builder, create dialog) pick it up with no changes.
  */
 export function RuntimePicker(props: RuntimePickerProps) {
-  const previewEnabled = useCloudUiPreview();
-  if (!previewEnabled) return <RuntimeDevicePicker {...props} />;
-  return <RuntimePickerWithRunLocation {...props} />;
-}
-
-function RuntimePickerWithRunLocation(props: RuntimePickerProps) {
   const { runtimes, currentUserId, selectedRuntimeId, onSelect } = props;
 
   // A real managed cloud runtime, when the workspace happens to have one.
