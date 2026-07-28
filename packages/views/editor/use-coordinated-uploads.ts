@@ -192,8 +192,21 @@ function deliverPastedTextBack(
 }
 
 export interface CoordinatedUploads {
-  /** Every upload for this composer (placeholders included) — for status chips. */
+  /** Every upload for this composer, placeholders included. */
   uploads: DraftUpload[];
+  /**
+   * The subset of `uploads` this mount is NOT already showing inline — wire
+   * these to `<ComposerUploadChips>`, never `uploads`.
+   *
+   * Every upload started from this mount inserted a placeholder node into the
+   * document first (`uploadAndInsertFile` is the only caller of the uploader),
+   * so a chip for it would be the same upload drawn twice, in two places, with
+   * two different visual languages. What the document genuinely cannot show is
+   * an upload inherited from the persisted draft: it outlived the mount that
+   * started it, and its node died with that mount. Those are exactly the ones
+   * left here.
+   */
+  orphanUploads: DraftUpload[];
   /** Completed attachment rows — the editor preview set; submit binds the
    *  subset whose link the body still references. */
   attachments: Attachment[];
@@ -281,6 +294,15 @@ export function useCoordinatedUploads(
   }, [registryKey, editorRef]);
 
   const uploads = binding ? boundUploads : localUploads;
+  // See `orphanUploads` on CoordinatedUploads: ids this mount started, i.e.
+  // the ones the document is already showing as an inline placeholder. A ref
+  // rather than state — it is written during handleUpload, and every read is
+  // paired with a `uploads` change that re-runs the memo below anyway.
+  const inlineUploadIdsRef = useRef<Set<string>>(new Set());
+  const orphanUploads = useMemo(
+    () => uploads.filter((u) => !inlineUploadIdsRef.current.has(u.clientUploadId)),
+    [uploads],
+  );
   const attachments = useMemo(() => {
     const done: Attachment[] = [];
     for (const u of uploads) {
@@ -296,6 +318,10 @@ export function useCoordinatedUploads(
   const handleUpload = useCallback(
     (file: File): Promise<UploadResult | null> => {
       const clientUploadId = createSafeId();
+      // Recorded BEFORE the placeholder reaches the store, so the very first
+      // render that sees the new upload already knows the document is showing
+      // it and no chip ever flashes underneath.
+      inlineUploadIdsRef.current.add(clientUploadId);
       // Snapshot the target NOW: settle handlers must keep addressing the
       // draft the file landed in, no matter what is selected when they fire.
       const target = binding ? (resolveUploadTargetRef.current?.() ?? binding) : undefined;
@@ -445,5 +471,5 @@ export function useCoordinatedUploads(
       hasUploadingDraft(binding ? binding.getUploads() : localUploadsRef.current),
   };
 
-  return { uploads, attachments, handleUpload, removeUpload, gate };
+  return { uploads, orphanUploads, attachments, handleUpload, removeUpload, gate };
 }

@@ -340,7 +340,7 @@ function useEditAttachmentState(
   const draftKey = `edit:${issueId}:${entry.id}` as const;
   // `gate` widens the editor gate with coordinator-owned placeholders — see
   // CommentInput.
-  const { uploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
+  const { uploads, orphanUploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
     useCommentUploads(draftKey, { issueId }, uploadGate, editorRef);
   const [retainedStandaloneIds, setRetainedStandaloneIds] = useState<Set<string> | null>(null);
   const triggerPreview = useCommentTriggerPreview({
@@ -497,6 +497,7 @@ function useEditAttachmentState(
     editorAttachments,
     handleUpload,
     uploads,
+    orphanUploads,
     removeUpload,
     isDragOver,
     dropZoneProps,
@@ -694,8 +695,8 @@ function CommentRow({
               }
             />
           )}
-          {edit.uploads.some((u) => u.status !== "uploaded") && (
-            <ComposerUploadChips uploads={edit.uploads} onRemove={edit.removeUpload} className="mt-2 max-w-full" />
+          {edit.orphanUploads.length > 0 && (
+            <ComposerUploadChips uploads={edit.orphanUploads} onRemove={edit.removeUpload} className="mt-2 max-w-full" />
           )}
           <div className="flex items-center justify-between gap-2 mt-2">
             <div className="min-w-0 flex-1">
@@ -1009,8 +1010,8 @@ function CommentCardImpl({
                         }
                         />
                       )}
-                    {edit.uploads.some((u) => u.status !== "uploaded") && (
-                      <ComposerUploadChips uploads={edit.uploads} onRemove={edit.removeUpload} className="max-w-full" />
+                    {edit.orphanUploads.length > 0 && (
+                      <ComposerUploadChips uploads={edit.orphanUploads} onRemove={edit.removeUpload} className="max-w-full" />
                     )}
                     <CommentTriggerChips
                       agents={edit.triggerPreview.agents}

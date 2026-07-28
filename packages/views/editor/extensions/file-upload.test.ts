@@ -163,9 +163,12 @@ describe("uploadAndInsertFile", () => {
     expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
 
     editor.commands.insertContent("after");
-    expect(editor.getMarkdown().trimEnd()).toBe(
-      [`![photo.png](${BLOB_URL})`, "", "after"].join("\n"),
-    );
+    // The blob preview is visible in the document but is NOT content: the
+    // document is the persisted draft body, and a process-local blob: URL
+    // would outlive the upload as a dead link. It becomes markdown only once
+    // the swap below gives it a real URL.
+    expect(editor.getMarkdown()).not.toContain(BLOB_URL);
+    expect(editor.getMarkdown().trim()).toBe("after");
 
     upload.resolve(
       makeUpload({ id: "attachment-1", link: FINAL_URL, filename: "photo.png" }),

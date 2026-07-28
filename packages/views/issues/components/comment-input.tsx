@@ -51,7 +51,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   // status chips (uploading / failed / interrupted).
   // `gate` widens the editor gate with coordinator-owned placeholders, so a
   // composer reopened over a still-in-flight upload cannot send past it.
-  const { uploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
+  const { orphanUploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
     useCommentUploads(draftKey, { issueId }, uploadGate, editorRef);
 
   // Readonly-first: the composer renders as a same-looking static shell until
@@ -231,8 +231,8 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
         />
       </div>
       )}
-      {uploads.some((u) => u.status !== "uploaded") && (
-        <ComposerUploadChips uploads={uploads} onRemove={removeUpload} className="px-3 pb-1" />
+      {orphanUploads.length > 0 && (
+        <ComposerUploadChips uploads={orphanUploads} onRemove={removeUpload} className="px-3 pb-1" />
       )}
       {/* Static shell — visually clones the empty single-line composer.
           Real editor mounts (hidden) on first intent; shell stays visible

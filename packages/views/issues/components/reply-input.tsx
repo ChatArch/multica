@@ -75,7 +75,7 @@ function ReplyInput({
   // back to session-local state inside the hook.
   // `gate` widens the editor gate with coordinator-owned placeholders — see
   // CommentInput.
-  const { uploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
+  const { uploads, orphanUploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
     useCommentUploads(draftKey, { issueId }, uploadGate, editorRef);
 
   // Readonly-first: static shell until intent; an unsent draft mounts the
@@ -252,8 +252,8 @@ function ReplyInput({
           />
         </div>
         )}
-        {uploads.some((u) => u.status !== "uploaded") && (
-          <ComposerUploadChips uploads={uploads} onRemove={removeUpload} className="mt-1" />
+        {orphanUploads.length > 0 && (
+          <ComposerUploadChips uploads={orphanUploads} onRemove={removeUpload} className="mt-1" />
         )}
         {/* Static shell — clones the empty single-line reply box (see
             CommentInput for the pattern). */}

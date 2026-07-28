@@ -606,6 +606,38 @@ describe("comment composers — upload submit gate", () => {
     expect(getSubmitButton(container)).not.toHaveAttribute("aria-busy");
   });
 
+  it("shows no chip for an upload this mount is already rendering inline", async () => {
+    const { container } = renderCommentInput();
+    activateComposer("comment-composer-shell");
+
+    const pending = startPendingUpload(container, "inline.png");
+
+    // The document already holds a placeholder node for this upload, so a chip
+    // would draw the same upload twice — and it would appear and disappear
+    // under the composer, shifting the layout on both edges.
+    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
+    expect(screen.queryByText(/Uploading inline\.png/)).toBeNull();
+
+    await act(async () => {
+      pending.resolve(uploadAttachment("att-inline", "https://cdn.example/att-inline.png"));
+    });
+  });
+
+  it("shows a chip for an upload inherited from the persisted draft", async () => {
+    // Started by a mount that is gone: its placeholder node died with that
+    // editor, so the chip is the only thing that can prove it is still running.
+    useCommentDraftStore.getState().addUpload("new:issue-1", {
+      clientUploadId: "from-a-previous-mount",
+      status: "uploading",
+      filename: "orphan.png",
+      size: 1,
+    });
+
+    renderCommentInput();
+
+    expect(await screen.findByText(/Uploading orphan\.png/)).toBeTruthy();
+  });
+
   it("blocks the Cmd+Enter path while an upload is in flight", async () => {
     const { container, onSubmit } = renderCommentInput();
     activateComposer("comment-composer-shell");

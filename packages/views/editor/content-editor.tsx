@@ -74,21 +74,22 @@ import "./styles/index.css";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Blob URLs (blob:http://…) are process-local and expire on reload. Strip them
- *  from serialised markdown so they never reach the database. */
-const BLOB_IMAGE_RE = /!\[[^\]]*\]\(blob:[^)]*\)\n?/g;
-
-function stripBlobUrls(md: string): string {
-  return md.replace(BLOB_IMAGE_RE, "");
-}
-
-/** Canonical comparison form for a markdown string: drop process-local blob
- *  URLs and trailing blank lines so both sides of a dirty check compare
- *  like-for-like. One definition for the normalization rule — a future tweak
- *  (e.g. stripping another ephemeral token) lands here instead of in the
- *  several call sites it used to be copy-pasted across. */
+/** Canonical comparison form for a markdown string: drop the blank lines a
+ *  block leaves behind at either end, so both sides of a dirty check compare
+ *  like-for-like.
+ *
+ *  This used to also strip `blob:` image lines with a regex, because an
+ *  in-flight image serialised its process-local blob URL into the body. That
+ *  is now impossible at the source: the image and fileCard `renderMarkdown`
+ *  implementations emit nothing while `attrs.uploading` is set, so a
+ *  placeholder never becomes text that has to be scrubbed back out.
+ *
+ *  Leading blank lines are trimmed too, not just trailing: a placeholder in
+ *  the FIRST block leaves its blank line at the head of the document, and a
+ *  draft that opens with an empty line is the same content as one that does
+ *  not. (The old regex left one such newline behind for the same reason.) */
 function normalizeMarkdown(md: string): string {
-  return stripBlobUrls(md).trimEnd();
+  return md.trim();
 }
 
 /** `normalizeMarkdown` applied to the live editor's serialized content. */
@@ -798,7 +799,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     useImperativeHandle(ref, () => ({
       // Intentionally NOT routed through `normalizeMarkdown` — this refactor
       // must preserve the exact current return value (no `trimEnd`).
-      getMarkdown: () => stripBlobUrls(editor?.getMarkdown() ?? ""),
+      // Deliberately NOT normalized — see the "stays untrimmed" safety net in
+      // content-editor.test.tsx. It used to be wrapped in `stripBlobUrls`;
+      // that wrapper is gone because an in-flight placeholder no longer
+      // serialises at all, which is strictly stronger than scrubbing it after
+      // the fact.
+      getMarkdown: () => editor?.getMarkdown() ?? "",
       clearContent: () => {
         editor?.commands.clearContent();
       },

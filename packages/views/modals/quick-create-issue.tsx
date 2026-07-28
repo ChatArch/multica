@@ -351,7 +351,7 @@ export function AgentCreatePanel({
   // logout, and reads `interrupted` after a reload. `gate` widens the editor
   // gate with the pool's placeholders.
   const {
-    uploads: draftUploads,
+    orphanUploads: orphanDraftUploads,
     attachments: pendingAttachments,
     handleUpload: handleUploadFile,
     removeUpload,
@@ -636,9 +636,9 @@ export function AgentCreatePanel({
           {isDragOver && <FileDropOverlay />}
         </div>
 
-        {draftUploads.some((u) => u.status !== "uploaded") && (
+        {orphanDraftUploads.length > 0 && (
           <ComposerUploadChips
-            uploads={draftUploads}
+            uploads={orphanDraftUploads}
             onRemove={removeUpload}
             className="px-5 pb-1"
           />

@@ -107,6 +107,11 @@ export const ImageExtension = Image.extend({
   },
   renderMarkdown: (node: any) => {
     const src = node.attrs?.src || "";
+    // Same rule as fileCard: an in-flight placeholder is not content. Its src
+    // is a process-local `blob:` URL that expires on reload, so emitting it
+    // would put a dead link in the persisted draft. This replaces the
+    // after-the-fact regex scrub ContentEditor used to run on every serialise.
+    if (node.attrs?.uploading === true || !src) return "";
     const alt = escapeMarkdownLabel(node.attrs?.alt || "");
     const title = node.attrs?.title;
     if (title) {

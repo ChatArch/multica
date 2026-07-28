@@ -283,6 +283,7 @@ export function ChatInput({
   // upload cannot send past it.
   const {
     uploads: draftUploads,
+    orphanUploads: orphanDraftUploads,
     attachments: draftAttachments,
     handleUpload,
     removeUpload,
@@ -648,9 +649,9 @@ export function ChatInput({
             showBubbleMenu
           />
         </div>
-        {draftUploads.some((u) => u.status !== "uploaded") && (
+        {orphanDraftUploads.length > 0 && (
           <ComposerUploadChips
-            uploads={draftUploads}
+            uploads={orphanDraftUploads}
             onRemove={removeUpload}
             className="px-3 pb-1"
           />
