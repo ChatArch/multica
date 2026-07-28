@@ -2,12 +2,14 @@
 
 import {
   flexRender,
+  type ColumnSizingState,
   type Header as TanstackHeader,
   type Row,
   type Table as TanstackTable,
 } from "@tanstack/react-table";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 // We deliberately use the lower-level shadcn primitives (TableHeader /
 // TableBody / TableRow / TableHead / TableCell) but NOT the wrapping
@@ -22,8 +24,13 @@ import {
   TableHeader,
   TableRow,
 } from "@multica/ui/components/ui/table";
-import { getCellStyle } from "@multica/ui/lib/data-table";
+import { columnSizeVar, getCellStyle } from "@multica/ui/lib/data-table";
 import { cn } from "@multica/ui/lib/utils";
+
+// Pointer travel that turns a press on the resize handle into a drag. Matches
+// the column-reorder sensor's activation distance so both gestures on the same
+// header behave alike, and keeps a plain click from committing a width.
+const RESIZE_DRAG_THRESHOLD = 4;
 
 interface DataTableProps<TData> extends React.ComponentProps<"div"> {
   table: TanstackTable<TData>;
@@ -93,19 +100,48 @@ export function DataTable<TData>({
     [columnSizing],
   );
 
-  const setColumnWidth = React.useCallback(
-    (header: TanstackHeader<TData, unknown>, width: number) => {
-      const minSize = header.column.columnDef.minSize ?? 48;
-      const maxSize =
-        header.column.columnDef.maxSize ?? Number.MAX_SAFE_INTEGER;
-      const next = Math.min(maxSize, Math.max(minSize, Math.round(width)));
-
-      table.setColumnSizing((old) => ({
-        ...old,
-        [header.column.id]: next,
-      }));
+  const clampColumnWidth = React.useCallback(
+    (columnId: string, width: number) => {
+      const columnDef = table.getColumn(columnId)?.columnDef;
+      const minSize = columnDef?.minSize ?? 48;
+      const maxSize = columnDef?.maxSize ?? Number.MAX_SAFE_INTEGER;
+      return Math.min(maxSize, Math.max(minSize, Math.round(width)));
     },
     [table],
+  );
+
+  const setColumnWidth = React.useCallback(
+    (header: TanstackHeader<TData, unknown>, width: number) => {
+      table.setColumnSizing((old) => ({
+        ...old,
+        [header.column.id]: clampColumnWidth(header.column.id, width),
+      }));
+    },
+    [clampColumnWidth, table],
+  );
+
+  // Fixed table-layout shares out whatever space is left when the configured
+  // widths add up to less than the table, so every column renders wider than
+  // it is configured. Committing one column changes that leftover and rescales
+  // all the others, which makes a drag run ahead of the pointer. Pinning every
+  // column to the width it already renders at removes the leftover, so from
+  // that point the drag maps 1:1 onto pointer movement.
+  const freezeRenderedWidths = React.useCallback(
+    (headerRow: Element | null): ColumnSizingState => {
+      const frozen: ColumnSizingState = {};
+      const cells =
+        headerRow?.querySelectorAll<HTMLElement>("th[data-column-id]") ?? [];
+      for (const cell of cells) {
+        const columnId = cell.dataset.columnId;
+        if (!columnId) continue;
+        frozen[columnId] = clampColumnWidth(
+          columnId,
+          cell.getBoundingClientRect().width,
+        );
+      }
+      return frozen;
+    },
+    [clampColumnWidth],
   );
 
   const beginColumnResize = React.useCallback(
@@ -119,36 +155,62 @@ export function DataTable<TData>({
       event.stopPropagation();
 
       const startX = event.clientX;
-      const headerCell = event.currentTarget.closest("th");
+      const handleEl = event.currentTarget;
+      const { pointerId } = event;
+      const headerCell = handleEl.closest("th");
+      // The rendered width, not column.getSize(): the drag has to continue from
+      // the edge the user grabbed, which sits wherever the stretch put it.
       const startWidth =
         headerCell?.getBoundingClientRect().width ?? header.column.getSize();
 
       setResizingColumnId(header.column.id);
-      setColumnWidth(header, startWidth);
 
-      const originalCursor = document.body.style.cursor;
-      const originalUserSelect = document.body.style.userSelect;
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
+      let frozen: ColumnSizingState | null = null;
 
       const handlePointerMove = (pointerEvent: PointerEvent) => {
-        setColumnWidth(header, startWidth + pointerEvent.clientX - startX);
+        const delta = pointerEvent.clientX - startX;
+        // Nothing is committed below the threshold, so a press on its own can
+        // no longer pin a column at the width the stretch happened to give it.
+        if (!frozen && Math.abs(delta) < RESIZE_DRAG_THRESHOLD) return;
+        // Measured once, on the frame the drag starts — every later frame
+        // reuses it, so the baseline can't drift as widths change underneath.
+        frozen ??= freezeRenderedWidths(handleEl.closest("tr"));
+
+        table.setColumnSizing((old) => ({
+          ...old,
+          ...frozen,
+          [header.column.id]: clampColumnWidth(
+            header.column.id,
+            startWidth + delta,
+          ),
+        }));
       };
 
       const stopResize = () => {
         window.removeEventListener("pointermove", handlePointerMove);
         window.removeEventListener("pointerup", stopResize);
         window.removeEventListener("pointercancel", stopResize);
-        document.body.style.cursor = originalCursor;
-        document.body.style.userSelect = originalUserSelect;
+        window.removeEventListener("blur", stopResize);
+        // Detached before releasing capture — releasing fires this same event.
+        handleEl.removeEventListener("lostpointercapture", stopResize);
+        if (handleEl.hasPointerCapture?.(pointerId)) {
+          handleEl.releasePointerCapture?.(pointerId);
+        }
         setResizingColumnId(null);
       };
 
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
+      // Releasing outside the window or switching apps mid-drag never delivers
+      // pointerup. Without these the gesture stays armed and the column keeps
+      // tracking the pointer once the user comes back.
+      window.addEventListener("blur", stopResize);
+      handleEl.addEventListener("lostpointercapture", stopResize);
+      // Optional call: jsdom has no pointer capture.
+      handleEl.setPointerCapture?.(pointerId);
     },
-    [setColumnWidth],
+    [clampColumnWidth, freezeRenderedWidths, table],
   );
 
   const handleResizeKeyDown = React.useCallback(
@@ -174,7 +236,35 @@ export function DataTable<TData>({
     [hasExplicitSize, setColumnWidth],
   );
 
+  // Every column's width, published once on the <table>. Cells reference these
+  // instead of each calling column.getSize(), so a resize costs one style
+  // update on one element rather than one per cell.
+  const leafColumns = table.getVisibleLeafColumns();
+  const columnSizeVars = React.useMemo(() => {
+    const vars: Record<string, string> = {};
+    for (const column of leafColumns) {
+      vars[columnSizeVar(column.id)] = `${column.getSize()}px`;
+    }
+    return vars;
+  }, [columnSizing, leafColumns]);
+
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Drives the pinned columns' trailing shadow. It only means something once
+  // content is passing beneath them, so it stays off at rest. The state is a
+  // boolean rather than the offset: it flips twice per scroll excursion
+  // instead of once per scroll event, and React bails out on the repeats.
+  const [isScrolledHorizontally, setIsScrolledHorizontally] =
+    React.useState(false);
+  React.useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const sync = () => setIsScrolledHorizontally(element.scrollLeft > 0);
+    sync();
+    element.addEventListener("scroll", sync, { passive: true });
+    return () => element.removeEventListener("scroll", sync);
+  }, []);
+
   const rows = table.getRowModel().rows;
   const getVirtualRowKey = React.useCallback(
     (index: number) => rows[index]?.id ?? index,
@@ -195,6 +285,199 @@ export function DataTable<TData>({
     ? rowVirtualizer.getTotalSize() - lastVirtualItem.end
     : 0;
 
+  const bodyProps: DataTableBodyProps<TData> = {
+    table,
+    rows,
+    emptyMessage,
+    onRowClick,
+    renderRow,
+    hasExplicitSize,
+    isScrolledHorizontally,
+    virtualizeRows,
+    virtualItems,
+    virtualPaddingTop,
+    virtualPaddingBottom,
+  };
+
+  return (
+    <div
+      className={cn("flex min-h-0 flex-1 flex-col", className)}
+      {...props}
+    >
+      <div
+        ref={scrollRef}
+        className="flex min-h-0 flex-1 flex-col overflow-auto bg-background"
+      >
+        <table
+          className="w-full table-fixed caption-bottom text-sm"
+          style={{
+            minWidth: `${table.getTotalSize()}px`,
+            ...columnSizeVars,
+          }}
+        >
+          <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur">
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id} className="hover:bg-transparent">
+                {headerGroup.headers.map((header) => {
+                  const isPinned = header.column.getIsPinned();
+                  const columnHasExplicitSize = hasExplicitSize(
+                    header.column.id,
+                  );
+                  const headerLabel =
+                    typeof header.column.columnDef.header === "string"
+                      ? header.column.columnDef.header
+                      : header.column.id;
+                  return (
+                    <TableHead
+                      key={header.id}
+                      colSpan={header.colSpan}
+                      // Lets a drag measure every column by id instead of
+                      // pairing <th> elements with columns positionally.
+                      data-column-id={header.column.id}
+                      // Header typography overrides for a "spreadsheet
+                      // header" look: smaller, all-caps, wider letter
+                      // spacing, muted colour. shadcn's <TableHead>
+                      // defaults to text-sm + text-foreground +
+                      // font-medium, which reads as too heavy here.
+                      // h-8 (32px) tightens the strip vs the default
+                      // h-10 (40px).
+                      // overflow-hidden caps any cell content that
+                      // exceeds column.size. Tooltip / dropdown /
+                      // hover-card bodies are portaled, so they are
+                      // unaffected.
+                      // Pinned cells must be opaque: translucent backgrounds
+                      // reveal horizontally scrolled columns underneath. Mix
+                      // muted with background to preserve the same visual tone
+                      // as muted/30 without introducing alpha.
+                      className={cn(
+                        "relative h-8 overflow-hidden border-r px-4 py-2 text-xs uppercase tracking-wider text-muted-foreground last:border-r-0",
+                        isPinned &&
+                          "transition-shadow bg-[color-mix(in_oklab,var(--muted)_30%,var(--background))]",
+                      )}
+                      style={getCellStyle(header.column, {
+                        showPinnedEdge: isScrolledHorizontally,
+                        hasExplicitSize: columnHasExplicitSize,
+                      })}
+                    >
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )}
+                      {!header.isPlaceholder &&
+                        header.column.getCanResize() && (
+                          <div
+                            role="separator"
+                            aria-label={`Resize ${headerLabel} column`}
+                            aria-orientation="vertical"
+                            tabIndex={0}
+                            className={cn(
+                              // The line sits exactly on the column's own
+                              // border (hence -right-px, since `right-0` would
+                              // land just inside it and read as a double rule)
+                              // and recolours it. Three states have to stay
+                              // apart on one hairline: at rest it is the faint
+                              // grid rule, hovered it goes translucent brand,
+                              // and for the whole drag it holds at full brand —
+                              // brightening rather than fading, so the edge
+                              // being moved stays the most definite thing on
+                              // screen even once the pointer leaves the handle.
+                              // right-0, never a negative offset: the <th> is
+                              // overflow-hidden and clips at its padding edge,
+                              // so anything nudged out to sit on the border
+                              // itself is simply not painted. The bar lands
+                              // just inside the rule instead, and at 2px it
+                              // stays legible next to it.
+                              "absolute top-0 right-0 h-full w-2 cursor-col-resize touch-none select-none outline-none",
+                              "after:absolute after:inset-y-0 after:right-0 after:w-0.5 after:bg-transparent after:transition-colors after:duration-100",
+                              "hover:after:bg-brand/60 focus-visible:after:bg-brand/60",
+                              resizingColumnId === header.column.id &&
+                                "after:bg-brand after:transition-none",
+                            )}
+                            onPointerDown={(event) =>
+                              beginColumnResize(header, event)
+                            }
+                            onDoubleClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              header.column.resetSize();
+                            }}
+                            onKeyDown={(event) =>
+                              handleResizeKeyDown(header, event)
+                            }
+                          />
+                        )}
+                    </TableHead>
+                  );
+                })}
+              </TableRow>
+            ))}
+          </TableHeader>
+          {/* Widths reach the body through the custom properties above, so
+            * while a column is being dragged the body has nothing to re-render:
+            * swap in the memoized copy and let the browser do the resizing. */}
+          {resizingColumnId !== null ? (
+            <MemoizedDataTableBody {...bodyProps} />
+          ) : (
+            <DataTableBody {...bodyProps} />
+          )}
+          {footer}
+        </table>
+      </div>
+      {/* A viewport-wide layer that only exists for the duration of a column
+        * drag. It owns the cursor so descendants that declare their own
+        * (rows are `cursor-pointer`, cells hold text) cannot override it, and
+        * it keeps the text underneath unselectable. Setting these on
+        * document.body instead loses both fights, since a descendant's own
+        * cursor wins over an inherited one. Pointer events still reach the
+        * gesture: it listens on `window`, which the layer's events bubble to.
+        * Portaled to body so an ancestor with a transform / filter / contain
+        * cannot turn `fixed` into "relative to that ancestor". */}
+      {resizingColumnId !== null &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            aria-hidden
+            data-slot="data-table-resize-overlay"
+            className="fixed inset-0 z-50 cursor-col-resize touch-none select-none"
+          />,
+          document.body,
+        )}
+      {actionBar &&
+        table.getFilteredSelectedRowModel().rows.length > 0 &&
+        actionBar}
+    </div>
+  );
+}
+
+interface DataTableBodyProps<TData> {
+  table: TanstackTable<TData>;
+  rows: Row<TData>[];
+  emptyMessage: React.ReactNode;
+  onRowClick?: (row: Row<TData>) => void;
+  renderRow?: (row: Row<TData>) => React.ReactNode;
+  hasExplicitSize: (columnId: string) => boolean;
+  isScrolledHorizontally: boolean;
+  virtualizeRows: boolean;
+  virtualItems: VirtualItem[];
+  virtualPaddingTop: number;
+  virtualPaddingBottom: number;
+}
+
+function DataTableBody<TData>({
+  table,
+  rows,
+  emptyMessage,
+  onRowClick,
+  renderRow,
+  hasExplicitSize,
+  isScrolledHorizontally,
+  virtualizeRows,
+  virtualItems,
+  virtualPaddingTop,
+  virtualPaddingBottom,
+}: DataTableBodyProps<TData>) {
   const renderDataRow = (row: Row<TData>) => {
     const customRow = renderRow?.(row);
     if (customRow != null) {
@@ -222,12 +505,12 @@ export function DataTable<TData>({
               // Pinned cells need an opaque bg + group-hover so they cover
               // content scrolling beneath them and follow row hover state.
               className={cn(
-                "overflow-hidden px-4 py-2",
+                "overflow-hidden border-r px-4 py-2 last:border-r-0",
                 isPinned &&
-                  "bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]",
+                  "transition-shadow bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]",
               )}
               style={getCellStyle(cell.column, {
-                withBorder: true,
+                showPinnedEdge: isScrolledHorizontally,
                 hasExplicitSize: columnHasExplicitSize,
               })}
             >
@@ -255,129 +538,40 @@ export function DataTable<TData>({
     ) : null;
 
   return (
-    <div
-      className={cn("flex min-h-0 flex-1 flex-col", className)}
-      {...props}
-    >
-      <div
-        ref={scrollRef}
-        className="flex min-h-0 flex-1 flex-col overflow-auto bg-background"
-      >
-        <table
-          className="w-full table-fixed caption-bottom text-sm"
-          style={{ minWidth: `${table.getTotalSize()}px` }}
-        >
-          <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="hover:bg-transparent">
-                {headerGroup.headers.map((header) => {
-                  const isPinned = header.column.getIsPinned();
-                  const columnHasExplicitSize = hasExplicitSize(
-                    header.column.id,
-                  );
-                  const headerLabel =
-                    typeof header.column.columnDef.header === "string"
-                      ? header.column.columnDef.header
-                      : header.column.id;
-                  return (
-                    <TableHead
-                      key={header.id}
-                      colSpan={header.colSpan}
-                      // Header typography overrides for a "spreadsheet
-                      // header" look: smaller, all-caps, wider letter
-                      // spacing, muted colour. shadcn's <TableHead>
-                      // defaults to text-sm + text-foreground +
-                      // font-medium, which reads as too heavy here.
-                      // h-8 (32px) tightens the strip vs the default
-                      // h-10 (40px).
-                      // overflow-hidden caps any cell content that
-                      // exceeds column.size. Tooltip / dropdown /
-                      // hover-card bodies are portaled, so they are
-                      // unaffected.
-                      // Pinned cells must be opaque: translucent backgrounds
-                      // reveal horizontally scrolled columns underneath. Mix
-                      // muted with background to preserve the same visual tone
-                      // as muted/30 without introducing alpha.
-                      className={cn(
-                        "relative h-8 overflow-hidden px-4 py-2 text-xs uppercase tracking-wider text-muted-foreground",
-                        isPinned &&
-                          "bg-[color-mix(in_oklab,var(--muted)_30%,var(--background))]",
-                      )}
-                      style={getCellStyle(header.column, {
-                        withBorder: true,
-                        hasExplicitSize: columnHasExplicitSize,
-                      })}
-                    >
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(
-                            header.column.columnDef.header,
-                            header.getContext(),
-                          )}
-                      {!header.isPlaceholder &&
-                        header.column.getCanResize() && (
-                          <div
-                            role="separator"
-                            aria-label={`Resize ${headerLabel} column`}
-                            aria-orientation="vertical"
-                            tabIndex={0}
-                            className={cn(
-                              "absolute top-0 right-0 h-full w-2 cursor-col-resize touch-none select-none outline-none",
-                              "after:absolute after:top-1/2 after:right-0 after:h-4 after:w-px after:-translate-y-1/2 after:bg-border after:opacity-0 after:transition-opacity",
-                              "hover:after:opacity-100 focus-visible:after:opacity-100",
-                              resizingColumnId === header.column.id &&
-                                "after:bg-primary after:opacity-100",
-                            )}
-                            onPointerDown={(event) =>
-                              beginColumnResize(header, event)
-                            }
-                            onDoubleClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              header.column.resetSize();
-                            }}
-                            onKeyDown={(event) =>
-                              handleResizeKeyDown(header, event)
-                            }
-                          />
-                        )}
-                    </TableHead>
-                  );
-                })}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {rows.length ? (
-              virtualizeRows ? (
-                <>
-                  {renderVirtualSpacer("top", virtualPaddingTop)}
-                  {virtualItems.map((virtualItem) => {
-                    const row = rows[virtualItem.index];
-                    return row ? renderDataRow(row) : null;
-                  })}
-                  {renderVirtualSpacer("bottom", virtualPaddingBottom)}
-                </>
-              ) : (
-                rows.map(renderDataRow)
-              )
-            ) : (
-              <TableRow>
-                <TableCell
-                  colSpan={table.getAllColumns().length}
-                  className="h-24 text-center text-muted-foreground"
-                >
-                  {emptyMessage}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-          {footer}
-        </table>
-      </div>
-      {actionBar &&
-        table.getFilteredSelectedRowModel().rows.length > 0 &&
-        actionBar}
-    </div>
+    <TableBody>
+      {rows.length ? (
+        virtualizeRows ? (
+          <>
+            {renderVirtualSpacer("top", virtualPaddingTop)}
+            {virtualItems.map((virtualItem) => {
+              const row = rows[virtualItem.index];
+              return row ? renderDataRow(row) : null;
+            })}
+            {renderVirtualSpacer("bottom", virtualPaddingBottom)}
+          </>
+        ) : (
+          rows.map(renderDataRow)
+        )
+      ) : (
+        <TableRow>
+          <TableCell
+            colSpan={table.getAllColumns().length}
+            className="h-24 text-center text-muted-foreground"
+          >
+            {emptyMessage}
+          </TableCell>
+        </TableRow>
+      )}
+    </TableBody>
   );
 }
+
+// Rendered in place of DataTableBody for the duration of a column drag. Only
+// the row data is compared: during a drag the widths travel as custom
+// properties and nothing else in the body can change, so skipping the render
+// entirely is what keeps hundreds of cells off the main thread per frame.
+// React.memo erases the generic, so the cast restores the original signature.
+const MemoizedDataTableBody = React.memo(
+  DataTableBody,
+  (prev, next) => prev.table.options.data === next.table.options.data,
+) as typeof DataTableBody;
