@@ -271,7 +271,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           version: "0.4.13",
           date: "2026-07-28",
-          title: "긴 Issue 재개 시 캐시 쓰기 95% 감소, 오류 분석까지",
+          title: "Claude Code 재개 시 캐시를 다시 만들지 않고, 오류 분석까지",
           changes: [],
           features: [
             "사용량 페이지에서 오류 추이와 실패 유형, 확인이 필요한 에이전트를 볼 수 있습니다.",
@@ -280,7 +280,6 @@ export function createKoDict(allowSignup: boolean): LandingDict {
             "상위 Issue에 하위 Issue에서 작업 중인 에이전트 수가 표시됩니다.",
           ],
           improvements: [
-            "긴 Issue 작업을 이어갈 때 더 빠르게 재개하고, 반복되는 캐시 쓰기가 약 95% 줄었습니다.",
             "입력 화면을 닫거나 다시 열고 전환해도 초안과 업로드가 유지됩니다.",
             "긴 텍스트를 붙여 넣으면 자동으로 텍스트 첨부 파일이 됩니다.",
             "업로드는 한 번만 표시되고 완료된 뒤 초안에 반영됩니다.",
@@ -290,6 +289,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
             "전송 후 커서가 각 입력 화면에 맞는 위치로 이동합니다.",
           ],
           fixes: [
+            "Claude Code로 긴 Issue 작업을 이어갈 때 반복되는 캐시 쓰기가 약 95% 줄었습니다.",
             "Issue를 삭제하면 열기 전에 보던 목록으로 돌아갑니다.",
             "스킬 다운로드가 멈추면 자동으로 재시도하고 이유를 알려 줍니다.",
             "Slack과 Lark에는 최종 답변만 전달되며 Qoder 에이전트도 중간 설명을 섞지 않습니다.",

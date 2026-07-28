@@ -272,7 +272,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           version: "0.4.13",
           date: "2026-07-28",
-          title: "長い Issue の再開でキャッシュ書き込み 95% 減、エラー分析も",
+          title: "Claude Code の再開でキャッシュを作り直さなくなり、エラー分析も",
           changes: [],
           features: [
             "使用量ページでエラーの推移、失敗の種類、注意が必要なエージェントを確認できるようになりました。",
@@ -281,7 +281,6 @@ export function createJaDict(allowSignup: boolean): LandingDict {
             "親 Issue に、子 Issue で作業中のエージェント数が表示されるようになりました。",
           ],
           improvements: [
-            "長い Issue の続きを処理するとき、より速く再開し、繰り返しのキャッシュ書き込みが約 95% 減りました。",
             "入力画面を閉じたり開き直したり切り替えたりしても、下書きとアップロードが保持されるようになりました。",
             "長いテキストを貼り付けると、自動でテキスト添付になります。",
             "アップロードは一度だけ表示され、完了後に下書きへ反映されます。",
@@ -291,6 +290,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
             "送信後のカーソルが、それぞれの入力画面に合った位置へ移動するようになりました。",
           ],
           fixes: [
+            "Claude Code で長い Issue の続きを処理するとき、繰り返しのキャッシュ書き込みが約 95% 減りました。",
             "Issue を削除すると、開く前に見ていた一覧へ戻るようになりました。",
             "スキルのダウンロードが止まったとき、自動で再試行し理由を表示するようになりました。",
             "Slack と Lark には最終回答だけが届き、Qoder エージェントも途中経過を混ぜなくなりました。",
