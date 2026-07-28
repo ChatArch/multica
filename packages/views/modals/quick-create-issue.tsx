@@ -77,7 +77,6 @@ import {
   useComposerSubmit,
 } from "../editor";
 import { useIssueCreateUploads } from "./use-issue-create-uploads";
-import { ComposerUploadChips } from "../issues/components/composer-upload-chips";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { useT } from "../i18n";
 import { matchesPinyin } from "../editor/extensions/pinyin-match";
@@ -351,10 +350,8 @@ export function AgentCreatePanel({
   // logout, and reads `interrupted` after a reload. `gate` widens the editor
   // gate with the pool's placeholders.
   const {
-    orphanUploads: orphanDraftUploads,
     attachments: pendingAttachments,
     handleUpload: handleUploadFile,
-    removeUpload,
     gate,
   } = useIssueCreateUploads("agent", uploadGate, editorRef);
   const { isDragOver, dropZoneProps } = useFileDropZone({
@@ -636,13 +633,6 @@ export function AgentCreatePanel({
           {isDragOver && <FileDropOverlay />}
         </div>
 
-        {orphanDraftUploads.length > 0 && (
-          <ComposerUploadChips
-            uploads={orphanDraftUploads}
-            onRemove={removeUpload}
-            className="px-5 pb-1"
-          />
-        )}
 
         {error && (
           <div className="px-5 pb-2 text-xs text-destructive">{error}</div>

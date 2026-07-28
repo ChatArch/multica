@@ -120,8 +120,13 @@ export function normalizeStoredUploads(raw: unknown): DraftUpload[] {
   for (const item of raw) {
     if (isDraftUploadShape(item)) {
       if (item.status === "uploading") {
-        const { clientUploadId, filename, size, contentType } = item;
-        out.push({ clientUploadId, status: "interrupted", filename, size, contentType });
+        // Dropped, not coerced to `interrupted`. The bytes were never
+        // persisted, so this upload can neither resume nor be retried — and
+        // the document has no node for it either, because a placeholder is
+        // never serialised. Keeping a record no surface can act on only kept
+        // an otherwise-empty draft alive for the full TTL. The absence of the
+        // attachment in the body is what tells the user to attach it again.
+        continue;
       } else if (item.status === "uploaded") {
         // Trust the persisted attachment only if it still looks like one.
         if (looksLikeAttachment((item as UploadedDraftUpload).attachment)) {

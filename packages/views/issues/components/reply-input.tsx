@@ -15,7 +15,6 @@ import { useT } from "../../i18n";
 import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
 import { useCommentUploads } from "./use-comment-uploads";
-import { ComposerUploadChips } from "./composer-upload-chips";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,7 +74,7 @@ function ReplyInput({
   // back to session-local state inside the hook.
   // `gate` widens the editor gate with coordinator-owned placeholders — see
   // CommentInput.
-  const { uploads, orphanUploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
+  const { uploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
     useCommentUploads(draftKey, { issueId }, uploadGate, editorRef);
 
   // Readonly-first: static shell until intent; an unsent draft mounts the
@@ -251,9 +250,6 @@ function ReplyInput({
             slashCommandMode="command"
           />
         </div>
-        )}
-        {orphanUploads.length > 0 && (
-          <ComposerUploadChips uploads={orphanUploads} onRemove={removeUpload} className="mt-1" />
         )}
         {/* Static shell — clones the empty single-line reply box (see
             CommentInput for the pattern). */}

@@ -28,6 +28,7 @@ const editorDefaultValues = vi.hoisted(() => ({
 // posted comment instead), a thread reply keeps the caret for the next reply.
 const focusCalls = vi.hoisted(() => ({ focused: 0, blurred: 0 }));
 const insertMarkdownSpy = vi.hoisted(() => vi.fn());
+const insertPlaceholderSpy = vi.hoisted(() => vi.fn());
 const insertMarkdownBehavior = vi.hoisted(() => ({ succeed: true }));
 // Lets a test drop the editor's uploading placeholder out of the document
 // (Cmd+Z after a paste) without settling the upload behind it.
@@ -138,6 +139,14 @@ vi.mock("../../editor", async () => ({
         }
       },
       hasActiveUploads: () => inFlightRef.current > 0,
+      // Placeholder rebuild contract: the real handle draws a card for an
+      // upload the document is not showing and reports whether it landed.
+      // Mocks track ids only — no document to draw into.
+      insertUploadPlaceholder: (upload: unknown) => {
+        insertPlaceholderSpy(upload);
+        return true;
+      },
+      settleUploadPlaceholder: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         if (destroyedRef.current || !insertMarkdownBehavior.succeed) return false;
@@ -224,6 +233,7 @@ beforeEach(() => {
   uploadWithToast.mockReset();
   apiUploadFile.mockReset();
   insertMarkdownSpy.mockReset();
+  insertPlaceholderSpy.mockReset();
   insertMarkdownBehavior.succeed = true;
   localStorage.clear();
   useCommentComposerStore.setState({ sticky: true });
@@ -612,45 +622,41 @@ describe("comment composers — upload submit gate", () => {
     expect(getSubmitButton(container)).not.toHaveAttribute("aria-busy");
   });
 
-  it("shows no chip for an upload this mount is already rendering inline", async () => {
-    const { container } = renderCommentInput();
-    activateComposer("comment-composer-shell");
 
-    const pending = startPendingUpload(container, "inline.png");
 
-    // The document already holds a placeholder node for this upload, so a chip
-    // would draw the same upload twice — and it would appear and disappear
-    // under the composer, shifting the layout on both edges.
-    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
-    expect(screen.queryByText(/Uploading inline\.png/)).toBeNull();
-
-    await act(async () => {
-      pending.resolve(uploadAttachment("att-inline", "https://cdn.example/att-inline.png"));
+  it("does not redraw a placeholder the user deleted mid-upload", async () => {
+    // MUL-5181's rule: a placeholder the user removed stays removed. The
+    // rebuild runs once per id per mount, so the next store write cannot undo
+    // that decision — the send button is what still says the upload is live.
+    useCommentDraftStore.getState().addUpload("new:issue-1", {
+      clientUploadId: "u-deleted",
+      status: "uploading",
+      filename: "gone.png",
+      size: 1,
     });
-  });
+    renderCommentInput();
+    await screen.findByTestId("editor");
+    await waitFor(() => expect(insertPlaceholderSpy).toHaveBeenCalledTimes(1));
 
-  it("shows a chip once the inline placeholder leaves the document mid-upload", async () => {
-    // Cmd+Z right after a paste deletes the placeholder node while the upload
-    // keeps running — and `gate.isBlocked` keeps blocking send on it. Without
-    // a chip the user faces a dead send button and nothing on screen saying
-    // why. The editor's own "am I showing one" signal is what catches this.
-    const { container } = renderCommentInput();
-    activateComposer("comment-composer-shell");
-
-    const pending = startPendingUpload(container, "undone.png");
-    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
-    expect(screen.queryByText(/Uploading undone\.png/)).toBeNull();
-
-    // The document no longer holds an uploading node.
+    // A second upload changes `uploads`, which re-runs the rebuild effect —
+    // the moment a naive implementation would redraw the first one.
     act(() => {
-      editorUploadSignal.notify?.(false);
+      useCommentDraftStore.getState().addUpload("new:issue-1", {
+        clientUploadId: "u-second",
+        status: "uploading",
+        filename: "other.png",
+        size: 1,
+      });
     });
 
-    expect(await screen.findByText(/Uploading undone\.png/)).toBeTruthy();
-
-    await act(async () => {
-      pending.resolve(uploadAttachment("att-undone", "https://cdn.example/att-undone.png"));
-    });
+    await waitFor(() =>
+      expect(
+        insertPlaceholderSpy.mock.calls.some(([u]) => u.uploadId === "u-second"),
+      ).toBe(true),
+    );
+    expect(
+      insertPlaceholderSpy.mock.calls.filter(([u]) => u.uploadId === "u-deleted"),
+    ).toHaveLength(1);
   });
 
   it("leaves nothing behind when an upload fails", async () => {
@@ -676,9 +682,11 @@ describe("comment composers — upload submit gate", () => {
     expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBeFalsy();
   });
 
-  it("shows a chip for an upload inherited from the persisted draft", async () => {
+  it("rebuilds a placeholder for an upload inherited from the persisted draft", async () => {
     // Started by a mount that is gone: its placeholder node died with that
-    // editor, so the chip is the only thing that can prove it is still running.
+    // editor, and placeholders are never serialised, so the reopened composer
+    // has the record but no node. It draws one again — otherwise the composer
+    // looks idle while `gate` quietly blocks the send.
     useCommentDraftStore.getState().addUpload("new:issue-1", {
       clientUploadId: "from-a-previous-mount",
       status: "uploading",
@@ -687,8 +695,13 @@ describe("comment composers — upload submit gate", () => {
     });
 
     renderCommentInput();
+    await screen.findByTestId("editor");
 
-    expect(await screen.findByText(/Uploading orphan\.png/)).toBeTruthy();
+    await waitFor(() =>
+      expect(insertPlaceholderSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ uploadId: "from-a-previous-mount", filename: "orphan.png" }),
+      ),
+    );
   });
 
   it("blocks the Cmd+Enter path while an upload is in flight", async () => {

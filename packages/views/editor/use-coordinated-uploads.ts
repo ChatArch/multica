@@ -31,6 +31,7 @@
 
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -138,6 +139,13 @@ function deliverFinishedUpload(
 
   const md = attachmentMarkdown(attachment);
   const live = liveEditors.get(binding.registryKey);
+  // A composer showing this target rebuilt the placeholder on mount, so the
+  // finished attachment REPLACES it where the user last saw it instead of
+  // being appended a second time at the end.
+  if (live?.current?.settleUploadPlaceholder(clientUploadId, toUploadResult(attachment)) === true) {
+    binding.appendToBody(md);
+    return;
+  }
   if (live?.current?.insertMarkdownAtEnd(md) === true) {
     binding.appendToBody(md);
     return;
@@ -194,33 +202,6 @@ function deliverPastedTextBack(
 export interface CoordinatedUploads {
   /** Every upload for this composer, placeholders included. */
   uploads: DraftUpload[];
-  /**
-   * The subset of `uploads` that has no inline representation in the document
-   * — wire these to `<ComposerUploadChips>`, never `uploads`.
-   *
-   * The document shows exactly one thing: a live placeholder node for an
-   * upload that this mount started (`uploadAndInsertFile` is the uploader's
-   * only caller) and that is still running. A chip for one of those would be
-   * the same upload drawn twice, in two visual languages, shifting layout as
-   * it appears and vanishes.
-   *
-   * Three kinds fall through to the chips, and all are things the document
-   * genuinely cannot show:
-   *  - inherited from the persisted draft — it outlived the mount that started
-   *    it, and its placeholder node died with that mount;
-   *  - started here but no longer in the document — the user deleted the
-   *    placeholder (Cmd+Z right after a paste is the easy way). The upload
-   *    keeps running and `gate.isBlocked` keeps blocking send on it, so
-   *    hiding it would leave a dead send button with nothing explaining it;
-   *  - `interrupted` — a reload killed an upload a session ago, and the user
-   *    has to be told the file never made it.
-   *
-   * `failed` is deliberately NOT in that list: this hook removes a failed
-   * upload outright rather than marking it (see the settle handler). The
-   * branch below still covers the status because an older client may have
-   * persisted one.
-   */
-  orphanUploads: DraftUpload[];
   /** Completed attachment rows — the editor preview set; submit binds the
    *  subset whose link the body still references. */
   attachments: Attachment[];
@@ -308,30 +289,6 @@ export function useCoordinatedUploads(
   }, [registryKey, editorRef]);
 
   const uploads = binding ? boundUploads : localUploads;
-  // See `orphanUploads` on CoordinatedUploads. A ref rather than state — it is
-  // written during handleUpload, and every read is paired with a `uploads`
-  // change that re-runs the memo below anyway.
-  const inlineUploadIdsRef = useRef<Set<string>>(new Set());
-  const orphanUploads = useMemo(
-    () =>
-      uploads.filter((u) => {
-        // A finished upload is rendered by the editor / AttachmentList, never
-        // as a chip. Excluded here so a caller can gate the strip on
-        // `orphanUploads.length` and get the answer it expects.
-        if (u.status === "uploaded") return false;
-        if (u.status === "uploading") {
-          // `editorGate.uploading` is the document's own answer to "am I
-          // showing a placeholder right now" — it is the only signal that
-          // survives the user deleting the node out from under a running
-          // upload. Started-here is necessary but not sufficient.
-          return !editorGate.uploading || !inlineUploadIdsRef.current.has(u.clientUploadId);
-        }
-        // interrupted (and any `failed` left by an older client): no node
-        // exists for it, so the chip is all there is.
-        return true;
-      }),
-    [uploads, editorGate.uploading],
-  );
   const attachments = useMemo(() => {
     const done: Attachment[] = [];
     for (const u of uploads) {
@@ -340,17 +297,70 @@ export function useCoordinatedUploads(
     return done.length === 0 ? EMPTY_ATTACHMENTS : done;
   }, [uploads]);
 
+  // Rebuild placeholders for uploads this document is not showing.
+  //
+  // An upload outlives the mount that started it, but its placeholder node
+  // does not — placeholders are never serialised into the draft body, so a
+  // reopened composer starts with no trace of one that is still running. The
+  // draft still holds the record, which is enough to draw it again, and the
+  // settle then replaces it in place (see deliverFinishedUpload). Without this
+  // the composer looks idle while `gate` quietly blocks the send.
+  //
+  // ONCE per id per mount, tracked here rather than by scanning the document:
+  // a user who deletes the placeholder mid-upload means it, and MUL-5181's
+  // rule that a deleted placeholder stays deleted would be undone by the next
+  // store write re-drawing it.
+  //
+  // Retried while it cannot land, because the imperative handle exists from
+  // the first commit while the Tiptap instance arrives a passive effect later
+  // — the same window deliverFinishedUpload retries through.
+  const rebuiltUploadIdsRef = useRef<Set<string>>(new Set());
+  // Chat pins its document to the draft an in-flight upload started while the
+  // user browses another session, so `uploads` (the SELECTED draft) can name a
+  // different target than the document holds. Drawing then would put one
+  // draft's placeholder into another draft's document. The registry key is
+  // already the signal for exactly this divergence.
+  const editorHoldsThisTarget = !binding || registryKey === binding.registryKey;
+  useEffect(() => {
+    if (!editorHoldsThisTarget) return;
+    const pending = uploads.filter(
+      (u) => u.status === "uploading" && !rebuiltUploadIdsRef.current.has(u.clientUploadId),
+    );
+    if (pending.length === 0) return;
+    let cancelled = false;
+    let tries = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      const missing = pending.filter((u) => {
+        const landed = editorRef.current?.insertUploadPlaceholder({
+          uploadId: u.clientUploadId,
+          filename: u.filename,
+          size: u.size,
+        });
+        if (landed === true) rebuiltUploadIdsRef.current.add(u.clientUploadId);
+        return landed !== true;
+      });
+      if (missing.length === 0) return;
+      if (++tries >= DELIVER_MAX_TRIES) return;
+      setTimeout(attempt, DELIVER_RETRY_MS);
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+    };
+  }, [uploads, editorRef, editorHoldsThisTarget]);
+
   const issueId = ctx.issueId;
   const commentId = ctx.commentId;
   const chatSessionId = ctx.chatSessionId;
 
   const handleUpload = useCallback(
-    (file: File): Promise<UploadResult | null> => {
-      const clientUploadId = createSafeId();
-      // Recorded BEFORE the placeholder reaches the store, so the very first
-      // render that sees the new upload already knows the document is showing
-      // it and no chip ever flashes underneath.
-      inlineUploadIdsRef.current.add(clientUploadId);
+    (file: File, uploadId?: string): Promise<UploadResult | null> => {
+      // Adopt the editor's id rather than minting a second one: the document
+      // node and this draft record are the same upload, and a settle that
+      // reaches a mount which did not start it can only find the node by id.
+      // The fallback covers a caller with no editor placeholder to match.
+      const clientUploadId = uploadId ?? createSafeId();
       // Snapshot the target NOW: settle handlers must keep addressing the
       // draft the file landed in, no matter what is selected when they fire.
       const target = binding ? (resolveUploadTargetRef.current?.() ?? binding) : undefined;
@@ -490,5 +500,5 @@ export function useCoordinatedUploads(
       hasUploadingDraft(binding ? binding.getUploads() : localUploadsRef.current),
   };
 
-  return { uploads, orphanUploads, attachments, handleUpload, removeUpload, gate };
+  return { uploads, attachments, handleUpload, removeUpload, gate };
 }

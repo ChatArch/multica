@@ -194,6 +194,11 @@ vi.mock("../../editor", async () => ({
       blur: () => {},
       // Read by the submit-time upload gate; no uploads are exercised here.
       hasActiveUploads: () => false,
+      // Placeholder rebuild contract: the real handle draws a card for an
+      // upload the document is not showing and reports whether it landed.
+      // Mocks track ids only — no document to draw into.
+      insertUploadPlaceholder: () => true,
+      settleUploadPlaceholder: () => false,
       uploadFile: () => {},
     }));
     return (

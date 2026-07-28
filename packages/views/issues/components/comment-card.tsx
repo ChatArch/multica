@@ -32,7 +32,6 @@ import { useTimeAgo } from "../../i18n";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { useCommentUploads } from "./use-comment-uploads";
-import { ComposerUploadChips } from "./composer-upload-chips";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { api, dispatchReasonCode } from "@multica/core/api";
 import { ReplyInput } from "./reply-input";
@@ -340,7 +339,7 @@ function useEditAttachmentState(
   const draftKey = `edit:${issueId}:${entry.id}` as const;
   // `gate` widens the editor gate with coordinator-owned placeholders — see
   // CommentInput.
-  const { uploads, orphanUploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
+  const { uploads, attachments: pendingAttachments, handleUpload, removeUpload, gate } =
     useCommentUploads(draftKey, { issueId }, uploadGate, editorRef);
   const [retainedStandaloneIds, setRetainedStandaloneIds] = useState<Set<string> | null>(null);
   const triggerPreview = useCommentTriggerPreview({
@@ -497,7 +496,6 @@ function useEditAttachmentState(
     editorAttachments,
     handleUpload,
     uploads,
-    orphanUploads,
     removeUpload,
     isDragOver,
     dropZoneProps,
@@ -694,9 +692,6 @@ function CommentRow({
                 })
               }
             />
-          )}
-          {edit.orphanUploads.length > 0 && (
-            <ComposerUploadChips uploads={edit.orphanUploads} onRemove={edit.removeUpload} className="mt-2 max-w-full" />
           )}
           <div className="flex items-center justify-between gap-2 mt-2">
             <div className="min-w-0 flex-1">
@@ -1010,9 +1005,6 @@ function CommentCardImpl({
                         }
                         />
                       )}
-                    {edit.orphanUploads.length > 0 && (
-                      <ComposerUploadChips uploads={edit.orphanUploads} onRemove={edit.removeUpload} className="max-w-full" />
-                    )}
                     <CommentTriggerChips
                       agents={edit.triggerPreview.agents}
                       blocked={edit.triggerPreview.blocked}

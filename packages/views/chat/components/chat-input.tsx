@@ -17,7 +17,6 @@ import {
   useCoordinatedUploads,
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
-import { ComposerUploadChips } from "../../issues/components/composer-upload-chips";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { ChatAddMenu } from "./chat-add-menu";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
@@ -283,10 +282,8 @@ export function ChatInput({
   // upload cannot send past it.
   const {
     uploads: draftUploads,
-    orphanUploads: orphanDraftUploads,
     attachments: draftAttachments,
     handleUpload,
-    removeUpload,
     gate,
   } = useCoordinatedUploads(uploadBinding, storeUploads, {}, uploadGate, editorRef, {
     resolveUploadTarget: () => makeUploadBinding(editorDraftKeyRef.current),
@@ -649,13 +646,6 @@ export function ChatInput({
             showBubbleMenu
           />
         </div>
-        {orphanDraftUploads.length > 0 && (
-          <ComposerUploadChips
-            uploads={orphanDraftUploads}
-            onRemove={removeUpload}
-            className="px-3 pb-1"
-          />
-        )}
         {(uploadEnabled || projectSelectionEnabled || leftAdornment) && (
           <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
             {(uploadEnabled || projectSelectionEnabled) && (

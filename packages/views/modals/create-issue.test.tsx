@@ -304,6 +304,11 @@ vi.mock("../editor", async () => {
         }
       },
       hasActiveUploads: () => inFlightRef.current > 0,
+      // Placeholder rebuild contract: the real handle draws a card for an
+      // upload the document is not showing and reports whether it landed.
+      // Mocks track ids only — no document to draw into.
+      insertUploadPlaceholder: () => true,
+      settleUploadPlaceholder: () => false,
     }));
     return (
       <>

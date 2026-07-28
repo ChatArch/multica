@@ -64,12 +64,13 @@ describe("draft-upload helpers", () => {
     expect(uploadedAttachments(normalized).map((a) => a.id)).toEqual(["att-1"]);
   });
 
-  it("coerces an `uploading` placeholder to `interrupted` on load", () => {
-    const normalized = normalizeStoredUploads([pending("a")]);
-    expect(normalized).toHaveLength(1);
-    expect(normalized[0]?.status).toBe("interrupted");
-    // The bytes are gone, so it is NOT a bindable attachment.
-    expect(uploadedAttachments(normalized)).toEqual([]);
+  it("drops an `uploading` placeholder on load", () => {
+    // The bytes were never persisted, so this upload can neither resume nor
+    // be retried, and no surface can act on it: a placeholder is never
+    // serialised, so the document has no node for it either. Keeping the
+    // record only held an otherwise-empty draft alive for the full TTL. The
+    // attachment's absence from the body is what tells the user to re-attach.
+    expect(normalizeStoredUploads([pending("a")])).toEqual([]);
   });
 
   it("keeps failed/interrupted/uploaded placeholders across load", () => {

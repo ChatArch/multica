@@ -272,7 +272,7 @@ describe("issue draft store — legacy rehydrate", () => {
     expect(draft.activeMode).toBe("agent");
   });
 
-  it("normalizes pre-L2 shared attachments and coerces stale uploading placeholders", async () => {
+  it("normalizes pre-L2 shared attachments and drops stale uploading placeholders", async () => {
     localStorage.setItem(
       "multica_issue_draft:gamma",
       JSON.stringify({
@@ -311,9 +311,10 @@ describe("issue draft store — legacy rehydrate", () => {
     await flush();
 
     const { attachments } = useIssueDraftStore.getState().draft.shared;
-    expect(attachments.map((u) => u.status)).toEqual(["uploaded", "interrupted"]);
+    // The legacy row is adopted; the in-flight one is dropped — it can neither
+    // resume nor be shown, so keeping it would only bloat the draft.
+    expect(attachments.map((u) => u.status)).toEqual(["uploaded"]);
     expect(attachments[0]?.filename).toBe("old.png");
-    expect(attachments[1]?.filename).toBe("mid.png");
   });
 });
 

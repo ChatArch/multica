@@ -202,7 +202,7 @@ describe("comment draft store — prune on rehydrate", () => {
     expect(state.getAttachments("new:issue-1")).toEqual([]);
   });
 
-  it("coerces an upload that was in flight at reload into an interrupted placeholder", async () => {
+  it("drops an upload that was in flight at reload", async () => {
     seed({
       "new:issue-1": {
         content: "",
@@ -218,11 +218,12 @@ describe("comment draft store — prune on rehydrate", () => {
     await flush();
 
     const state = useCommentDraftStore.getState();
-    // The placeholder survives (so the UI can show "interrupted"), but its
-    // bytes are gone — it is NOT a bindable attachment.
-    const uploads = state.getUploads("new:issue-1");
-    expect(uploads.map((u) => u.status)).toEqual(["interrupted"]);
+    // The bytes are gone and nothing can act on the record: no surface renders
+    // it and the document has no node for it (placeholders are never
+    // serialised). Keeping it only held this empty draft alive for the TTL.
+    expect(state.getUploads("new:issue-1")).toEqual([]);
     expect(state.getAttachments("new:issue-1")).toEqual([]);
+    expect(state.getDraft("new:issue-1")).toBeFalsy();
   });
 });
 

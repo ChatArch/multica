@@ -139,6 +139,11 @@ vi.mock("../../editor", async () => ({
         }
       },
       hasActiveUploads: () => uploadingRef.current > 0,
+      // Placeholder rebuild contract: the real handle draws a card for an
+      // upload the document is not showing and reports whether it landed.
+      // Mocks track ids only — no document to draw into.
+      insertUploadPlaceholder: () => true,
+      settleUploadPlaceholder: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         valueRef.current = `${valueRef.current}\n\n${md}`.trim();

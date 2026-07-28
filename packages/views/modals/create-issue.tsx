@@ -51,7 +51,6 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useUploadGate, useComposerSubmit } from "../editor";
 import { useIssueCreateUploads } from "./use-issue-create-uploads";
-import { ComposerUploadChips } from "../issues/components/composer-upload-chips";
 import { useShortcut } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { StatusIcon, StatusPicker, PriorityIcon, PriorityPicker, StagePicker, AssigneePicker, StartDatePicker, DueDatePicker, LabelPicker } from "../issues/components";
@@ -344,10 +343,8 @@ export function ManualCreatePanel({
   // here survives dialog close, aborts on logout, and reads `interrupted`
   // after a reload. `gate` widens the editor gate with the pool's placeholders.
   const {
-    orphanUploads: orphanDraftUploads,
     attachments: draftAttachments,
     handleUpload,
-    removeUpload,
     gate,
   } = useIssueCreateUploads("manual", uploadGate, descEditorRef);
 
@@ -878,13 +875,6 @@ export function ManualCreatePanel({
               {descDragOver && <FileDropOverlay />}
             </div>
 
-            {orphanDraftUploads.length > 0 && (
-              <ComposerUploadChips
-                uploads={orphanDraftUploads}
-                onRemove={removeUpload}
-                className="px-5 pb-1"
-              />
-            )}
 
             {/* Pre-trigger preview — a passive caption above the toolbar; reveals
                 when an agent assignee will pick the issue up. */}
