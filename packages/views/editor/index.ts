@@ -15,6 +15,7 @@ export {
   useComposerSubmit,
   type ComposerSubmit,
   type ComposerSubmitOptions,
+  type ComposerAfterAccepted,
 } from "./use-composer-submit";
 export { useEditorUpload } from "./use-editor-upload";
 export { FileDropOverlay } from "./file-drop-overlay";

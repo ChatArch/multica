@@ -20,11 +20,27 @@
  * interactive (Tiptap cannot toggle editable post-mount), so callers' accepted
  * handlers guard on a submit-time snapshot: success clears ONLY the draft it
  * submitted, and anything typed during the request survives.
+ *
+ * It also owns the post-send FOCUS decision (`afterAccepted`). Where the caret
+ * lands after a send is a per-surface product call — a reply box the user keeps
+ * writing in refocuses, a top-level comment hands attention to the posted
+ * comment instead — but the mechanics are identical everywhere and easy to get
+ * wrong (must run after the clear, must survive a dialog focus trap, must not
+ * steal focus the user moved elsewhere mid-flight). Those live here once.
  */
 
-import { useCallback, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { ContentEditorRef } from "./content-editor";
 import type { UploadGate } from "./use-upload-gate";
+
+/**
+ * What happens to keyboard focus after an accepted submit.
+ *  - `refocus`: put the caret back in the composer so the user keeps writing.
+ *  - `blur`: drop the caret, because something else on the page is now the
+ *    thing to look at (the just-posted comment scrolling into view).
+ *  - `none`: leave focus exactly where the send left it.
+ */
+export type ComposerAfterAccepted = "refocus" | "blur" | "none";
 
 export interface ComposerSubmitOptions {
   editorRef: RefObject<ContentEditorRef | null>;
@@ -42,6 +58,22 @@ export interface ComposerSubmitOptions {
   onAccepted?: () => void;
   /** Normalize the raw markdown before the empty-guard and `onSubmit`. */
   normalize?: (raw: string) => string;
+  /**
+   * Focus handling once `onAccepted` has cleared the composer. Defaults to
+   * `none`. Pass a function to decide at accept time: chat resolves to `none`
+   * when the owner sent fire-and-forget while the user was already on another
+   * session, because the shared editor is then showing a DIFFERENT draft that
+   * must not be grabbed.
+   */
+  afterAccepted?: ComposerAfterAccepted | (() => ComposerAfterAccepted);
+  /**
+   * Root element of the composer, used only by `refocus`. Focus is taken back
+   * only when it still belongs to this composer — the send button, the editor
+   * itself, or nothing at all. Without this the composer would yank the caret
+   * away from a field the user moved to while a slow send was in flight.
+   * Omitting it refocuses unconditionally.
+   */
+  containerRef?: RefObject<HTMLElement | null>;
 }
 
 export interface ComposerSubmit {
@@ -60,6 +92,53 @@ export function useComposerSubmit(opts: ComposerSubmitOptions): ComposerSubmit {
   const inFlight = useRef(false);
   const optsRef = useRef(opts);
   optsRef.current = opts;
+  // The focus effect lands a frame after acceptance, by which time this
+  // composer may be gone (an inline edit closes on save) — never touch a ref
+  // whose owner unmounted, and never leave a queued frame behind.
+  const mountedRef = useRef(true);
+  const focusFrameRef = useRef<number | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (focusFrameRef.current !== null) {
+        cancelAnimationFrame(focusFrameRef.current);
+        focusFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  const runAfterAccepted = useCallback(() => {
+    const o = optsRef.current;
+    // Resolve the mode NOW, not inside the frame: callers decide from state
+    // that acceptance just settled (chat's "did we actually scrub the shared
+    // editor" flag), and a frame later that state can already have moved on.
+    const mode =
+      typeof o.afterAccepted === "function"
+        ? o.afterAccepted()
+        : (o.afterAccepted ?? "none");
+    if (mode === "none") return;
+    // Defer one frame. `onAccepted` has just cleared the editor and the draft,
+    // and a composer inside a dialog is still competing with the focus trap,
+    // which bounces focus back to the first focusable header control on the
+    // next tick if we grab it synchronously.
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      if (!mountedRef.current) return;
+      if (mode === "blur") {
+        optsRef.current.editorRef.current?.blur();
+        return;
+      }
+      const container = optsRef.current.containerRef?.current;
+      const active = typeof document === "undefined" ? null : document.activeElement;
+      // `body` means the clear already dropped focus — that is still "ours".
+      const ownsFocus =
+        !container || !active || active === document.body || container.contains(active);
+      if (!ownsFocus) return;
+      optsRef.current.editorRef.current?.focus();
+    });
+  }, []);
 
   const submit = useCallback(async () => {
     const o = optsRef.current;
@@ -74,7 +153,10 @@ export function useComposerSubmit(opts: ComposerSubmitOptions): ComposerSubmit {
     setSubmitting(true);
     try {
       const accepted = await o.onSubmit(content);
-      if (accepted) o.onAccepted?.();
+      if (accepted) {
+        o.onAccepted?.();
+        runAfterAccepted();
+      }
     } catch {
       // A thrown send is a rejection: keep the draft, let the caller's
       // onSubmit surface its own error toast.
@@ -82,7 +164,7 @@ export function useComposerSubmit(opts: ComposerSubmitOptions): ComposerSubmit {
       inFlight.current = false;
       setSubmitting(false);
     }
-  }, []);
+  }, [runAfterAccepted]);
 
   return { submitting, submit };
 }

@@ -1291,8 +1291,11 @@ describe("ChatInput commit handoff", () => {
     await typeAndSend(onSend);
 
     expect(editorState.cleared).toBeGreaterThan(0);
-    expect(editorState.blurred).toBeGreaterThan(0);
     expect(useChatStore.getState().clearInputDraft).toHaveBeenCalledWith("__draft_new__");
+    // Chat is a conversation: the caret returns to the box for the next turn
+    // rather than being dropped (MUL-5181 follow-up).
+    await waitFor(() => expect(editorState.focused).toBeGreaterThan(0));
+    expect(editorState.blurred).toBe(0);
   });
 
   it("leaves the editor intact on a fire-and-forget commit but still clears the sent draft", async () => {
@@ -1307,5 +1310,9 @@ describe("ChatInput commit handoff", () => {
     expect(editorState.blurred).toBe(0);
     // …but the sent session's persisted draft is cleared regardless.
     expect(useChatStore.getState().clearInputDraft).toHaveBeenCalledWith("__draft_new__");
+    // And the caret must NOT be pulled into an editor that is showing someone
+    // else's draft: refocus is bound to having actually scrubbed the document.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(editorState.focused).toBe(0);
   });
 });

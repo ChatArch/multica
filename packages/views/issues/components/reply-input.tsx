@@ -55,6 +55,7 @@ function ReplyInput({
   const sendShortcut = useShortcut("send");
   const placeholderText = placeholder ?? t(($) => $.reply.placeholder);
   const editorRef = useRef<ContentEditorRef>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   // See CommentInput — replying mid-upload posts without the file.
   const uploadGate = useUploadGate(editorRef);
   // If a draft key is provided, hydrate from store on mount (defaultValue is
@@ -143,6 +144,13 @@ function ReplyInput({
   const { submitting, submit } = useComposerSubmit({
     editorRef,
     uploadGate: gate,
+    containerRef: composerRef,
+    // A thread reply is rarely the last thing the user has to say, so the caret
+    // stays in the box for the next one. Unlike a top-level comment, the posted
+    // reply lands directly above the box that is still focused — nothing needs
+    // to pull the eye elsewhere. `containerRef` keeps this from stealing focus
+    // if the user moved to another composer while the reply was in flight.
+    afterAccepted: "refocus",
     onSubmit: (content) => {
       if (draftKey) {
         // Flush pending debounce before snapshotting — see CommentInput.
@@ -198,6 +206,7 @@ function ReplyInput({
       />
       <div
         {...dropZoneProps}
+        ref={composerRef}
         className={cn(
           "relative min-w-0 flex-1 flex flex-col",
           !isEmpty && "pb-9",

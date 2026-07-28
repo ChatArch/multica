@@ -129,6 +129,11 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   const { submitting, submit } = useComposerSubmit({
     editorRef,
     uploadGate: gate,
+    // A top-level comment ends a turn: the page scrolls the posted comment into
+    // view and flashes it (see IssueDetail's handleSubmitComment), so a caret
+    // left blinking down here would compete with it. Replies are the opposite —
+    // see ReplyInput.
+    afterAccepted: "blur",
     onSubmit: (content) => {
       // Flush the editor's pending debounce before snapshotting — a late flush
       // of pre-submit typing must not read as an edit made during the request.
