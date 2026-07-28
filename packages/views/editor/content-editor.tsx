@@ -122,6 +122,17 @@ interface ContentEditorBaseProps {
   onBlur?: () => void;
   onUploadFile?: (file: File) => Promise<UploadResult | null>;
   /**
+   * Character count above which a plain-text paste is uploaded as a
+   * `pasted-text.txt` attachment instead of being inserted as body text.
+   * Requires `onUploadFile`; without an uploader the paste stays text.
+   *
+   * Opt-in ON PURPOSE. It belongs to turn-based composers (chat, comments),
+   * where a wall of pasted text is context for one message and reads better
+   * as an attachment. Document-style editors — issue and project descriptions
+   * — must never pass it: there, a long paste IS the content.
+   */
+  pasteAsFileThreshold?: number;
+  /**
    * Fired whenever this editor's "any attachment still uploading" answer
    * flips. The document IS the upload queue — every path (paste, drop, the
    * upload button, the imperative `uploadFile`) inserts a node with
@@ -305,6 +316,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       onSubmit,
       onBlur,
       onUploadFile,
+      pasteAsFileThreshold,
       onUploadingChange,
       showBubbleMenu = true,
       currentIssueId,
@@ -333,6 +345,10 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const onUploadFileRef = useRef<
       ((file: File) => Promise<UploadResult | null>) | undefined
     >(undefined);
+    // Same reasoning as placeholderRef below: the extension array is built once
+    // at mount, so the paste-as-file threshold is read through a ref to stay
+    // live without remounting the editor.
+    const pasteAsFileThresholdRef = useRef<number | undefined>(pasteAsFileThreshold);
     const mentionContextItemsRef = useRef<MentionItem[]>(mentionContextItems ?? []);
     const lastEmittedRef = useRef<string | null>(null);
     // `content` already consumes the initial synchronized value when Tiptap
@@ -427,6 +443,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     onReadyRef.current = onReady;
     onUploadingChangeRef.current = onUploadingChange;
     onUploadFileRef.current = wrappedOnUploadFile;
+    pasteAsFileThresholdRef.current = pasteAsFileThreshold;
     mentionContextItemsRef.current = mentionContextItems ?? [];
     flushPendingOnUnmountRef.current = flushPendingOnUnmount;
 
@@ -524,6 +541,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         queryClient,
         onSubmitRef,
         onUploadFileRef,
+        pasteAsFileThresholdRef,
         disableMentions,
         mentionMode,
         getMentionContextItems: () => mentionContextItemsRef.current,

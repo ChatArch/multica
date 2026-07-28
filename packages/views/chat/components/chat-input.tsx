@@ -12,6 +12,7 @@ import {
   useUploadGate,
   useComposerSubmit,
 } from "../../editor";
+import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import {
   useCoordinatedUploads,
   type UploadDraftBinding,
@@ -631,6 +632,7 @@ export function ChatInput({
             }}
             onSubmit={submit}
             onUploadFile={uploadEnabled ? handleUpload : undefined}
+            pasteAsFileThreshold={PASTE_AS_FILE_THRESHOLD}
             onUploadingChange={uploadGate.onUploadingChange}
             attachments={draftAttachments}
             debounceMs={100}

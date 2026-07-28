@@ -57,6 +57,7 @@ import { MAX_FILE_SIZE } from "@multica/core/constants/upload";
 import { useT } from "../i18n";
 import type { UploadGate } from "./use-upload-gate";
 import type { ContentEditorRef } from "./content-editor";
+import { pastedTextSource } from "./extensions/file-upload";
 
 const EMPTY_ATTACHMENTS: Attachment[] = [];
 
@@ -154,6 +155,40 @@ function deliverFinishedUpload(
     () => deliverFinishedUpload(binding, clientUploadId, attachment, tries + 1),
     DELIVER_RETRY_MS,
   );
+}
+
+/**
+ * Put a failed paste-as-file's source text back where the user can see it.
+ *
+ * The mirror image of {@link deliverFinishedUpload}, and it exists for the
+ * same reason: the upload outlives the mount, so the composer that swallowed
+ * the paste may be gone by the time the failure lands. Unlike a dropped file,
+ * this content has no other copy — it was never written into the document and
+ * the tab it came from may be closed — so "the editor is gone, drop it" would
+ * be silent data loss.
+ *
+ * Restored as markdown, not literal text: had the paste never been converted,
+ * `markdown-paste` is exactly what would have handled it, so this reproduces
+ * what the user would have gotten. Live editor first (it lands at the end of
+ * the document, never mid-sentence at a caret the user has since moved), the
+ * persisted body otherwise.
+ */
+function deliverPastedTextBack(
+  binding: UploadDraftBinding | undefined,
+  editorRef: RefObject<ContentEditorRef | null>,
+  text: string,
+): void {
+  if (!binding) {
+    // No persistence context (a reply composer opened without a draft key):
+    // the live editor is the only place left to put it.
+    editorRef.current?.insertMarkdownAtEnd(text);
+    return;
+  }
+  // Same insurance as deliverFinishedUpload: a landed editor insert can still
+  // lose its debounced emit to a quick unmount, and both writes converge on
+  // identical content.
+  liveEditors.get(binding.registryKey)?.current?.insertMarkdownAtEnd(text);
+  binding.appendToBody(text);
 }
 
 export interface CoordinatedUploads {
@@ -272,11 +307,17 @@ export function useCoordinatedUploads(
         contentType: file.type || undefined,
       };
 
+      const pastedText = pastedTextSource(file);
+
       if (file.size > MAX_FILE_SIZE) {
         // Never enters the coordinator — surface it as a failed placeholder so
         // the composer shows the reason instead of silently dropping the file.
         const reason = "File exceeds 100 MB limit";
-        if (target) {
+        if (pastedText !== undefined) {
+          // A paste has no on-disk copy to retry from: give the text back
+          // rather than leaving a failed chip standing in for lost content.
+          deliverPastedTextBack(target, editorRef, pastedText);
+        } else if (target) {
           target.addUpload(placeholder);
           target.failUpload(clientUploadId, reason);
         } else {
@@ -330,7 +371,24 @@ export function useCoordinatedUploads(
               resolve(toUploadResult(outcome.attachment));
             } else {
               const reason = outcome.error.message;
-              if (target) {
+              if (pastedText !== undefined) {
+                // Paste-as-file: the text has no copy anywhere else, so it is
+                // restored instead of being represented by a failed chip. Runs
+                // whether or not this mount survived — deliverPastedTextBack
+                // owns that choice, and it is the ONLY responder so the live
+                // and dead cases can never both fire or both be skipped.
+                if (target) {
+                  if (target.getUploads().some((u) => u.clientUploadId === clientUploadId)) {
+                    target.removeUpload(clientUploadId);
+                    deliverPastedTextBack(target, editorRef, pastedText);
+                  }
+                } else {
+                  setLocalUploads((prev) =>
+                    prev.filter((u) => u.clientUploadId !== clientUploadId),
+                  );
+                  deliverPastedTextBack(undefined, editorRef, pastedText);
+                }
+              } else if (target) {
                 if (target.getUploads().some((u) => u.clientUploadId === clientUploadId)) {
                   target.failUpload(clientUploadId, reason);
                 }
@@ -350,7 +408,7 @@ export function useCoordinatedUploads(
         });
       });
     },
-    [binding, issueId, commentId, chatSessionId, t],
+    [binding, editorRef, issueId, commentId, chatSessionId, t],
   );
 
   const removeUpload = useCallback(

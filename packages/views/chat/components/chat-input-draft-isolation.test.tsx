@@ -67,7 +67,12 @@ vi.mock("../../editor/extensions", () => ({
 // starts), and on completion the real implementation dispatches into the SAME
 // editor instance — which is what fires onUpdate. Tests drive that dispatch
 // explicitly via `finishUpload()`.
-vi.mock("../../editor/extensions/file-upload", () => ({
+vi.mock("../../editor/extensions/file-upload", async () => ({
+  // Only the insert flow is stubbed; the paste-as-file tagging helpers are
+  // plain module state the upload hook reads on every settle.
+  ...(await vi.importActual<typeof import("../../editor/extensions/file-upload")>(
+    "../../editor/extensions/file-upload",
+  )),
   uploadAndInsertFile: async (
     _editor: unknown,
     file: File,

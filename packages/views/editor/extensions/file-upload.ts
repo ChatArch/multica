@@ -133,7 +133,7 @@ function moveSelectionToParagraphAfterImage(editor: any, src: string) {
  * Used by both paste/drop (at cursor) and button upload (at end of doc).
  */
 export async function uploadAndInsertFile(
-   
+
   editor: any,
   file: File,
   handler: (file: File) => Promise<UploadResult | null>,
@@ -229,18 +229,54 @@ function dedupFiles(files: FileList): File[] {
   });
 }
 
+/** Filename given to the .txt synthesised from an over-threshold paste. */
+export const PASTED_TEXT_FILENAME = "pasted-text.txt";
+
+/**
+ * Source text of every file synthesised by the paste-as-file path, keyed by
+ * the File instance that carries it downstream.
+ *
+ * Unlike a dropped file, this one has no copy anywhere else: the text was
+ * never written into the document and its source may be a tab the user has
+ * already closed. So whoever owns the draft must be able to put it back when
+ * the upload fails. A WeakMap rather than a property on the File keeps the
+ * File exactly as the upload layer expects it, and lets the entry die with the
+ * upload. Read it with {@link pastedTextSource}; a File that came from disk
+ * returns undefined and needs no recovery.
+ */
+const pastedTextSources = new WeakMap<File, string>();
+
+/** Record the text a synthesised paste file was built from. */
+export function markPastedTextFile(file: File, text: string): File {
+  pastedTextSources.set(file, text);
+  return file;
+}
+
+/** The text an over-threshold paste was made from, or undefined for real files. */
+export function pastedTextSource(file: File): string | undefined {
+  return pastedTextSources.get(file);
+}
+
 export function createFileUploadExtension(
   onUploadFileRef: React.RefObject<((file: File) => Promise<UploadResult | null>) | undefined>,
+  /**
+   * Character count above which a plain-text paste is uploaded as a .txt
+   * attachment instead of being inserted into the document. A ref because the
+   * extension array is built once at mount while the prop that feeds it can
+   * change. Undefined / 0 keeps every paste as text — the default, so an
+   * editor that never opts in behaves exactly as before.
+   */
+  pasteAsFileThresholdRef?: React.RefObject<number | undefined>,
 ) {
   return Extension.create({
     name: "fileUpload",
     addProseMirrorPlugins() {
       const { editor } = this;
 
-      const handleFiles = async (files: FileList) => {
+      const handleFiles = async (files: File[]) => {
         const handler = onUploadFileRef.current;
         if (!handler) return false;
-        for (const file of dedupFiles(files)) {
+        for (const file of files) {
           await uploadAndInsertFile(editor, file, handler);
         }
         return true;
@@ -252,9 +288,27 @@ export function createFileUploadExtension(
           props: {
             handlePaste(_view, event) {
               const files = event.clipboardData?.files;
-              if (!files?.length) return false;
+              if (!files?.length) {
+                // No file on the clipboard: this may still be a paste large
+                // enough that the host wants it as an attachment rather than
+                // thousands of characters of body text (turn-based composers
+                // only — document editors never pass a threshold).
+                const threshold = pasteAsFileThresholdRef?.current;
+                if (!threshold || threshold <= 0) return false;
+                const text = event.clipboardData?.getData("text/plain") ?? "";
+                if (text.length <= threshold) return false;
+                if (!onUploadFileRef.current) return false;
+                // A paste INTO a code block is the one long paste that is
+                // deliberately inline — the user opened a fence to show the
+                // thing. Converting it to an attachment would take away what
+                // they just asked for.
+                if (editor.isActive("codeBlock")) return false;
+                const file = new File([text], PASTED_TEXT_FILENAME, { type: "text/plain" });
+                handleFiles([markPastedTextFile(file, text)]);
+                return true;
+              }
               if (!onUploadFileRef.current) return false;
-              handleFiles(files);
+              handleFiles(dedupFiles(files));
               return true;
             },
             handleDrop(view, event) {

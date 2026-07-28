@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
+import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { contentReferencesAttachment } from "@multica/core/types";
@@ -220,6 +221,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
           }}
           onSubmit={submit}
           onUploadFile={handleUpload}
+          pasteAsFileThreshold={PASTE_AS_FILE_THRESHOLD}
           onUploadingChange={uploadGate.onUploadingChange}
           debounceMs={100}
           currentIssueId={issueId}
