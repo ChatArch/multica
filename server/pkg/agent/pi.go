@@ -517,9 +517,11 @@ func buildPiArgs(prompt, sessionPath string, opts ExecOptions, logger *slog.Logg
 	// tools. Passing --tools acts as a restrictive allowlist that
 	// silently filters out extension-registered tools (#2379).
 	// Users who want to restrict tools can do so via custom_args.
-	if opts.SystemPrompt != "" {
-		args = append(args, "--append-system-prompt", opts.SystemPrompt)
-	}
+	//
+	// SystemPrompt is intentionally not forwarded as --append-system-prompt:
+	// Pi loads the per-task AGENTS.md the daemon writes into the workdir, so
+	// inlining the same runtime brief would duplicate it on every turn.
+	// Verified against Pi 0.67.2 (MUL-5392).
 	args = append(args, filterCustomArgs(opts.CustomArgs, piBlockedArgs, logger)...)
 	args = append(args, prompt)
 	return args
