@@ -296,7 +296,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.4.13",
         date: "2026-07-28",
-        title: "错误洞察、仓库导入与更稳的草稿",
+        title: "长 Issue 续跑省 95% 缓存开销，错误洞察与仓库导入",
         changes: [],
         features: [
           "用量页现在会显示错误趋势、失败类型和相关智能体。",
@@ -305,12 +305,12 @@ export function createZhDict(allowSignup: boolean): LandingDict {
           "父 Issue 现在会显示子 Issue 中有多少智能体正在工作。",
         ],
         improvements: [
+          "长 Issue 继续跑时恢复更快，重复的缓存写入减少约 95%。",
           "关闭、重开或切换编辑模式后，草稿和上传仍会保留。",
           "粘贴超长文本时，现在会自动变成文本附件。",
           "每个上传只显示一次，完成后才会写入草稿。",
           "Webhook URL 现在默认隐藏，可按需显示。",
           "工作区很多时，Multica 启动不再反复检查智能体工具。",
-          "智能体继续处理 Issue 时，现在恢复更快、消耗的 token 更少。",
           "用量排名现在先聚焦前十名，失败排序也更清楚。",
           "发送后，光标现在会停在各编辑器预期的位置。",
         ],
