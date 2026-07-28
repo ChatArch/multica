@@ -422,6 +422,16 @@
       "remove_aria": "移除头像",
       "select_image_toast": "请选择图片文件。",
       "upload_failed_toast": "头像上传失败"
+    },
+    "run_location": {
+      "label": "这个 agent 在哪运行？",
+      "cloud_title": "Multica Cloud",
+      "cloud_desc": "由 Multica 托管，无需安装",
+      "recommended": "推荐",
+      "local_title": "我的电脑",
+      "local_desc": "运行在你自己的机器上",
+      "cloud_bound_hint": "运行在 {{name}}，由 Multica 托管。",
+      "cloud_preview_notice": "仅为预览：云端算力尚未接入，要真正创建 agent 请先选「我的电脑」。"
     }
   },
   "tab_body": {

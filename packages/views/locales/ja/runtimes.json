@@ -428,5 +428,36 @@
     "table_cache_r": "キャッシュ R",
     "table_cache_w": "キャッシュ W",
     "no_data": "まだ使用量データがありません"
+  },
+  "cloud_preview": {
+    "badge": "プレビュー",
+    "title": "Multica Cloud",
+    "tagline": "Multica が管理する環境でエージェントを実行します。マシンの準備は不要です。",
+    "status_ready": "準備完了",
+    "enable": "Multica Cloud を有効にする",
+    "disable": "無効にする",
+    "advanced": "詳細設定",
+    "mock_note": "プレビュー：数値はサンプルで、実際のリソースはまだ作成されていません。",
+    "pitch": "エージェントは Multica が用意した環境で動きます。容量・更新・後片付けはすべて自動です。",
+    "benefits": {
+      "no_install": "CLI のインストールもデーモンの常駐も不要",
+      "no_api_key": "自分のモデル API キーは不要",
+      "elastic": "容量は負荷に追従し、アイドル時は課金なし"
+    },
+    "stats": {
+      "credits": "残りクレジット",
+      "used_this_month": "今月の使用量",
+      "concurrency": "実行中",
+      "concurrency_value": "{{active}} / {{limit}}"
+    },
+    "tier": {
+      "label": "速度",
+      "standard": "標準",
+      "standard_hint": "ほとんどのタスクに適した既定値",
+      "fast": "高速",
+      "fast_hint": "1 タスクあたりが速く、クレジット消費は多め"
+    },
+    "machines_title": "自分のコンピュータ",
+    "machines_hint": "デーモンを動かしているマシンです。コードと API キーはそこに留まります。"
   }
 }

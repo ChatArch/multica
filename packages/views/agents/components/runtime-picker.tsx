@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Cloud, Loader2, Lock, Search } from "lucide-react";
 import { ProviderLogo } from "../../runtimes/components/provider-logo";
+import { useCloudUiPreview } from "../../runtimes/components/cloud-preview";
+import { RunLocationPicker, type RunLocation } from "./run-location-picker";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { runtimeDisplayName } from "@multica/core/runtimes";
 import type { MemberWithUser, RuntimeDevice } from "@multica/core/types";
@@ -26,7 +28,89 @@ export type RuntimeFilter = "mine" | "all";
 // machine is present.
 const SEARCH_THRESHOLD = 6;
 
-export function RuntimePicker({
+export interface RuntimePickerProps {
+  runtimes: RuntimeDevice[];
+  runtimesLoading?: boolean;
+  members: MemberWithUser[];
+  currentUserId: string | null;
+  selectedRuntimeId: string;
+  onSelect: (id: string) => void;
+  disabled?: boolean;
+}
+
+/**
+ * RuntimePicker — public entry used by every agent-creation surface.
+ *
+ * Default behaviour is unchanged: the machine × CLI list below. When the
+ * MUL-5385 Cloud UI preview is on, the same slot instead asks "where should
+ * this agent run?" first and only reveals the machine list under "my
+ * computer". Keeping the wrapper behind the existing export means all three
+ * call sites (creation studio manual + builder, create dialog) pick the new
+ * entry up with no changes.
+ */
+export function RuntimePicker(props: RuntimePickerProps) {
+  const previewEnabled = useCloudUiPreview();
+  if (!previewEnabled) return <RuntimeDevicePicker {...props} />;
+  return <RuntimePickerWithRunLocation {...props} />;
+}
+
+function RuntimePickerWithRunLocation(props: RuntimePickerProps) {
+  const { runtimes, currentUserId, selectedRuntimeId, onSelect } = props;
+
+  // A real managed cloud runtime, when the workspace happens to have one.
+  // With no capability wired this is normally null, and Cloud then renders as
+  // a preview-only choice.
+  const cloudRuntime = useMemo(
+    () =>
+      runtimes.find(
+        (runtime) =>
+          runtime.runtime_mode === "cloud" &&
+          isRuntimeUsableForUser(runtime, currentUserId),
+      ) ?? null,
+    [runtimes, currentUserId],
+  );
+
+  const [location, setLocation] = useState<RunLocation>(() =>
+    cloudRuntime ? "cloud" : "local",
+  );
+  // Cloud is the intended default, but runtimes load after first paint. Flip
+  // to Cloud once — and only while the user hasn't chosen for themselves — so
+  // the default reads as designed without fighting an explicit choice.
+  const userPickedRef = useRef(false);
+  useEffect(() => {
+    if (userPickedRef.current) return;
+    if (cloudRuntime && location !== "cloud") setLocation("cloud");
+  }, [cloudRuntime, location]);
+
+  // Cloud selection binds to the managed runtime, or to nothing when there
+  // isn't one — an empty selection keeps the caller's Create button disabled
+  // via its existing `!selectedRuntime` guard.
+  useEffect(() => {
+    if (location !== "cloud") return;
+    const next = cloudRuntime?.id ?? "";
+    if (selectedRuntimeId !== next) onSelect(next);
+  }, [location, cloudRuntime, selectedRuntimeId, onSelect]);
+
+  const handleLocationChange = (next: RunLocation) => {
+    if (next === location) return;
+    userPickedRef.current = true;
+    // Clear on the way to "my computer" so the device picker's own seeding
+    // effect chooses a local runtime instead of keeping the cloud one.
+    if (next === "local") onSelect("");
+    setLocation(next);
+  };
+
+  return (
+    <RunLocationPicker
+      location={location}
+      onLocationChange={handleLocationChange}
+      cloudRuntime={cloudRuntime}
+      localPicker={<RuntimeDevicePicker {...props} />}
+    />
+  );
+}
+
+export function RuntimeDevicePicker({
   runtimes,
   runtimesLoading,
   members,

@@ -318,6 +318,16 @@
       "remove_aria": "アバターを削除",
       "select_image_toast": "画像ファイルを選択してください。",
       "upload_failed_toast": "アバターのアップロードに失敗しました"
+    },
+    "run_location": {
+      "label": "このエージェントをどこで実行しますか？",
+      "cloud_title": "Multica Cloud",
+      "cloud_desc": "Multica が管理。インストール不要",
+      "recommended": "推奨",
+      "local_title": "自分のコンピュータ",
+      "local_desc": "自分のマシン上で実行",
+      "cloud_bound_hint": "{{name}} で実行されます（Multica 管理）。",
+      "cloud_preview_notice": "プレビューのみ：クラウドの実行基盤は未接続です。実際に作成するには「自分のコンピュータ」を選んでください。"
     }
   },
   "tab_body": {

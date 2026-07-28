@@ -443,5 +443,36 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
+  },
+  "cloud_preview": {
+    "badge": "Preview",
+    "title": "Multica Cloud",
+    "tagline": "Run agents on infrastructure we manage — no machine to set up.",
+    "status_ready": "Ready",
+    "enable": "Turn on Multica Cloud",
+    "disable": "Turn off",
+    "advanced": "Advanced",
+    "mock_note": "Preview — figures are illustrative and nothing is provisioned yet.",
+    "pitch": "Agents run in an environment Multica keeps ready for you. Capacity, updates and cleanup are handled for you.",
+    "benefits": {
+      "no_install": "No CLI to install, no daemon to keep running",
+      "no_api_key": "No model API key of your own",
+      "elastic": "Capacity follows your workload; idle costs nothing"
+    },
+    "stats": {
+      "credits": "Credits left",
+      "used_this_month": "Used this month",
+      "concurrency": "Running now",
+      "concurrency_value": "{{active}} of {{limit}}"
+    },
+    "tier": {
+      "label": "Speed",
+      "standard": "Standard",
+      "standard_hint": "Good default for most tasks",
+      "fast": "Fast",
+      "fast_hint": "Quicker per task, spends more credits"
+    },
+    "machines_title": "My computers",
+    "machines_hint": "Machines you run the daemon on. Your code and API keys stay there."
   }
 }

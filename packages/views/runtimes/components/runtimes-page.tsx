@@ -28,6 +28,8 @@ import { PageHeader } from "../../layout/page-header";
 import { AppLink } from "../../navigation";
 import { ConnectRemoteDialog } from "./connect-remote-dialog";
 import { CloudRuntimeDialog } from "./cloud-runtime-dialog";
+import { CloudCapabilityCard } from "./cloud-capability-card";
+import { useCloudUiPreview } from "./cloud-preview";
 import { ProviderLogo } from "./provider-logo";
 import { buildWorkloadIndex, RuntimeList } from "./runtime-list";
 import { pendingRuntimeFromProfile } from "./pending-runtime";
@@ -69,6 +71,10 @@ export function RuntimesPage({
   const currentUserId = useAuthStore((state) => state.user?.id);
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
+  // MUL-5385 preview: Cloud stops being a machine list in the header and
+  // becomes a capability card at the top of the page. The legacy Fleet node
+  // dialog stays reachable from that card's "Advanced" action.
+  const cloudUiPreview = useCloudUiPreview();
   const [showConnectDialog, setShowConnectDialog] = useState(false);
   const [showCloudRuntimeDialog, setShowCloudRuntimeDialog] = useState(false);
 
@@ -138,22 +144,33 @@ export function RuntimesPage({
       <PageHeaderBar
         totalCount={machines.length}
         onConnectRemote={() => setShowConnectDialog(true)}
-        cloudRuntimeEnabled={cloudRuntimeEnabled}
+        cloudRuntimeEnabled={cloudRuntimeEnabled && !cloudUiPreview}
         onOpenCloudRuntime={() => setShowCloudRuntimeDialog(true)}
       />
 
-      {showEmpty ? (
+      {showEmpty && !cloudUiPreview ? (
         <div className="flex flex-1 items-center justify-center p-6">
           <EmptyState onConnectRemote={() => setShowConnectDialog(true)} />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[1440px] flex-col p-4 sm:p-6">
-            {(machines.length > 0 || bootstrapping) && (
-              <MachineList
+            {cloudUiPreview && (
+              <div className="mb-6">
+                <CloudCapabilityCard
+                  nodeInspectorAvailable={cloudRuntimeEnabled}
+                />
+              </div>
+            )}
+            {cloudUiPreview ? (
+              <LocalMachinesSection
                 machines={machines}
                 bootstrapping={bootstrapping}
               />
+            ) : (
+              (machines.length > 0 || bootstrapping) && (
+                <MachineList machines={machines} bootstrapping={bootstrapping} />
+              )
             )}
             {orphanProfileRuntimes.length > 0 && (
               <OrphanRuntimeProfiles
@@ -199,6 +216,34 @@ function OrphanRuntimeProfiles({
       <div className="overflow-hidden rounded-lg border bg-card">
         <RuntimeList runtimes={runtimes} now={now} />
       </div>
+    </section>
+  );
+}
+
+/**
+ * Under the MUL-5385 preview the flat machine list gets an explicit heading:
+ * "machine" is only an honest word for hardware the user actually owns, so it
+ * is scoped to this section instead of naming the whole page.
+ */
+function LocalMachinesSection({
+  machines,
+  bootstrapping,
+}: {
+  machines: RuntimeMachine[];
+  bootstrapping?: boolean;
+}) {
+  const { t } = useT("runtimes");
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold">
+          {t(($) => $.cloud_preview.machines_title)}
+        </h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t(($) => $.cloud_preview.machines_hint)}
+        </p>
+      </div>
+      <MachineList machines={machines} bootstrapping={bootstrapping} />
     </section>
   );
 }

@@ -432,6 +432,16 @@
       "remove_aria": "Remove avatar",
       "select_image_toast": "Please select an image file.",
       "upload_failed_toast": "Avatar upload failed"
+    },
+    "run_location": {
+      "label": "Where should this agent run?",
+      "cloud_title": "Multica Cloud",
+      "cloud_desc": "Managed for you — nothing to install",
+      "recommended": "Recommended",
+      "local_title": "My computer",
+      "local_desc": "Runs on a machine you own",
+      "cloud_bound_hint": "Runs on {{name}}, managed by Multica.",
+      "cloud_preview_notice": "Preview only — Cloud capacity is not wired up yet, so choose “My computer” to actually create an agent."
     }
   },
   "tab_body": {
