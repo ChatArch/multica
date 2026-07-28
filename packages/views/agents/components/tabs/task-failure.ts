@@ -23,6 +23,7 @@ const REASON_LABEL: Record<string, string> = {
   iteration_limit: "Hit the iteration limit",
   agent_blocked: "Waiting on human input",
   api_invalid_request: "Rejected by the model API",
+  skill_bundle_unavailable: "Couldn't download the agent's skills",
 
   // Agent process side — provider.
   "agent_error.provider_auth_or_access": "Provider auth failed",
