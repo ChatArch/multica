@@ -623,6 +623,23 @@ describe("comment composers — upload submit gate", () => {
     });
   });
 
+  it("still shows a chip when an inline upload FAILS", async () => {
+    // uploadAndInsertFile removes the placeholder node on failure, so
+    // suppressing the chip for uploads this mount started would leave the
+    // outcome visible only in a toast that has already gone.
+    const { container } = renderCommentInput();
+    activateComposer("comment-composer-shell");
+
+    const pending = startPendingUpload(container, "doomed.png");
+    await waitFor(() => expect(getSubmitButton(container)).toBeDisabled());
+
+    await act(async () => {
+      pending.fail();
+    });
+
+    expect(await screen.findByText(/doomed\.png/)).toBeTruthy();
+  });
+
   it("shows a chip for an upload inherited from the persisted draft", async () => {
     // Started by a mount that is gone: its placeholder node died with that
     // editor, so the chip is the only thing that can prove it is still running.

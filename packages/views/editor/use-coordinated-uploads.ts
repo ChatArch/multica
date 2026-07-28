@@ -195,16 +195,21 @@ export interface CoordinatedUploads {
   /** Every upload for this composer, placeholders included. */
   uploads: DraftUpload[];
   /**
-   * The subset of `uploads` this mount is NOT already showing inline — wire
-   * these to `<ComposerUploadChips>`, never `uploads`.
+   * The subset of `uploads` that has no inline representation in the document
+   * — wire these to `<ComposerUploadChips>`, never `uploads`.
    *
-   * Every upload started from this mount inserted a placeholder node into the
-   * document first (`uploadAndInsertFile` is the only caller of the uploader),
-   * so a chip for it would be the same upload drawn twice, in two places, with
-   * two different visual languages. What the document genuinely cannot show is
-   * an upload inherited from the persisted draft: it outlived the mount that
-   * started it, and its node died with that mount. Those are exactly the ones
-   * left here.
+   * The document shows exactly one thing: a live placeholder node for an
+   * upload that this mount started (`uploadAndInsertFile` is the uploader's
+   * only caller) and that is still running. A chip for one of those would be
+   * the same upload drawn twice, in two visual languages, shifting layout as
+   * it appears and vanishes.
+   *
+   * Two kinds fall through to the chips, and both are things the document
+   * genuinely cannot show:
+   *  - inherited from the persisted draft — it outlived the mount that started
+   *    it, and its placeholder node died with that mount;
+   *  - failed or interrupted — `uploadAndInsertFile` removes the node on
+   *    failure, so without a chip the outcome would be invisible.
    */
   orphanUploads: DraftUpload[];
   /** Completed attachment rows — the editor preview set; submit binds the
@@ -294,13 +299,22 @@ export function useCoordinatedUploads(
   }, [registryKey, editorRef]);
 
   const uploads = binding ? boundUploads : localUploads;
-  // See `orphanUploads` on CoordinatedUploads: ids this mount started, i.e.
-  // the ones the document is already showing as an inline placeholder. A ref
-  // rather than state — it is written during handleUpload, and every read is
-  // paired with a `uploads` change that re-runs the memo below anyway.
+  // See `orphanUploads` on CoordinatedUploads. A ref rather than state — it is
+  // written during handleUpload, and every read is paired with a `uploads`
+  // change that re-runs the memo below anyway.
   const inlineUploadIdsRef = useRef<Set<string>>(new Set());
   const orphanUploads = useMemo(
-    () => uploads.filter((u) => !inlineUploadIdsRef.current.has(u.clientUploadId)),
+    () =>
+      uploads.filter((u) => {
+        // A finished upload is rendered by the editor / AttachmentList, never
+        // as a chip. Excluded here so a caller can gate the strip on
+        // `orphanUploads.length` and get the answer it expects.
+        if (u.status === "uploaded") return false;
+        // Still running AND started here → the document holds its placeholder.
+        if (u.status === "uploading") return !inlineUploadIdsRef.current.has(u.clientUploadId);
+        // failed / interrupted: the node is gone, so the chip is all there is.
+        return true;
+      }),
     [uploads],
   );
   const attachments = useMemo(() => {

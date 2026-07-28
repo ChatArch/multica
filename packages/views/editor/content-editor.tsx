@@ -797,13 +797,11 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     }, [editor, placeholderText]);
 
     useImperativeHandle(ref, () => ({
-      // Intentionally NOT routed through `normalizeMarkdown` — this refactor
-      // must preserve the exact current return value (no `trimEnd`).
-      // Deliberately NOT normalized — see the "stays untrimmed" safety net in
-      // content-editor.test.tsx. It used to be wrapped in `stripBlobUrls`;
-      // that wrapper is gone because an in-flight placeholder no longer
-      // serialises at all, which is strictly stronger than scrubbing it after
-      // the fact.
+      // Intentionally NOT routed through `normalizeMarkdown` — see the "stays
+      // untrimmed" safety net in content-editor.test.tsx. It used to also pass
+      // through `stripBlobUrls`; that wrapper is gone because an in-flight
+      // placeholder no longer serialises at all, which is strictly stronger
+      // than scrubbing it back out afterwards.
       getMarkdown: () => editor?.getMarkdown() ?? "",
       clearContent: () => {
         editor?.commands.clearContent();
