@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useMemo } from "react";
+import { memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   HoverCard,
@@ -8,22 +8,14 @@ import {
   HoverCardContent,
 } from "@multica/ui/components/ui/hover-card";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { agentTaskSnapshotOptions } from "@multica/core/agents";
-import type { AgentTask } from "@multica/core/types";
-import { cn } from "@multica/ui/lib/utils";
+import { workspaceWorkingAgentsOptions } from "@multica/core/agents";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
-import { AgentActivityHoverContent } from "../../agents/components/agent-activity-hover-content";
-import { selectIssuesTasks, type IssueTaskGroups } from "../surface/activity";
+import { WorkingAgentsHoverContent } from "./workspace-agent-working-chip";
 import { useT } from "../../i18n";
 
-const EMPTY_GROUPS: IssueTaskGroups = { running: [], queued: [] };
-
 interface SubIssuesAgentWorkingChipProps {
-  /**
-   * Sub-issue ids to aggregate over. Callers must pass a memoized array —
-   * the id Set (and with it the query select) is rebuilt on identity change.
-   */
-  issueIds: readonly string[];
+  /** Parent issue whose direct children this chip aggregates over. */
+  parentIssueId: string;
 }
 
 /**
@@ -33,81 +25,49 @@ interface SubIssuesAgentWorkingChipProps {
  * are on this parent's children right now" without scanning the rows — and
  * keeps that signal visible while the list is collapsed.
  *
- * Same data path as the row indicators: the one shared workspace agent-task
- * snapshot, narrowed with a select over the children's ids so only changes
- * to their own tasks re-render the header (see selectIssuesTasks).
+ * It reads the same /api/working-agents projection as the Issues list header,
+ * narrowed with `parent`. That is deliberate: a header count is a claim about
+ * a scope, so the server owns both the scope and the arithmetic, exactly as
+ * it does for the Issues list. Deriving it here from the workspace task
+ * snapshot would put a second definition of "working" in the client, and the
+ * count and the hover body would each have to re-derive it.
  *
- *   - ≥1 running task → avatar stack + shimmering "N agents working"
- *   - queued only     → half-opacity stack + muted "N agents queued"
- *   - nothing         → null (no chrome, matching the row indicator)
- *
- * N counts unique agents, not tasks, matching the workspace chip whose
- * locale strings this reuses (`chip_agents_working` / `hover_header_queued`
- * ship in every locale already). Hovering lists each active task via the
- * shared activity card; default open delay is fine here — this is one
- * header chip the user aims at, not a per-row cue (cf. the 900ms rationale
- * in issue-agent-activity-indicator.tsx).
+ * Row indicators keep reading the snapshot — one shared query sliced per row
+ * is the right shape for a per-row cue, and a stale row decoration costs
+ * nothing. A header number is the opposite: it has to be authoritative.
  */
-export const SubIssuesAgentWorkingChip = memo(function SubIssuesAgentWorkingChip({
-  issueIds,
-}: SubIssuesAgentWorkingChipProps) {
-  const { t } = useT("issues");
-  const wsId = useWorkspaceId();
-  const idSet = useMemo(() => new Set(issueIds), [issueIds]);
-  const select = useCallback(
-    (snapshot: AgentTask[]) => selectIssuesTasks(snapshot, idSet),
-    [idSet],
-  );
-  const { data: groups = EMPTY_GROUPS } = useQuery({
-    ...agentTaskSnapshotOptions(wsId),
-    select,
-  });
+export const SubIssuesAgentWorkingChip = memo(
+  function SubIssuesAgentWorkingChip({
+    parentIssueId,
+  }: SubIssuesAgentWorkingChipProps) {
+    const { t } = useT("issues");
+    const wsId = useWorkspaceId();
+    const { data: agents = [] } = useQuery(
+      workspaceWorkingAgentsOptions(wsId, "issue", undefined, parentIssueId),
+    );
 
-  const { agentIds, isRunning } = useMemo(() => {
-    // Prefer running agents for the stack; fall back to queued so a
-    // queued-only state still offers faces to hover.
-    const primary = groups.running.length > 0 ? groups.running : groups.queued;
-    return {
-      agentIds: [...new Set(primary.map((task) => task.agent_id))],
-      isRunning: groups.running.length > 0,
-    };
-  }, [groups]);
+    if (agents.length === 0) return null;
 
-  if (agentIds.length === 0) return null;
+    const agentIds = agents.map((agent) => agent.id);
 
-  const hoverTasks = [...groups.running, ...groups.queued];
-
-  return (
-    <HoverCard>
-      <HoverCardTrigger
-        render={
-          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5" />
-        }
-      >
-        <AgentAvatarStack
-          agentIds={agentIds}
-          size="xs"
-          opacity={isRunning ? "full" : "half"}
-          max={3}
-        />
-        <span
-          className={cn(
-            "text-[11px] leading-none tabular-nums font-medium",
-            isRunning ? "animate-chat-text-shimmer" : "text-muted-foreground",
-          )}
+    return (
+      <HoverCard>
+        <HoverCardTrigger
+          render={
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5" />
+          }
         >
-          {isRunning
-            ? t(($) => $.agent_activity.chip_agents_working, {
-                count: agentIds.length,
-              })
-            : t(($) => $.agent_activity.hover_header_queued, {
-                count: agentIds.length,
-              })}
-        </span>
-      </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-72">
-        <AgentActivityHoverContent tasks={hoverTasks} />
-      </HoverCardContent>
-    </HoverCard>
-  );
-});
+          <AgentAvatarStack agentIds={agentIds} size="xs" max={3} />
+          <span className="animate-chat-text-shimmer text-[11px] font-medium leading-none tabular-nums">
+            {t(($) => $.agent_activity.chip_agents_working, {
+              count: agentIds.length,
+            })}
+          </span>
+        </HoverCardTrigger>
+        <HoverCardContent align="start" className="w-72">
+          <WorkingAgentsHoverContent agents={agents} />
+        </HoverCardContent>
+      </HoverCard>
+    );
+  },
+);

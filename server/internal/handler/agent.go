@@ -2188,13 +2188,36 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Narrows the projection to one issue's direct children, so an issue
+	// detail's sub-issue header reads this endpoint instead of deriving a
+	// count client-side. Left zero when absent, which the query treats as
+	// NULL and therefore as "no narrowing" — an older client that never
+	// sends it keeps the exact workspace-wide behaviour.
+	var parentIssueID pgtype.UUID
+	if raw := strings.TrimSpace(r.URL.Query().Get("parent")); raw != "" {
+		if workType != "issue" {
+			writeError(w, http.StatusBadRequest, "parent requires type=issue")
+			return
+		}
+		if scope != "" {
+			writeError(w, http.StatusBadRequest, "parent cannot be combined with scope")
+			return
+		}
+		var ok bool
+		parentIssueID, ok = parseUUIDOrBadRequest(w, raw, "parent")
+		if !ok {
+			return
+		}
+	}
+
 	rows, err := h.Queries.ListWorkspaceWorkingAgents(
 		r.Context(),
 		db.ListWorkspaceWorkingAgentsParams{
-			WorkspaceID:  parseUUID(workspaceID),
-			WorkType:     workType,
-			MineRelation: mineRelation,
-			MemberID:     memberID,
+			WorkspaceID:   parseUUID(workspaceID),
+			WorkType:      workType,
+			MineRelation:  mineRelation,
+			MemberID:      memberID,
+			ParentIssueID: parentIssueID,
 		},
 	)
 	if err != nil {

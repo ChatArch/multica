@@ -424,10 +424,20 @@ describe("ApiClient workspace working agents", () => {
       client.getWorkspaceWorkingAgents("issue"),
     ).resolves.toEqual(payload);
     await expect(client.getWorkspaceWorkingAgents()).resolves.toEqual(payload);
+    await expect(
+      client.getWorkspaceWorkingAgents("issue", undefined, "parent-1"),
+    ).resolves.toEqual(payload);
+    // The server rejects parent alongside scope, so a My Issues relation wins
+    // and the parent is dropped rather than sent into a 400.
+    await expect(
+      client.getWorkspaceWorkingAgents("issue", "assigned", "parent-1"),
+    ).resolves.toEqual(payload);
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "https://api.example.test/api/working-agents?type=issue&scope=mine&relation=assigned",
       "https://api.example.test/api/working-agents?type=issue",
       "https://api.example.test/api/working-agents",
+      "https://api.example.test/api/working-agents?type=issue&parent=parent-1",
+      "https://api.example.test/api/working-agents?type=issue&scope=mine&relation=assigned",
     ]);
   });
 });

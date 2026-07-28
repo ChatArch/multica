@@ -1,9 +1,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentTask } from "@multica/core/types";
+import type { WorkspaceWorkingAgent } from "@multica/core/types";
 
 const mockState = vi.hoisted(() => ({
-  snapshot: [] as unknown[],
+  agents: [] as WorkspaceWorkingAgent[],
+  optionsCalls: [] as unknown[][],
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -11,29 +12,24 @@ vi.mock("@multica/core/hooks", () => ({
 }));
 
 vi.mock("@multica/core/agents", () => ({
-  agentTaskSnapshotOptions: (wsId: string) => ({
-    queryKey: ["agents", "task-snapshot", wsId],
-  }),
+  workspaceWorkingAgentsOptions: (...args: unknown[]) => {
+    mockState.optionsCalls.push(args);
+    return { queryKey: ["working-agents", ...args] };
+  },
 }));
 
 vi.mock("../../agents/components/agent-avatar-stack", () => ({
-  AgentAvatarStack: ({
-    agentIds,
-    opacity,
-  }: {
-    agentIds: string[];
-    opacity?: string;
-  }) => (
-    <div data-testid="agent-avatar-stack" data-opacity={opacity}>
-      {agentIds.length}
-    </div>
+  AgentAvatarStack: ({ agentIds }: { agentIds: string[] }) => (
+    <div data-testid="agent-avatar-stack">{agentIds.join(",")}</div>
   ),
 }));
 
-vi.mock("../../agents/components/agent-activity-hover-content", () => ({
-  AgentActivityHoverContent: ({ tasks }: { tasks: AgentTask[] }) => (
-    <div data-testid="activity-hover">{tasks.length}</div>
-  ),
+vi.mock("./workspace-agent-working-chip", () => ({
+  WorkingAgentsHoverContent: ({
+    agents,
+  }: {
+    agents: readonly WorkspaceWorkingAgent[];
+  }) => <div data-testid="hover-body">{agents.length}</div>,
 }));
 
 vi.mock("../../i18n", () => ({
@@ -76,102 +72,79 @@ vi.mock("@tanstack/react-query", async () => {
     await vi.importActual<typeof import("@tanstack/react-query")>(
       "@tanstack/react-query",
     );
-  return {
-    ...actual,
-    useQuery: (opts: {
-      queryKey?: readonly unknown[];
-      select?: (data: unknown) => unknown;
-    }) => {
-      if (opts.queryKey?.[1] === "task-snapshot") {
-        return {
-          data: opts.select
-            ? opts.select(mockState.snapshot)
-            : mockState.snapshot,
-        };
-      }
-      return { data: undefined };
-    },
-  };
+  return { ...actual, useQuery: () => ({ data: mockState.agents }) };
 });
 
 import { SubIssuesAgentWorkingChip } from "./sub-issues-agent-working-chip";
 
-function makeTask(overrides: Partial<AgentTask> = {}): AgentTask {
+function makeAgent(
+  overrides: Partial<WorkspaceWorkingAgent> = {},
+): WorkspaceWorkingAgent {
   return {
-    id: "task-1",
-    agent_id: "agent-1",
-    runtime_id: "runtime-1",
-    issue_id: "child-1",
-    status: "running",
-    priority: 0,
-    dispatched_at: null,
-    started_at: "2026-06-08T08:00:00Z",
-    completed_at: null,
-    result: null,
-    error: null,
-    created_at: "2026-06-08T08:00:00Z",
+    id: "agent-1",
+    name: "Agent One",
+    avatar_url: null,
+    running_task_count: 1,
+    issue_ids: ["child-1"],
     ...overrides,
-  } as AgentTask;
+  };
 }
-
-const CHILD_IDS = ["child-1", "child-2"];
 
 beforeEach(() => {
   cleanup();
-  mockState.snapshot = [makeTask()];
+  mockState.agents = [];
+  mockState.optionsCalls = [];
 });
 
 describe("SubIssuesAgentWorkingChip", () => {
-  it("shows a working count aggregated across the given sub-issues", () => {
-    mockState.snapshot = [
-      makeTask({ id: "t1", agent_id: "agent-1", issue_id: "child-1" }),
-      makeTask({ id: "t2", agent_id: "agent-2", issue_id: "child-2" }),
-      // Second task by an already-counted agent — counts agents, not tasks.
-      makeTask({ id: "t3", agent_id: "agent-2", issue_id: "child-1" }),
-      // Unrelated issue — must not leak into the aggregate.
-      makeTask({ id: "t4", agent_id: "agent-3", issue_id: "other-issue" }),
-    ];
+  it("asks the server to narrow the projection to the parent's children", () => {
+    mockState.agents = [makeAgent()];
 
-    render(<SubIssuesAgentWorkingChip issueIds={CHILD_IDS} />);
+    render(<SubIssuesAgentWorkingChip parentIssueId="parent-1" />);
 
-    expect(screen.getByText("agent_activity.chip_agents_working:2")).not.toBeNull();
-    expect(screen.getByTestId("agent-avatar-stack").textContent).toBe("2");
+    // type=issue plus the parent id, and no My Issues relation. Getting this
+    // wrong silently widens the chip to the whole workspace.
+    expect(mockState.optionsCalls).toEqual([
+      ["ws-1", "issue", undefined, "parent-1"],
+    ]);
   });
 
-  it("falls back to a muted queued state when nothing is running", () => {
-    mockState.snapshot = [
-      makeTask({ id: "t1", agent_id: "agent-1", status: "queued" }),
+  it("counts the agents the server returned", () => {
+    mockState.agents = [
+      makeAgent({ id: "agent-1", issue_ids: ["child-1"] }),
+      makeAgent({ id: "agent-2", issue_ids: ["child-2"] }),
     ];
 
-    render(<SubIssuesAgentWorkingChip issueIds={CHILD_IDS} />);
+    render(<SubIssuesAgentWorkingChip parentIssueId="parent-1" />);
 
-    expect(screen.getByText("agent_activity.hover_header_queued:1")).not.toBeNull();
-    expect(screen.getByTestId("agent-avatar-stack").getAttribute("data-opacity")).toBe(
-      "half",
+    expect(
+      screen.getByText("agent_activity.chip_agents_working:2"),
+    ).not.toBeNull();
+    expect(screen.getByTestId("agent-avatar-stack").textContent).toBe(
+      "agent-1,agent-2",
     );
   });
 
-  it("wraps the chip in a hover card listing every active task", () => {
-    mockState.snapshot = [
-      makeTask({ id: "t1", agent_id: "agent-1", issue_id: "child-1" }),
-      makeTask({ id: "t2", agent_id: "agent-2", issue_id: "child-2", status: "queued" }),
+  it("hands the same agents to the hover body as it counted", () => {
+    mockState.agents = [
+      makeAgent({ id: "agent-1" }),
+      makeAgent({ id: "agent-2" }),
+      makeAgent({ id: "agent-3" }),
     ];
 
-    render(<SubIssuesAgentWorkingChip issueIds={CHILD_IDS} />);
+    render(<SubIssuesAgentWorkingChip parentIssueId="parent-1" />);
 
-    expect(screen.getByTestId("hover-card")).not.toBeNull();
-    expect(screen.getByTestId("activity-hover").textContent).toBe("2");
+    // The number and the hover body must never disagree — they are the same
+    // list, not two derivations of one snapshot.
+    expect(
+      screen.getByText("agent_activity.chip_agents_working:3"),
+    ).not.toBeNull();
+    expect(screen.getByTestId("hover-body").textContent).toBe("3");
   });
 
-  it("renders nothing when no agent is on any sub-issue", () => {
-    mockState.snapshot = [
-      makeTask({ id: "t1", issue_id: "other-issue" }),
-      // Terminal statuses belong to history, not the live chip.
-      makeTask({ id: "t2", issue_id: "child-1", status: "completed" }),
-    ];
-
+  it("renders nothing when no agent is working on a sub-issue", () => {
     const { container } = render(
-      <SubIssuesAgentWorkingChip issueIds={CHILD_IDS} />,
+      <SubIssuesAgentWorkingChip parentIssueId="parent-1" />,
     );
 
     expect(container.firstChild).toBeNull();

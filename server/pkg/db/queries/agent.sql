@@ -1369,7 +1369,10 @@ SELECT t.* FROM (
 -- comment-triggered issue work. Quick-create work is present only in the
 -- unfiltered projection because it has no source FK yet. mine_relation is
 -- optional (empty = workspace); when set it narrows issue work to the
--- authenticated member's My Issues relation.
+-- authenticated member's My Issues relation. parent_issue_id is optional
+-- (NULL = workspace); when set it narrows issue work to the direct children
+-- of that issue, so an issue detail's sub-issue header reads the same
+-- projection as the Issues list header instead of deriving its own count.
 SELECT
   a.id,
   a.name,
@@ -1469,6 +1472,16 @@ WHERE a.workspace_id = $1
             )
           )
         )
+    )
+  )
+  AND (
+    @parent_issue_id::uuid IS NULL
+    OR EXISTS (
+      SELECT 1
+      FROM issue child
+      WHERE child.id = atq.issue_id
+        AND child.workspace_id = a.workspace_id
+        AND child.parent_issue_id = @parent_issue_id::uuid
     )
   )
 GROUP BY a.id, a.name, a.avatar_url, a.created_at

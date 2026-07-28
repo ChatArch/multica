@@ -2479,7 +2479,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       {doneCount}/{childIssues.length}
                     </span>
                   </div>
-                  <SubIssuesAgentWorkingChip issueIds={childIssueIds} />
+                  {/* issue.id, not the route param — the endpoint takes a
+                      UUID and the route may carry a human-readable id. */}
+                  <SubIssuesAgentWorkingChip parentIssueId={issue.id} />
                   <input
                     type="checkbox"
                     checked={allChildrenSelected}

@@ -4229,15 +4229,26 @@ WHERE a.workspace_id = $1
         )
     )
   )
+  AND (
+    $5::uuid IS NULL
+    OR EXISTS (
+      SELECT 1
+      FROM issue child
+      WHERE child.id = atq.issue_id
+        AND child.workspace_id = a.workspace_id
+        AND child.parent_issue_id = $5::uuid
+    )
+  )
 GROUP BY a.id, a.name, a.avatar_url, a.created_at
 ORDER BY a.created_at ASC
 `
 
 type ListWorkspaceWorkingAgentsParams struct {
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	WorkType     string      `json:"work_type"`
-	MineRelation string      `json:"mine_relation"`
-	MemberID     pgtype.UUID `json:"member_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	WorkType      string      `json:"work_type"`
+	MineRelation  string      `json:"mine_relation"`
+	MemberID      pgtype.UUID `json:"member_id"`
+	ParentIssueID pgtype.UUID `json:"parent_issue_id"`
 }
 
 type ListWorkspaceWorkingAgentsRow struct {
@@ -4256,13 +4267,17 @@ type ListWorkspaceWorkingAgentsRow struct {
 // comment-triggered issue work. Quick-create work is present only in the
 // unfiltered projection because it has no source FK yet. mine_relation is
 // optional (empty = workspace); when set it narrows issue work to the
-// authenticated member's My Issues relation.
+// authenticated member's My Issues relation. parent_issue_id is optional
+// (NULL = workspace); when set it narrows issue work to the direct children
+// of that issue, so an issue detail's sub-issue header reads the same
+// projection as the Issues list header instead of deriving its own count.
 func (q *Queries) ListWorkspaceWorkingAgents(ctx context.Context, arg ListWorkspaceWorkingAgentsParams) ([]ListWorkspaceWorkingAgentsRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceWorkingAgents,
 		arg.WorkspaceID,
 		arg.WorkType,
 		arg.MineRelation,
 		arg.MemberID,
+		arg.ParentIssueID,
 	)
 	if err != nil {
 		return nil, err
