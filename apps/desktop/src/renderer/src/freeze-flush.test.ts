@@ -161,6 +161,54 @@ describe("telemetry props carry no raw identifiers", () => {
     expect(props).not.toHaveProperty("windowUrl");
   });
 
+  // Review finding (MUL-5345): the flush side used to forward `context.stack`
+  // wholesale. That array crosses an on-disk breadcrumb which is barely
+  // validated on read, so an older build, a corrupt file or a future writer
+  // could put a live handle in it and this would ship it.
+  it("rebuilds stack frames instead of forwarding whatever the file held", () => {
+    const props = buildFreezeEventProps({
+      ...hang,
+      context: {
+        stack: [
+          {
+            functionName: "blockMainThread",
+            url: "file:///Users/someone/Applications/Multica.app/out/renderer/main.js",
+            location: { lineNumber: 12, columnNumber: 3 },
+            scopeChain: [{ type: "local", object: { objectId: "{secret-scope}" } }],
+            this: { objectId: "{secret-this}" },
+            returnValue: "raw-value",
+          },
+        ],
+      },
+    });
+
+    const serialized = JSON.stringify(props);
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("raw-value");
+    // The absolute install path carries the OS username; only the tail ships.
+    expect(serialized).not.toContain("someone");
+    expect(props.stack).toEqual([
+      {
+        functionName: "blockMainThread",
+        url: "renderer/main.js",
+        lineNumber: 12,
+        columnNumber: 3,
+      },
+    ]);
+    expect(props.stack_function).toBe("blockMainThread");
+    expect(props.stack_url).toBe("renderer/main.js");
+    expect(props.stack_line).toBe(12);
+  });
+
+  it("omits the stack fields when the file held nothing usable", () => {
+    for (const stack of [undefined, [], "not-an-array", [null]]) {
+      const props = buildFreezeEventProps({ ...hang, context: { stack } });
+      expect(props).not.toHaveProperty("stack");
+      expect(props).not.toHaveProperty("stack_depth");
+      expect(props).not.toHaveProperty("stack_function");
+    }
+  });
+
   it("drops an unknown context key rather than forwarding it", () => {
     const props = buildFreezeEventProps({
       ...hang,

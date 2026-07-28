@@ -30,6 +30,14 @@
 //   * BEST EFFORT: every failure resolves to null. A diagnostic must never be
 //     the reason the app stays broken.
 
+import {
+  HANG_STACK_MAX_FRAMES,
+  sanitizeHangStackFrames,
+  type HangStackFrame,
+} from "../shared/hang-stack";
+
+export type { HangStackFrame };
+
 /** Minimal CDP debugger surface — matches Electron's `webContents.debugger`. */
 export interface CdpDebugger {
   isAttached(): boolean;
@@ -54,13 +62,6 @@ export const ALLOWED_CDP_METHODS = [
   "Debugger.resume",
 ] as const;
 
-export interface HangStackFrame {
-  functionName: string;
-  url: string;
-  lineNumber: number;
-  columnNumber: number;
-}
-
 export interface CaptureHangStackOptions {
   /** Give up waiting for `Debugger.paused` after this long. */
   timeoutMs?: number;
@@ -69,7 +70,6 @@ export interface CaptureHangStackOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 2000;
-const DEFAULT_MAX_FRAMES = 20;
 
 /**
  * Send a single CDP command, enforcing the allowlist. This is the ONLY path to
@@ -96,12 +96,20 @@ export function sendDebuggerCommand(
  * healthy — that is the entire point. Returns whether the channel is usable.
  */
 export async function warmDebuggerChannel(dbg: CdpDebugger): Promise<boolean> {
+  let attachedHere = false;
   try {
-    if (!dbg.isAttached()) dbg.attach("1.3");
+    if (!dbg.isAttached()) {
+      dbg.attach("1.3");
+      attachedHere = true;
+    }
     await sendDebuggerCommand(dbg, "Debugger.enable");
     return true;
   } catch {
     // Another client owns the debugger, or the renderer is already gone.
+    // An attach we made and could not enable has to be rolled back: reporting
+    // failure while leaving the channel open would strand a debugger on a
+    // renderer nothing is tracking.
+    if (attachedHere) detachQuietly(dbg);
     return false;
   }
 }
@@ -112,12 +120,23 @@ export async function warmDebuggerChannel(dbg: CdpDebugger): Promise<boolean> {
  * revoke the channel too rather than merely skipping the next capture.
  */
 export async function coolDebuggerChannel(dbg: CdpDebugger): Promise<void> {
+  if (!dbg.isAttached()) return;
   try {
-    if (!dbg.isAttached()) return;
     await sendDebuggerCommand(dbg, "Debugger.disable");
+  } catch {
+    // Disable is a courtesy to the renderer; detach is the contract. A failed
+    // disable must not leave the channel attached, or revoking the kill switch
+    // would not actually revoke anything.
+  } finally {
+    detachQuietly(dbg);
+  }
+}
+
+function detachQuietly(dbg: CdpDebugger): void {
+  try {
     dbg.detach();
   } catch {
-    // Already detached / renderer gone — nothing to close.
+    // Already detached / renderer gone.
   }
 }
 
@@ -133,7 +152,7 @@ export async function captureHangStack(
   options: CaptureHangStackOptions = {},
 ): Promise<HangStackFrame[] | null> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxFrames = options.maxFrames ?? DEFAULT_MAX_FRAMES;
+  const maxFrames = options.maxFrames ?? HANG_STACK_MAX_FRAMES;
 
   if (!dbg.isAttached()) return null;
 
@@ -146,7 +165,7 @@ export async function captureHangStack(
     const paused = new Promise<HangStackFrame[] | null>((resolve) => {
       onMessage = (_event, method, params) => {
         if (method !== "Debugger.paused") return;
-        resolve(sanitizeCallFrames(params.callFrames, maxFrames));
+        resolve(sanitizeHangStackFrames(params.callFrames, maxFrames));
       };
       dbg.on("message", onMessage);
       timer = setTimeout(() => resolve(null), timeoutMs);
@@ -171,49 +190,4 @@ export async function captureHangStack(
       // The renderer may already be gone; nothing left to resume.
     }
   }
-}
-
-/**
- * Copy the four scalar fields we report and drop everything else the protocol
- * sends — notably `scopeChain`, whose object handles could be dereferenced
- * into user data.
- */
-export function sanitizeCallFrames(
-  rawFrames: unknown,
-  maxFrames: number,
-): HangStackFrame[] | null {
-  if (!Array.isArray(rawFrames) || rawFrames.length === 0) return null;
-
-  const frames: HangStackFrame[] = [];
-  for (const raw of rawFrames.slice(0, maxFrames)) {
-    if (!raw || typeof raw !== "object") continue;
-    const frame = raw as Record<string, unknown>;
-    const location = (frame.location ?? {}) as Record<string, unknown>;
-    frames.push({
-      functionName:
-        typeof frame.functionName === "string" && frame.functionName
-          ? frame.functionName
-          : "(anonymous)",
-      url: redactFrameUrl(frame.url),
-      lineNumber: toNumber(location.lineNumber),
-      columnNumber: toNumber(location.columnNumber),
-    });
-  }
-  return frames.length > 0 ? frames : null;
-}
-
-/**
- * Keep only the bundle-relative tail of a script URL. The full value is a
- * `file://` path into the install location and can carry the OS username.
- */
-export function redactFrameUrl(url: unknown): string {
-  if (typeof url !== "string" || !url) return "";
-  const [withoutQuery = ""] = url.split(/[?#]/);
-  const segments = withoutQuery.split("/").filter(Boolean);
-  if (segments.length === 0) return "";
-  return segments.slice(-2).join("/");
-}
-
-function toNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }

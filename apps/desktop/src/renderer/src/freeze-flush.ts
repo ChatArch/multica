@@ -1,5 +1,6 @@
 import type { CaptureEventOptions } from "@multica/core/analytics";
 import type { FreezeBreadcrumb } from "../../shared/freeze-breadcrumb";
+import { sanitizeHangStackFrames } from "../../shared/hang-stack";
 
 // Reporting a failure the previous session couldn't report itself.
 //
@@ -111,26 +112,29 @@ function routeProps(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Frames are already reduced to code locations by the capture side. The top
- * frame is also flattened onto the event so a hang can be grouped by the
+ * Frames are rebuilt here rather than forwarded.
+ *
+ * The capture side already whitelists, but its output travels through an
+ * on-disk breadcrumb that `readFreezeBreadcrumb` barely validates — it only
+ * has to survive version skew. So the array reaching this function could come
+ * from an older build, a corrupt file, or a future writer, and shipping it
+ * as-is would put whatever it contains (a `scopeChain` handle, an absolute
+ * install path) straight into telemetry. Re-sanitizing is cheap; trusting the
+ * file is not.
+ *
+ * The top frame is also flattened onto the event so a hang groups by the
  * function that blocked the thread without unpacking the array.
  */
 function stackProps(value: unknown): Record<string, unknown> {
-  if (!Array.isArray(value) || value.length === 0) return {};
-  const frames = value as Array<Record<string, unknown>>;
-  const top = frames[0];
+  const frames = sanitizeHangStackFrames(value);
+  if (!frames) return {};
+  const top = frames[0]!;
   return {
     stack: frames,
     stack_depth: frames.length,
-    ...(top && typeof top.functionName === "string"
-      ? { stack_function: top.functionName }
-      : {}),
-    ...(top && typeof top.url === "string" && top.url
-      ? { stack_url: top.url }
-      : {}),
-    ...(top && typeof top.lineNumber === "number"
-      ? { stack_line: top.lineNumber }
-      : {}),
+    stack_function: top.functionName,
+    ...(top.url ? { stack_url: top.url } : {}),
+    stack_line: top.lineNumber,
   };
 }
 

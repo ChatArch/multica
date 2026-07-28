@@ -37,12 +37,8 @@ import {
   coolDebuggerChannel,
   warmDebuggerChannel,
 } from "./renderer-stack-capture";
-import {
-  DIAGNOSTICS_CONTROL_CHANNEL,
-  DIAGNOSTICS_CONTROL_OFF,
-  parseDiagnosticsControl,
-  type DiagnosticsControl,
-} from "../shared/diagnostics-control";
+import { DIAGNOSTICS_CONTROL_CHANNEL } from "../shared/diagnostics-control";
+import { createDiagnosticsControlRegistry } from "./diagnostics-control-registry";
 import {
   loadWindowState,
   resolveWindowOptions,
@@ -155,57 +151,31 @@ const rendererRouteContexts = new WeakMap<
 >();
 
 // Hang stack capture is off until the backend says otherwise, and stays off in
-// dev. Reading a stack means holding a debugger channel open on every
-// renderer, so it has to be revocable without shipping a release — the flag
-// arrives with /api/config, which is also why this cannot be decided at window
-// creation: no renderer has fetched config yet at that point.
-let diagnosticsControl: DiagnosticsControl = DIAGNOSTICS_CONTROL_OFF;
-const debuggerWarmedWindows = new WeakSet<Electron.WebContents>();
-
-function stackCaptureAllowed(): boolean {
-  return !is.dev && diagnosticsControl.stackCaptureEnabled;
-}
-
-/**
- * Open the debugger channel for a healthy renderer. A hang can only be
- * interrogated through a channel that already exists — a command sent after
- * the main thread is stuck is never dispatched (measured on Electron 39.8.7).
- * Warming is therefore driven by the flag arriving, not by window creation.
- */
-function warmStackCaptureFor(webContents: Electron.WebContents): void {
-  if (!stackCaptureAllowed()) return;
-  if (webContents.isDestroyed()) return;
-  if (debuggerWarmedWindows.has(webContents)) return;
-  debuggerWarmedWindows.add(webContents);
-  void warmDebuggerChannel(webContents.debugger).then((warmed) => {
-    if (!warmed) debuggerWarmedWindows.delete(webContents);
-  });
-}
-
-function warmStackCaptureForAllWindows(): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) warmStackCaptureFor(window.webContents);
-  }
-}
-
-/**
- * Revoking the flag has to close the channels too. Skipping the next capture
- * would leave every renderer running with a debugger attached, which is the
- * state the kill switch exists to be able to exit.
- */
-function detachStackCaptureFromAllWindows(): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (window.isDestroyed()) continue;
-    debuggerWarmedWindows.delete(window.webContents);
-    void coolDebuggerChannel(window.webContents.debugger);
-  }
-}
+// dev. Reading a stack means holding a debugger channel open on a renderer, so
+// it has to be revocable without shipping a release — the flag arrives with
+// /api/config, which is also why this cannot be decided at window creation: no
+// renderer has fetched config yet at that point.
+//
+// State is per renderer, not global: every window publishes `false` before its
+// own config lands, so one global value would let a newly opened window revoke
+// capture for the others (see diagnostics-control-registry).
+const diagnosticsControl = createDiagnosticsControlRegistry<Electron.WebContents>({
+  warm: (webContents) => {
+    if (is.dev || webContents.isDestroyed()) return;
+    void warmDebuggerChannel(webContents.debugger);
+  },
+  cool: (webContents) => {
+    if (webContents.isDestroyed()) return;
+    void coolDebuggerChannel(webContents.debugger);
+  },
+});
 
 /** Read the hung renderer's JS stack, or null when capture is not permitted. */
 async function captureStackIfEnabled(
   webContents: Electron.WebContents,
 ): Promise<unknown> {
-  if (!stackCaptureAllowed()) return null;
+  if (is.dev) return null;
+  if (!diagnosticsControl.isStackCaptureEnabled(webContents)) return null;
   if (webContents.isDestroyed()) return null;
   return captureHangStack(webContents.debugger);
 }
@@ -801,11 +771,7 @@ if (!gotTheLock) {
     // the debugger channels we are holding.
     ipcMain.on(DIAGNOSTICS_CONTROL_CHANNEL, (event, control: unknown) => {
       if (!BrowserWindow.fromWebContents(event.sender)) return;
-      const next = parseDiagnosticsControl(control);
-      if (next.stackCaptureEnabled === diagnosticsControl.stackCaptureEnabled) return;
-      diagnosticsControl = next;
-      if (next.stackCaptureEnabled) warmStackCaptureForAllWindows();
-      else detachStackCaptureFromAllWindows();
+      diagnosticsControl.apply(event.sender, control);
     });
 
     // Sync IPC: preload exposes the validated runtime config before renderer

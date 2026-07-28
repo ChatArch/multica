@@ -5,8 +5,7 @@ import { join } from "node:path";
 import {
   ALLOWED_CDP_METHODS,
   captureHangStack,
-  redactFrameUrl,
-  sanitizeCallFrames,
+  coolDebuggerChannel,
   sendDebuggerCommand,
   warmDebuggerChannel,
   type CdpDebugger,
@@ -30,14 +29,19 @@ function makeDebugger(
   const sent: string[] = [];
   let attached = options.attached ?? true;
 
+  const attach = vi.fn(() => {
+    if (options.failOn === "attach") throw new Error("boom: attach");
+    attached = true;
+  });
+  const detach = vi.fn(() => {
+    if (options.failOn === "detach") throw new Error("boom: detach");
+    attached = false;
+  });
+
   const dbg: CdpDebugger = {
     isAttached: () => attached,
-    attach: () => {
-      attached = true;
-    },
-    detach: () => {
-      attached = false;
-    },
+    attach,
+    detach,
     sendCommand: vi.fn(async (method: string) => {
       sent.push(method);
       if (options.failOn === method) throw new Error(`boom: ${method}`);
@@ -53,7 +57,14 @@ function makeDebugger(
     off: (_event, listener) => listeners.delete(listener as MessageListener),
   };
 
-  return { dbg, sent, listenerCount: () => listeners.size };
+  return {
+    dbg,
+    sent,
+    attach,
+    detach,
+    isAttached: () => attached,
+    listenerCount: () => listeners.size,
+  };
 }
 
 const frame = {
@@ -190,25 +201,74 @@ describe("warmDebuggerChannel", () => {
   });
 });
 
-describe("frame sanitizing", () => {
-  it("labels an anonymous frame rather than dropping it", () => {
-    expect(sanitizeCallFrames([{ functionName: "", location: {} }], 10)).toEqual([
-      { functionName: "(anonymous)", url: "", lineNumber: 0, columnNumber: 0 },
-    ]);
+// Review finding (MUL-5345): the kill switch has to actually revoke. A detach
+// that only runs on the happy path leaves a debugger attached to a renderer
+// after the flag is turned off, which is the state the switch exists to exit.
+describe("the channel always closes", () => {
+  it("detaches even when Debugger.disable throws", async () => {
+    const { dbg, detach, isAttached } = makeDebugger({ failOn: "Debugger.disable" });
+
+    await coolDebuggerChannel(dbg);
+
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(isAttached()).toBe(false);
   });
 
-  it("returns null for a missing or empty frame list", () => {
-    expect(sanitizeCallFrames(undefined, 10)).toBeNull();
-    expect(sanitizeCallFrames([], 10)).toBeNull();
+  it("detaches on the normal path too", async () => {
+    const { dbg, sent, detach, isAttached } = makeDebugger();
+
+    await coolDebuggerChannel(dbg);
+
+    expect(sent).toEqual(["Debugger.disable"]);
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(isAttached()).toBe(false);
   });
 
-  it("strips the install path, which can contain the OS username", () => {
-    expect(
-      redactFrameUrl("file:///Users/someone/Applications/Multica.app/out/renderer/main.js"),
-    ).toBe("renderer/main.js");
+  it("does nothing when the channel was never open", async () => {
+    const { dbg, detach, sent } = makeDebugger({ attached: false });
+
+    await coolDebuggerChannel(dbg);
+
+    expect(sent).toEqual([]);
+    expect(detach).not.toHaveBeenCalled();
   });
 
-  it("tolerates a frame with no url", () => {
-    expect(redactFrameUrl(undefined)).toBe("");
+  it("survives a detach that itself throws", async () => {
+    const { dbg } = makeDebugger({ failOn: "detach" });
+
+    await expect(coolDebuggerChannel(dbg)).resolves.toBeUndefined();
+  });
+
+  // Warming is the other half: an attach we made and could not enable must be
+  // rolled back, or we report failure while leaving a channel open that
+  // nothing is tracking.
+  it("rolls the attach back when Debugger.enable throws", async () => {
+    const { dbg, attach, detach, isAttached } = makeDebugger({
+      attached: false,
+      failOn: "Debugger.enable",
+    });
+
+    expect(await warmDebuggerChannel(dbg)).toBe(false);
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(isAttached()).toBe(false);
+  });
+
+  it("leaves an already-attached channel alone when enable throws", async () => {
+    // Someone else owns the debugger (DevTools). We did not attach it, so we
+    // must not detach it out from under them.
+    const { dbg, detach } = makeDebugger({ attached: true, failOn: "Debugger.enable" });
+
+    expect(await warmDebuggerChannel(dbg)).toBe(false);
+
+    expect(detach).not.toHaveBeenCalled();
+  });
+
+  it("reports failure without throwing when attach itself throws", async () => {
+    const { dbg, detach } = makeDebugger({ attached: false, failOn: "attach" });
+
+    expect(await warmDebuggerChannel(dbg)).toBe(false);
+    expect(detach).not.toHaveBeenCalled();
   });
 });
