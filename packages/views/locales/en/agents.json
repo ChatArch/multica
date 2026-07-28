@@ -433,15 +433,34 @@
       "select_image_toast": "Please select an image file.",
       "upload_failed_toast": "Avatar upload failed"
     },
-    "run_location": {
-      "label": "Where should this agent run?",
-      "cloud_title": "Multica Cloud",
-      "cloud_desc": "Managed for you — nothing to install",
+    "execution_picker": {
+      "device_title": "Choose a device",
+      "device_description": "Start with the machine that will run this agent.",
+      "cloud_device_description": "Managed infrastructure, always available",
+      "cloud_not_enabled": "Not turned on",
+      "cloud_enable_dialog": {
+        "title": "Turn on Multica Cloud?",
+        "description": "Use managed runtimes without connecting a local machine.",
+        "cancel": "Cancel",
+        "confirm": "Turn on and continue"
+      },
+      "computer_description": "A computer connected to this workspace",
       "recommended": "Recommended",
-      "local_title": "My computer",
-      "local_desc": "Runs on a machine you own",
-      "cloud_bound_hint": "Runs on {{name}}, managed by Multica.",
-      "cloud_preview_notice": "Preview only — Cloud capacity is not wired up yet, so choose “My computer” to actually create an agent."
+      "change_device": "Choose a different device",
+      "runtime_title": "Choose a runtime",
+      "runtime_description": "Select the agent runtime available on this device.",
+      "runtime_ready": "Online and ready",
+      "runtime_offline": "Currently offline",
+      "runtime_summary": "{{online}} of {{total}} runtimes online",
+      "model_title": "Choose a model",
+      "model_description": "Select a model, then tune only the options it supports.",
+      "model_parameters": "Model options",
+      "model_parameters_description": "These settings apply to this agent only.",
+      "thinking_label": "Thinking level",
+      "thinking_default": "Default",
+      "fast_mode": "Fast Mode",
+      "fast_mode_description": "Prioritize lower latency for this agent.",
+      "fast_mode_badge": "Priority"
     }
   },
   "tab_body": {

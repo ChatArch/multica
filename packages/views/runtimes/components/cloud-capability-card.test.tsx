@@ -38,29 +38,21 @@ describe("CloudCapabilityCard (MUL-5385 preview)", () => {
   });
 
   it("offers a single switch instead of a machine form", () => {
-    renderCard();
+    const { container } = renderCard();
     expect(
-      screen.getByRole("button", { name: /Turn on Multica Cloud/ }),
+      screen.getByRole("button", { name: /Turn on/ }),
     ).toBeInTheDocument();
-    // No capacity numbers before it is on.
+    expect(container.textContent).not.toContain("No CLI to install");
+    expect(container.textContent).not.toContain("Capacity follows");
     expect(screen.queryByText(/Credits left/)).toBeNull();
   });
 
-  it("shows balance, concurrency and a speed tier once turned on", () => {
+  it("shows mock balance and workload in the compact runtime row", () => {
     renderCard();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Turn on Multica Cloud/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Turn on/ }));
     expect(screen.getByText(/Credits left/)).toBeInTheDocument();
-    expect(screen.getByText(/Running now/)).toBeInTheDocument();
-    expect(
-      (screen.getByRole("radio", { name: /Standard/ }) as HTMLInputElement)
-        .checked,
-    ).toBe(true);
-    fireEvent.click(screen.getByRole("radio", { name: /Fast/ }));
-    expect(
-      (screen.getByRole("radio", { name: /Fast/ }) as HTMLInputElement).checked,
-    ).toBe(true);
+    expect(screen.getByText(/2 running · 0 queued/)).toBeInTheDocument();
+    expect(screen.queryByRole("radio")).toBeNull();
   });
 
   /**
@@ -70,9 +62,7 @@ describe("CloudCapabilityCard (MUL-5385 preview)", () => {
    */
   it("never exposes instance type, disk size or region vocabulary", () => {
     const { container } = renderCard();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Turn on Multica Cloud/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Turn on/ }));
     const text = container.textContent ?? "";
     for (const banned of [
       "instance",

@@ -430,32 +430,14 @@
     "no_data": "还没有使用数据"
   },
   "cloud_preview": {
-    "badge": "预览",
     "title": "Multica Cloud",
-    "tagline": "在 Multica 托管的环境里运行 agent，不用自己准备机器。",
+    "tagline": "托管云端 Runtime，无需本地设备。",
     "status_ready": "就绪",
-    "enable": "开启 Multica Cloud",
+    "enable": "开启",
     "disable": "关闭",
     "advanced": "高级",
-    "mock_note": "预览：数值为示意，尚未真正开通任何算力。",
-    "pitch": "agent 运行在 Multica 为你准备好的环境里，算力、更新和清理都由我们负责。",
-    "benefits": {
-      "no_install": "不用装 CLI，也不用一直开着 daemon",
-      "no_api_key": "不用自带模型 API key",
-      "elastic": "算力随任务伸缩，空闲不产生费用"
-    },
     "stats": {
-      "credits": "剩余额度",
-      "used_this_month": "本月已用",
-      "concurrency": "正在运行",
-      "concurrency_value": "{{active}} / {{limit}}"
-    },
-    "tier": {
-      "label": "速度",
-      "standard": "标准",
-      "standard_hint": "适合大多数任务",
-      "fast": "快速",
-      "fast_hint": "单个任务更快，消耗更多额度"
+      "credits": "剩余额度"
     },
     "machines_title": "我的电脑",
     "machines_hint": "你自己运行 daemon 的机器。代码和 API key 只留在这些机器上。"

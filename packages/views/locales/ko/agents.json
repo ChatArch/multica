@@ -327,15 +327,34 @@
       "select_image_toast": "이미지 파일을 선택하세요.",
       "upload_failed_toast": "아바타 업로드 실패"
     },
-    "run_location": {
-      "label": "이 에이전트를 어디서 실행할까요?",
-      "cloud_title": "Multica Cloud",
-      "cloud_desc": "Multica가 관리 — 설치 불필요",
+    "execution_picker": {
+      "device_title": "실행 기기 선택",
+      "device_description": "이 에이전트를 실행할 기기를 먼저 선택하세요.",
+      "cloud_device_description": "Multica에서 관리하며 언제든 사용 가능",
+      "cloud_not_enabled": "켜지지 않음",
+      "cloud_enable_dialog": {
+        "title": "Multica Cloud를 켤까요?",
+        "description": "켜면 로컬 기기를 연결하지 않고 관리형 Runtime을 사용할 수 있습니다.",
+        "cancel": "취소",
+        "confirm": "켜고 계속"
+      },
+      "computer_description": "워크스페이스에 연결된 컴퓨터",
       "recommended": "권장",
-      "local_title": "내 컴퓨터",
-      "local_desc": "내가 소유한 머신에서 실행",
-      "cloud_bound_hint": "{{name}}에서 실행됩니다(Multica 관리).",
-      "cloud_preview_notice": "프리뷰 전용 — 클라우드 용량이 아직 연결되지 않았습니다. 실제로 만들려면 “내 컴퓨터”를 선택하세요."
+      "change_device": "다른 기기 선택",
+      "runtime_title": "런타임 선택",
+      "runtime_description": "이 기기에서 사용할 수 있는 에이전트 런타임을 선택하세요.",
+      "runtime_ready": "온라인, 사용 가능",
+      "runtime_offline": "현재 오프라인",
+      "runtime_summary": "런타임 {{total}}개 중 {{online}}개 온라인",
+      "model_title": "모델 선택",
+      "model_description": "모델을 선택하면 지원하는 설정만 표시됩니다.",
+      "model_parameters": "모델 옵션",
+      "model_parameters_description": "이 설정은 현재 에이전트에만 적용됩니다.",
+      "thinking_label": "사고 수준",
+      "thinking_default": "기본값",
+      "fast_mode": "빠른 모드",
+      "fast_mode_description": "이 에이전트의 응답 지연을 우선적으로 줄입니다.",
+      "fast_mode_badge": "우선"
     }
   },
   "tab_body": {
