@@ -3917,8 +3917,11 @@ func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, e
 		task.PriorSessionID = ""
 		taskCtx.PriorSessionResumed = false
 		// The user expected this run to continue the prior conversation; surface
-		// the loss in the brief instead of silently restarting (MUL-4424).
+		// the loss instead of silently restarting (MUL-4424). Set it on BOTH
+		// carriers: the notice is rendered from `task` by BuildPrompt (MUL-5377
+		// moved it out of the brief), while taskCtx still drives execenv.
 		taskCtx.PriorSessionResumeUnavailable = true
+		task.PriorSessionResumeUnavailable = true
 	}
 	return reused
 }
@@ -4018,8 +4021,11 @@ func gateCodexResumeToRolloutPresence(task *Task, taskCtx *execenv.TaskContextFo
 	task.PriorSessionID = ""
 	taskCtx.PriorSessionResumed = false
 	// The user expected this run to continue the prior conversation; surface the
-	// loss in the brief instead of silently restarting (MUL-4424).
+	// loss instead of silently restarting (MUL-4424). Set it on BOTH carriers:
+	// the notice is rendered from `task` by BuildPrompt (MUL-5377 moved it out
+	// of the brief), while taskCtx still drives execenv.
 	taskCtx.PriorSessionResumeUnavailable = true
+	task.PriorSessionResumeUnavailable = true
 }
 
 const (

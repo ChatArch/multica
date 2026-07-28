@@ -21,6 +21,29 @@ func freshSessionRetryPrompt(prompt string) string {
 	return notice + prompt
 }
 
+// perTurnContextBlocks renders the run-scoped context blocks that used to live
+// in the runtime brief (CLAUDE.md / AGENTS.md).
+//
+// Every value here changes from one run to the next on the same issue — the
+// initiator differs whenever another person comments, the continuity notice is
+// true of one run and false of the next, and the connected-app set is resolved
+// per run from the runtime MCP overlay. Claude Code loads the brief into
+// messages[0], ahead of the entire conversation, so rendering these there threw
+// away the prompt cache for the whole history on every resume. Appending them
+// to the per-turn user message puts them after the cached prefix instead, where
+// changing them costs only this turn's own tokens (MUL-5377).
+//
+// Returns "" when none of the blocks apply.
+func perTurnContextBlocks(task Task) string {
+	var b strings.Builder
+	if task.PriorSessionResumeUnavailable {
+		b.WriteString(execenv.SessionContinuityNotice)
+	}
+	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))
+	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	return b.String()
+}
+
 // BuildPrompt constructs the task prompt for an agent CLI.
 // Keep this minimal — detailed instructions live in CLAUDE.md / AGENTS.md
 // injected by execenv.InjectRuntimeConfig. The provider string is threaded
@@ -29,6 +52,20 @@ func freshSessionRetryPrompt(prompt string) string {
 // post with `--content-file`) because the shell-layer corruption it guards
 // against is not specific to any one provider or host (MUL-2904, #4182).
 func BuildPrompt(task Task, provider string) string {
+	body := buildPromptBody(task, provider)
+	// Run-scoped context is appended, never prepended: everything ahead of it
+	// is stable across runs of a resumed session, and appending keeps it after
+	// the cached prefix (MUL-5377).
+	if blocks := perTurnContextBlocks(task); blocks != "" {
+		if !strings.HasSuffix(body, "\n\n") {
+			body += "\n"
+		}
+		body += blocks
+	}
+	return body
+}
+
+func buildPromptBody(task Task, provider string) string {
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}

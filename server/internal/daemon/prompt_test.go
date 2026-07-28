@@ -1030,3 +1030,73 @@ func TestBuildCommentPromptSameThreadKeepsSingleReply(t *testing.T) {
 		t.Errorf("same-thread run must keep the single --parent=trigger reply cookbook, got:\n%s", out)
 	}
 }
+
+// TestPerTurnContextBlocksCarryMovedBriefSections is the other half of
+// MUL-5377: the per-run context that was removed from the runtime brief must
+// still reach the agent, now via the per-turn user message. Losing it silently
+// would be a worse regression than the cache cost it fixes.
+func TestPerTurnContextBlocksCarryMovedBriefSections(t *testing.T) {
+	t.Parallel()
+
+	task := Task{
+		IssueID:                       "issue-1",
+		TriggerCommentID:              "comment-1",
+		TriggerCommentContent:         "please look at this",
+		PriorSessionResumeUnavailable: true,
+		InitiatorType:                 "member",
+		InitiatorName:                 "Bohan",
+		InitiatorEmail:                "bohan@example.com",
+		ConnectedApps: []ConnectedAppData{{
+			Provider:    "composio",
+			ServerName:  "composio",
+			ToolkitSlug: "notion",
+			ToolkitName: "Notion",
+		}},
+	}
+
+	prompt := BuildPrompt(task, "claude")
+	for _, want := range []string{
+		"## Session Continuity Notice",
+		"could NOT be restored",
+		"## Task Initiator",
+		"initiated by **Bohan** (bohan@example.com), a member of this workspace",
+		"credentials stay scoped to the runtime owner",
+		"## Connected Apps",
+		"- Notion (`notion`) via MCP server `composio`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("per-turn prompt lost moved brief content %q\n---\n%s", want, prompt)
+		}
+	}
+}
+
+// The blocks are per-run, so they must be absent when their preconditions are.
+func TestPerTurnContextBlocksOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{IssueID: "issue-1"}, "claude")
+	for _, banned := range []string{
+		"## Session Continuity Notice",
+		"## Task Initiator",
+		"## Connected Apps",
+	} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("per-turn prompt must not emit %q with no data\n---\n%s", banned, prompt)
+		}
+	}
+}
+
+// An assignment-triggered run carries the initiator too — it is not a
+// comment-path-only block.
+func TestPerTurnContextBlocksOnAssignmentPath(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		IssueID:       "issue-1",
+		InitiatorType: "agent",
+		InitiatorName: "GPT-Boy",
+	}, "claude")
+	if !strings.Contains(prompt, "initiated by **GPT-Boy**, another agent in this workspace") {
+		t.Errorf("assignment-triggered prompt lost the initiator block\n---\n%s", prompt)
+	}
+}
