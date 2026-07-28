@@ -129,10 +129,9 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   const { submitting, submit } = useComposerSubmit({
     editorRef,
     uploadGate: gate,
-    // A top-level comment ends a turn: the page scrolls the posted comment into
-    // view and flashes it (see IssueDetail's handleSubmitComment), so a caret
-    // left blinking down here would compete with it. Replies are the opposite —
-    // see ReplyInput.
+    // A top-level comment ends a turn: the caret is dropped rather than kept,
+    // so the composer stops reading as "still writing" once the comment is
+    // posted above it. Thread replies are the opposite — see ReplyInput.
     afterAccepted: "blur",
     onSubmit: (content) => {
       // Flush the editor's pending debounce before snapshotting — a late flush

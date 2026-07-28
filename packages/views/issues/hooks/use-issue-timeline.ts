@@ -297,26 +297,24 @@ export function useIssueTimeline(issueId: string, userId?: string) {
     [t],
   );
 
-  // Returns the created comment's id on success, null on failure. The composer
-  // keeps the user's text (editor locked + button spinning) until this settles
-  // and clears only on success — so a slow send no longer leaves the box full
-  // next to an already-posted comment, and a failed send keeps the draft.
-  // The id is the caller's handle on the row that just appeared: the issue page
-  // uses it to scroll the posted comment into view and flash it.
+  // Returns true on success, false on failure. The composer keeps the user's
+  // text (editor locked + button spinning) until this settles and clears only
+  // on success — so a slow send no longer leaves the box full next to an
+  // already-posted comment, and a failed send keeps the draft.
   const submitComment = useCallback(
-    async (content: string, attachmentIds?: string[], suppressAgentIds?: string[]): Promise<string | null> => {
-      if (!content.trim() || !userId) return null;
+    async (content: string, attachmentIds?: string[], suppressAgentIds?: string[]): Promise<boolean> => {
+      if (!content.trim() || !userId) return false;
       try {
         const comment = await createComment({ content, attachmentIds, suppressAgentIds });
         warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
-        return comment?.id ?? null;
+        return true;
       } catch (err) {
         toast.error(
           err instanceof Error && err.message
             ? err.message
             : t(($) => $.comment.send_failed),
         );
-        return null;
+        return false;
       }
     },
     [userId, createComment, warnUnhandledTriggers, t],

@@ -1350,46 +1350,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     },
     [isFlatTimeline, items, scrollContainerEl],
   );
-  // `jumpToThread` closes over `items`, so a copy captured before the posted
-  // comment lands in the cache would look for a row that isn't in its list yet.
-  // The reveal below fires a frame later — always call through the ref.
-  const jumpToThreadRef = useRef(jumpToThread);
-  jumpToThreadRef.current = jumpToThread;
-  const revealFrameRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (revealFrameRef.current !== null) cancelAnimationFrame(revealFrameRef.current);
-    },
-    [],
-  );
-
-  // Posting a top-level comment hands attention to the comment, not back to the
-  // composer: the composer blurs (see CommentInput) while the page scrolls to
-  // the new row and flashes it the same way an inbox deep-link does. Replies
-  // behave the opposite way — see ReplyInput.
-  const handleSubmitComment = useCallback(
-    async (
-      content: string,
-      attachmentIds?: string[],
-      suppressAgentIds?: string[],
-    ): Promise<boolean> => {
-      const createdId = await submitComment(content, attachmentIds, suppressAgentIds);
-      if (!createdId) return false;
-      // Two frames: `useComposerSubmit` clears the composer right after this
-      // resolves (which changes the timeline's available height), and the row
-      // itself only exists after React commits the entry the create appended
-      // to the query cache. Scrolling before either lands on the wrong offset.
-      if (revealFrameRef.current !== null) cancelAnimationFrame(revealFrameRef.current);
-      revealFrameRef.current = requestAnimationFrame(() => {
-        revealFrameRef.current = requestAnimationFrame(() => {
-          revealFrameRef.current = null;
-          jumpToThreadRef.current(createdId);
-        });
-      });
-      return true;
-    },
-    [submitComment],
-  );
 
   const {
     reactions: issueReactions,
@@ -2744,7 +2704,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 keeps the previous issue's in-memory content and the
                 next keystroke would flush it into the new issue's
                 draft key. */}
-            <CommentInput key={id} issueId={id} onSubmit={handleSubmitComment} />
+            <CommentInput key={id} issueId={id} onSubmit={submitComment} />
           </div>
         </div>
         </div>

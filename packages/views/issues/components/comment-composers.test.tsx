@@ -351,9 +351,9 @@ describe("comment composers", () => {
     expect(screen.getByTestId("editor").closest("[aria-busy]")).toBeNull();
   });
 
-  // Post-send caret policy. The two composers deliberately disagree: a posted
-  // top-level comment takes over the page (IssueDetail scrolls to it and
-  // flashes it), while a thread reply leaves the user mid-conversation.
+  // Post-send caret policy. The two composers deliberately disagree: posting a
+  // top-level comment ends the turn and drops the caret, while a thread reply
+  // leaves the user mid-conversation with the box ready for the next one.
   it("blurs the top-level composer after a posted comment", async () => {
     const { container } = renderCommentInput();
 
