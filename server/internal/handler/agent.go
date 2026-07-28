@@ -1021,9 +1021,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Visibility == "" {
 		req.Visibility = "private"
 	}
-	if _, provided := rawFields["max_concurrent_tasks"]; !provided {
-		req.MaxConcurrentTasks = defaultAgentMaxConcurrentTasks
-	} else if err := validateAgentMaxConcurrentTasks(req.MaxConcurrentTasks); err != nil {
+	if err := defaultAndValidateAgentMaxConcurrentTasks(rawFields, &req.MaxConcurrentTasks); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

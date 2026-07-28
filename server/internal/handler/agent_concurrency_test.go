@@ -17,12 +17,13 @@ func TestCreateAgent_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		value    int32
+		value    any
 		provided bool
 		wantCode int
 		want     int32
 	}{
 		{name: "omitted defaults to six", provided: false, wantCode: http.StatusCreated, want: 6},
+		{name: "null defaults to six", value: nil, provided: true, wantCode: http.StatusCreated, want: 6},
 		{name: "minimum accepted", value: 1, provided: true, wantCode: http.StatusCreated, want: 1},
 		{name: "maximum accepted", value: 50, provided: true, wantCode: http.StatusCreated, want: 50},
 		{name: "zero rejected", value: 0, provided: true, wantCode: http.StatusBadRequest},
@@ -142,6 +143,21 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 			t.Fatalf("omitted max_concurrent_tasks changed value to %d, want 50", got)
 		}
 	})
+
+	t.Run("null preserves existing value", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+			"max_concurrent_tasks": nil,
+		}), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		if got := readPersisted(); got != 50 {
+			t.Fatalf("null max_concurrent_tasks changed value to %d, want 50", got)
+		}
+	})
 }
 
 func TestCreateAgentFromTemplate_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
@@ -156,12 +172,13 @@ func TestCreateAgentFromTemplate_MaxConcurrentTasksBoundsAndDefault(t *testing.T
 
 	tests := []struct {
 		name     string
-		value    int32
+		value    any
 		provided bool
 		wantCode int
 		want     int32
 	}{
 		{name: "omitted defaults to six", provided: false, wantCode: http.StatusCreated, want: 6},
+		{name: "null defaults to six", value: nil, provided: true, wantCode: http.StatusCreated, want: 6},
 		{name: "minimum accepted", value: 1, provided: true, wantCode: http.StatusCreated, want: 1},
 		{name: "maximum accepted", value: 50, provided: true, wantCode: http.StatusCreated, want: 50},
 		{name: "zero rejected", value: 0, provided: true, wantCode: http.StatusBadRequest},

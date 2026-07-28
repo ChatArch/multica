@@ -41,6 +41,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agentCopyCmd` (`copy <source-agent-id>`) + flag registrar | 21, 47, 54 | Own file with its own `init()` so `cmd_agent.go` line refs stay stable; `registerAgentCopyFlags` is shared with the tests | `multica agent copy --help` |
 | Reads source via `GET /api/agents/<id>` | 95 | Composes over existing endpoints — no dedicated copy API | read `runAgentCopy` |
 | Same-runtime vs cross-runtime rule | 114, 187 | `sameRuntime` copies `model`/`thinking_level`/`service_tier`; a different `--runtime-id` drops them and requires `--model` (empty allowed) | `multica agent copy --help` |
+| Concurrency copy compatibility | `runAgentCopy`, `copiedAgentMaxConcurrentTasks` | Explicit `--max-concurrent-tasks` is validated before any request; valid source values are copied, while historical values outside 1–50 are omitted so create defaults to 6 | read the concurrency body assembly |
 | Skills copied in the create transaction | 239 | Source skill ids sent as `skill_ids`, bound in the same `POST /api/agents` tx (267); `--no-skills` opts out | read `runAgentCopy` |
 | Secrets never copied | 240–266 | `custom_env`/`mcp_config`/`runtime_config` set only from explicit secret-safe flags, never read from the source | `multica agent copy --help` |
 
@@ -70,7 +71,7 @@ only.
 | `service_tier` provider-level validation | `agent.go` create/update paths | Non-empty values are Codex-only safe tokens; exact per-model support is daemon-owned |
 | Defaults: `{}` config/env, `[]` args | 688–701 | `RuntimeConfig`→`{}`, `CustomEnv`→`{}`, `CustomArgs`→`[]` when nil, before insert |
 | `visibility` default | 635–636 | `if req.Visibility == "" { req.Visibility = "private" }` — access-control field, not the runtime prompt |
-| `max_concurrent_tasks` create/default validation | `agent.go` 1024–1029; `agent_validation.go` 5–20 | Shared 1–50 validator; a missing raw JSON field defaults to 6, while an explicitly supplied 0/out-of-range value returns 400 |
+| `max_concurrent_tasks` create/default validation | `agent.go`; `agent_validation.go`; `internal/agentconfig/concurrency.go` | Shared 1–50 validator; a missing or explicit `null` field defaults to 6, while an explicitly supplied numeric 0/out-of-range value returns 400 |
 | `max_concurrent_tasks` update validation | 1660–1666 | Omission preserves the existing value; a supplied value outside 1–50 returns 400 before persistence |
 | `mcp_config` null-skip on create | 704–705 | raw JSON copied through unless the body value is the literal `null` |
 | `mcp_config` redacted on read | 54, 848–851 | `redactMcpConfig` sets `McpConfigRedacted=true`; a private agent read by a member also redacts (494, 509) |
@@ -85,7 +86,7 @@ only.
 
 | Contract | Line | Behavior |
 |---|---|---|
-| `max_concurrent_tasks` default + validation | 188–193 | Uses the same helper as manual create: omission defaults to 6; explicit values outside 1–50 return 400 |
+| `max_concurrent_tasks` default + validation | `CreateAgentFromTemplate`; `defaultAndValidateAgentMaxConcurrentTasks` | Uses the same helper as manual create: omission or `null` defaults to 6; explicit numeric values outside 1–50 return 400 |
 
 ## Runtime model/thinking discovery — `server/pkg/agent/{models,thinking}.go`
 

@@ -87,6 +87,10 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
   `" (copy)"`), `description`, `instructions`, avatar, `custom_args`,
   `max_concurrent_tasks`, invocation permission (`permission_mode` +
   allow-list), and assigned workspace skills.
+- A copied `max_concurrent_tasks` is included only when the source value is
+  within 1–50. Historical out-of-range values are omitted so the new agent
+  receives the server default (`6`); an explicit out-of-range
+  `--max-concurrent-tasks` override is rejected before any API request.
 - Runtime-specific fields (`model`, `thinking_level`, `service_tier`) are copied
   ONLY when the target runtime is unchanged. `--runtime-id` selecting a
   different runtime drops them and REQUIRES `--model` (pass `--model ""` to
@@ -117,9 +121,10 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 | `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
 | `max_concurrent_tasks` | `agent.max_concurrent_tasks` | integer from 1 through 50; out-of-range values return 400 | scheduler task cap; defaults to `6` |
 
-Defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
+Defaults when omitted or explicitly `null`: `max_concurrent_tasks` → `6`.
+Other defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
 `custom_args` → `[]`, `avatar_url` → a random `emoji:<glyph>`, `visibility` →
-`private`, `max_concurrent_tasks` → `6`
+`private`
 (all materialized server-side before the insert). `custom_args`/`runtime_config`
 are typed `[]string`/`any` and marshaled as-is — the JSON-shape rejection
 happens in the CLI, not the create handler.

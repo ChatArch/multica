@@ -1,18 +1,16 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
 
-const (
-	minAgentMaxConcurrentTasks int32 = 1
-	maxAgentMaxConcurrentTasks int32 = 50
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 )
 
 func validateAgentMaxConcurrentTasksFlag(value int32) error {
-	if value < minAgentMaxConcurrentTasks || value > maxAgentMaxConcurrentTasks {
+	if err := agentconfig.ValidateMaxConcurrentTasks(value); err != nil {
 		return fmt.Errorf(
-			"--max-concurrent-tasks must be between %d and %d (got %d)",
-			minAgentMaxConcurrentTasks,
-			maxAgentMaxConcurrentTasks,
+			"--max-concurrent-tasks %w (got %d)",
+			err,
 			value,
 		)
 	}
