@@ -1674,3 +1674,73 @@ func firstBriefDiff(want, got string) string {
 		"\n--- baseline ---\n" + want[lo:hiW] +
 		"\n--- variant ---\n" + got[lo:hiG]
 }
+
+// TestBriefByteIdenticalAcrossRunsForEveryKind extends the MUL-5377 guarantee
+// past issue runs.
+//
+// Chat sessions resume too — handler/daemon.go:2172 hands the daemon a
+// PriorSessionID from the chat_session row, with the same PriorWorkDir and
+// PriorSessionResumeUnavailable plumbing as an issue task. So a chat brief that
+// varied per turn would lose the prompt cache exactly the same way, and a long
+// chat is precisely where that hurts most. Autopilot and quick-create are
+// single-shot today, but the invariant is free to hold for them too and stops a
+// future resume path from silently reintroducing the bug.
+func TestBriefByteIdenticalAcrossRunsForEveryKind(t *testing.T) {
+	t.Parallel()
+
+	kinds := map[string]TaskContextForEnv{
+		"chat":         {ChatSessionID: "chat-1", ChatChannelType: ChannelTypeSlack, AgentID: "a-1", AgentName: "Eve"},
+		"quick-create": {QuickCreatePrompt: "make an issue", AgentID: "a-1", AgentName: "Eve"},
+		"autopilot":    {AutopilotRunID: "run-1", AutopilotID: "ap-1", AgentID: "a-1", AgentName: "Eve"},
+	}
+
+	// Per-run state that changes between turns of one resumed session.
+	variants := []struct {
+		name   string
+		mutate func(c *TaskContextForEnv)
+	}{
+		{"baseline", func(c *TaskContextForEnv) {}},
+		{"resumed", func(c *TaskContextForEnv) { c.PriorSessionResumed = true }},
+		{"resume-unavailable", func(c *TaskContextForEnv) { c.PriorSessionResumeUnavailable = true }},
+		{"member-initiator", func(c *TaskContextForEnv) {
+			c.InitiatorType, c.InitiatorID = "member", "u-1"
+			c.InitiatorName, c.InitiatorEmail = "Bohan", "bohan@example.com"
+		}},
+		{"other-initiator", func(c *TaskContextForEnv) {
+			// A Slack channel lets a different person trigger each turn.
+			c.InitiatorType, c.InitiatorID = "member", "u-2"
+			c.InitiatorName, c.InitiatorEmail = "Someone Else", "else@example.com"
+		}},
+		{"agent-initiator", func(c *TaskContextForEnv) {
+			c.InitiatorType, c.InitiatorID = "agent", "a-9"
+			c.InitiatorName = "GPT-Boy"
+		}},
+		{"connected-apps", func(c *TaskContextForEnv) {
+			c.ConnectedApps = []runtimeapps.ConnectedApp{{
+				Provider: "composio", ServerName: "composio",
+				ToolkitSlug: "notion", ToolkitName: "Notion",
+			}}
+		}},
+	}
+
+	for kindName, baseCtx := range kinds {
+		kindName, baseCtx := kindName, baseCtx
+		t.Run(kindName, func(t *testing.T) {
+			t.Parallel()
+			var want string
+			for i, v := range variants {
+				ctx := baseCtx
+				v.mutate(&ctx)
+				got := buildMetaSkillContent("claude", ctx)
+				if i == 0 {
+					want = got
+					continue
+				}
+				if got != want {
+					t.Errorf("%s brief differs for variant %q — per-run state leaked into the cached prefix (MUL-5377).\n%s",
+						kindName, v.name, firstBriefDiff(want, got))
+				}
+			}
+		})
+	}
+}
