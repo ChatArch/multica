@@ -14,9 +14,9 @@ import type { NavigationAdapter } from "../../navigation";
 // dashboard options builders runs for real, so the key is the production key.
 const queryKeys = vi.hoisted(() => [] as unknown[][]);
 const dashboardDataRef = vi.hoisted(() => ({ current: false }));
-// Swaps the by-agent fixture for one with enough agents to exercise the
-// top-offenders cap. Kept off by default so the other tests keep their exact
-// 4-of-10 arithmetic.
+// Swaps the per-agent fixtures for ones with enough agents to exercise the
+// top-offenders and leaderboard caps. Kept off by default so the other tests
+// keep their exact 4-of-10 arithmetic.
 const manyAgentsRef = vi.hoisted(() => ({ current: false }));
 
 function todayIso() {
@@ -48,6 +48,49 @@ vi.mock("@tanstack/react-query", async () => {
           };
         }
         const kind = opts.queryKey[2];
+        // Bulk fixture: 12 agents, every per-agent metric strictly descending
+        // so both caps (leaderboard top 10, offenders top 8) are testable by
+        // rank without the ties an equal-valued fixture would create. The
+        // date-bucketed series stay on the small fixture below — the caps are
+        // a property of the per-agent lists only.
+        const bulkRows =
+          !manyAgentsRef.current
+            ? null
+            : kind === "by-agent"
+              ? Array.from({ length: 12 }, (_, i) => ({
+                  agent_id: `bulk-${i}`,
+                  provider: "anthropic",
+                  model: "claude-sonnet-4-6",
+                  input_tokens: (12 - i) * 1_000,
+                  output_tokens: 0,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  task_count: 12 - i,
+                }))
+              : kind === "agent-runtime"
+                ? Array.from({ length: 12 }, (_, i) => ({
+                    agent_id: `bulk-${i}`,
+                    total_seconds: (12 - i) * 600,
+                    task_count: 12 - i,
+                    failed_count: 12 - i,
+                  }))
+                : kind === "failures-by-agent"
+                  ? Array.from({ length: 12 }, (_, i) => [
+                      {
+                        agent_id: `bulk-${i}`,
+                        failure_reason: "",
+                        task_count: 100,
+                      },
+                      {
+                        agent_id: `bulk-${i}`,
+                        failure_reason: "timeout",
+                        task_count: 12 - i,
+                      },
+                    ]).flat()
+                  : null;
+        if (bulkRows) {
+          return { data: bulkRows, isLoading: false, isSuccess: true };
+        }
         const data =
           kind === "daily"
             ? [
@@ -93,21 +136,7 @@ vi.mock("@tanstack/react-query", async () => {
                       { date: todayIso(), failure_reason: "timeout", task_count: 1 },
                     ]
                   : kind === "failures-by-agent"
-                    ? manyAgentsRef.current
-                      ? Array.from({ length: 12 }, (_, i) => [
-                          {
-                            agent_id: `bulk-${i}`,
-                            failure_reason: "",
-                            task_count: 100,
-                          },
-                          {
-                            agent_id: `bulk-${i}`,
-                            failure_reason: "timeout",
-                            // Descending so rank order is unambiguous.
-                            task_count: 12 - i,
-                          },
-                        ]).flat()
-                      : [
+                    ? [
                         { agent_id: "agent-1", failure_reason: "", task_count: 6 },
                         {
                           agent_id: "agent-1",
@@ -411,6 +440,65 @@ describe("DashboardPage — Errors card placement and density", () => {
 
     expect(
       screen.queryByRole("button", { name: /Show all/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("DashboardPage — leaderboard density", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    manyAgentsRef.current = false;
+    tzRef.current = "UTC";
+    cleanup();
+  });
+
+  it("ranks the top 10 agents and keeps the tail behind a toggle", async () => {
+    manyAgentsRef.current = true;
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const list = () => within(screen.getByRole("list", { name: "Leaderboard" }));
+    // 12 agents have usage. Flattening all of them is what pushed the Errors
+    // card a full screen below the fold (MUL-5388).
+    expect(list().getAllByRole("listitem")).toHaveLength(10);
+    // Ranked by tokens desc, so the two smallest spenders are the ones cut.
+    expect(list().getByText("Bulk Agent 0")).toBeInTheDocument();
+    expect(list().queryByText("Bulk Agent 10")).not.toBeInTheDocument();
+    expect(list().queryByText("Bulk Agent 11")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+    expect(list().getAllByRole("listitem")).toHaveLength(12);
+    expect(list().getByText("Bulk Agent 11")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show top 10" }));
+    expect(list().getAllByRole("listitem")).toHaveLength(10);
+  });
+
+  it("keeps the cap honest when the ranking metric changes", async () => {
+    manyAgentsRef.current = true;
+    const user = userEvent.setup();
+    renderDashboard();
+
+    // Scoped to the leaderboard card — the trend chart's metric toggle owns
+    // a "Time" button too.
+    const card = screen.getByRole("list", { name: "Leaderboard" })
+      .parentElement as HTMLElement;
+    // Re-ranking must not quietly reveal the tail: the cap belongs to the
+    // list, not to one metric.
+    await user.click(within(card).getByRole("button", { name: "Time" }));
+
+    const list = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(list.getAllByRole("listitem")).toHaveLength(10);
+  });
+
+  it("shows no expand affordance when every agent already fits", () => {
+    renderDashboard();
+
+    const list = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(list.getAllByRole("listitem")).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "Show all" }),
     ).not.toBeInTheDocument();
   });
 });

@@ -1161,6 +1161,13 @@ const SORT_METRIC: Record<LeaderboardSort, (r: AgentDashboardRow) => number> = {
   tasks: (r) => r.taskCount,
 };
 
+// How many agents the leaderboard ranks before collapsing the tail behind a
+// toggle, mirroring the Errors card's top-offenders cap. A workspace with
+// dozens of agents rendered every one of them, which pushed the Errors card a
+// full screen or more below the fold (MUL-5388). Ten answers "who is spending
+// the most" — the tail is reachable via the toggle.
+const LEADERBOARD_LIMIT = 10;
+
 function Leaderboard({
   rows,
   agents,
@@ -1174,6 +1181,7 @@ function Leaderboard({
 }) {
   const { t } = useT("usage");
   const [sortBy, setSortBy] = useState<LeaderboardSort>("tokens");
+  const [showAll, setShowAll] = useState(false);
 
   const sortOptions = useMemo(
     () => [
@@ -1193,10 +1201,17 @@ function Leaderboard({
     return rows.toSorted((a, b) => metric(b) - metric(a));
   }, [rows, sortBy]);
 
+  // Measured across every row, not just the visible ones, so a bar's width
+  // means the same thing collapsed and expanded — the leader always fills the
+  // track and nothing re-scales when the tail comes into view.
   const maxValue = useMemo(() => {
     const metric = SORT_METRIC[sortBy];
     return sortedRows.reduce((m, r) => Math.max(m, metric(r)), 0);
   }, [sortedRows, sortBy]);
+
+  const visibleRows = showAll
+    ? sortedRows
+    : sortedRows.slice(0, LEADERBOARD_LIMIT);
 
   // Active column gets foreground text; others stay muted. Helps the user
   // see "this is what the bar is measuring" at a glance.
@@ -1207,7 +1222,7 @@ function Leaderboard({
     <div className="rounded-lg border bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 pt-4 pb-3">
         <h4 className="text-sm font-semibold">{t(($) => $.leaderboard.title)}</h4>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <Segmented value={sortBy} onChange={setSortBy} options={sortOptions} />
           <span className="text-xs text-muted-foreground">
             {deletedAgentCount > 0
@@ -1217,6 +1232,21 @@ function Leaderboard({
                 })
               : t(($) => $.leaderboard.caption, { count: rows.length })}
           </span>
+          {/* The caption right beside this already states how many agents the
+              window covers, so the toggle carries a count only when
+              collapsing — spelling the total out twice reads as two different
+              numbers once the deleted-agents bucket splits the caption. */}
+          {sortedRows.length > LEADERBOARD_LIMIT ? (
+            <button
+              type="button"
+              onClick={() => setShowAll((v) => !v)}
+              className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {showAll
+                ? t(($) => $.leaderboard.show_less, { count: LEADERBOARD_LIMIT })
+                : t(($) => $.leaderboard.show_all)}
+            </button>
+          ) : null}
         </div>
       </div>
       {sortedRows.length === 0 ? (
@@ -1233,8 +1263,11 @@ function Leaderboard({
             <span className={colClass("time")}>{t(($) => $.leaderboard.header_time)}</span>
             <span className={colClass("tasks")}>{t(($) => $.leaderboard.header_tasks)}</span>
           </div>
-          <div className="divide-y">
-            {sortedRows.map((row) => {
+          {/* A real list, like the Errors card's offender list: the rows are
+              now a truncated ranking, so screen readers need the count and the
+              item boundaries rather than a bag of divs. */}
+          <ul aria-label={t(($) => $.leaderboard.title)} className="divide-y">
+            {visibleRows.map((row) => {
               // The deleted-agents bucket is a synthetic row, not a real agent:
               // render a neutral placeholder (no avatar fetch / hover card / UUID)
               // and dash out Time/Tasks, which it never carries (see
@@ -1244,7 +1277,7 @@ function Leaderboard({
               const value = SORT_METRIC[sortBy](row);
               const pct = maxValue > 0 ? (value / maxValue) * 100 : 0;
               return (
-                <div
+                <li
                   key={row.agentId}
                   className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_5rem_5rem_5rem_4rem] items-center gap-3 px-4 py-2"
                 >
@@ -1300,10 +1333,10 @@ function Leaderboard({
                   >
                     {isDeletedBucket ? "—" : row.taskCount}
                   </div>
-                </div>
+                </li>
               );
             })}
-          </div>
+          </ul>
         </>
       )}
     </div>

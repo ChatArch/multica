@@ -74,6 +74,8 @@
     "header_cost": "Cost",
     "header_time": "Time",
     "header_tasks": "Tasks",
+    "show_all": "Show all",
+    "show_less": "Show top {{count}}",
     "no_data": "No agent activity in this window."
   },
   "empty": {

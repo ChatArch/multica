@@ -74,6 +74,8 @@
     "header_cost": "コスト",
     "header_time": "時間",
     "header_tasks": "タスク",
+    "show_all": "すべて表示",
+    "show_less": "上位 {{count}} 件のみ",
     "no_data": "この期間にエージェントの活動はありません。"
   },
   "empty": {
