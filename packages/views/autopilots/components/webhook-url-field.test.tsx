@@ -46,6 +46,25 @@ describe("WebhookUrlField", () => {
     expect(container.textContent).not.toContain("awt_supersecret");
   });
 
+  it("re-hides when the URL changes — a rotated token is never inherited revealed", () => {
+    const rotated = "https://api.example.com/api/webhooks/autopilots/awt_rotatedsecret";
+    const { container, rerender } = renderWithI18n(<WebhookUrlField url={URL} />);
+    fireEvent.click(screen.getByRole("button", { name: "Webhook URL hidden — click to show" }));
+    expect(container.textContent).toContain(URL);
+
+    // Rotate: the row stays mounted and only the prop changes. The new
+    // credential must come back masked, with no revealed frame in between.
+    rerender(<WebhookUrlField url={rotated} />);
+    expect(container.textContent).not.toContain("awt_rotatedsecret");
+    expect(
+      screen.getByRole("button", { name: "Webhook URL hidden — click to show" }),
+    ).toBeInTheDocument();
+
+    // The new URL can still be revealed on its own.
+    fireEvent.click(screen.getByRole("button", { name: "Webhook URL hidden — click to show" }));
+    expect(container.textContent).toContain(rotated);
+  });
+
   it("renders trailing actions alongside the field", () => {
     renderWithI18n(
       <WebhookUrlField url={URL} actions={<button type="button">Rotate</button>} />,

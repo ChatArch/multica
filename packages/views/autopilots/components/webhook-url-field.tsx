@@ -46,8 +46,15 @@ interface WebhookUrlFieldProps {
  */
 export function WebhookUrlField({ url, size = "sm", actions }: WebhookUrlFieldProps) {
   const { t } = useT("autopilots");
-  const [revealed, setRevealed] = useState(false);
+  // A reveal authorizes one specific URL, not the field. Rotating the token
+  // swaps `url` under a mounted row, and the new credential has to be revealed
+  // again on its own — a bare boolean would hand the old grant to the new
+  // secret, exposing it exactly when the user rotated to contain a leak.
+  // Deriving this during render (rather than resetting in an effect) means the
+  // new token never reaches the DOM, not even for the pre-effect frame.
+  const [revealedUrl, setRevealedUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const revealed = revealedUrl === url;
   const s = SIZES[size];
 
   const handleCopy = async () => {
@@ -76,7 +83,7 @@ export function WebhookUrlField({ url, size = "sm", actions }: WebhookUrlFieldPr
         // would swallow the drag-select.
         <button
           type="button"
-          onClick={() => setRevealed(true)}
+          onClick={() => setRevealedUrl(url)}
           className={cn(valueClassName, "text-left cursor-pointer transition-colors hover:bg-muted/70")}
           title={t(($) => $.trigger_row.show_url)}
           aria-label={t(($) => $.trigger_row.hidden_url_aria)}
@@ -88,7 +95,7 @@ export function WebhookUrlField({ url, size = "sm", actions }: WebhookUrlFieldPr
         size="icon"
         variant={s.buttonVariant}
         className={cn("shrink-0", s.button)}
-        onClick={() => setRevealed((v) => !v)}
+        onClick={() => setRevealedUrl(revealed ? null : url)}
         title={revealed ? t(($) => $.trigger_row.hide_url) : t(($) => $.trigger_row.show_url)}
         aria-label={revealed ? t(($) => $.trigger_row.hide_url) : t(($) => $.trigger_row.show_url)}
       >
