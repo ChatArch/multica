@@ -31,7 +31,8 @@
     "metric_time": "Time",
     "metric_tasks": "Tasks",
     "metric_errors": "Errors",
-    "no_data": "No usage in this window."
+    "no_data": "No usage in this window.",
+    "metric_label": "Metric"
   },
   "weekly": {
     "title_cost": "Weekly cost",
@@ -58,6 +59,7 @@
     "mix_label": "Failure mix",
     "codes_label": "Error codes",
     "by_agent": "Top offenders",
+    "sort_label": "Rank offenders by",
     "sort_failed": "Failures",
     "sort_rate": "Rate",
     "header_agent": "Agent",
@@ -76,6 +78,7 @@
     "title": "Leaderboard",
     "caption": "{{count}} agents",
     "caption_with_deleted": "{{count}} agents · {{deleted}} deleted",
+    "sort_label": "Rank agents by",
     "deleted_agents": "Deleted agents",
     "header_agent": "Agent",
     "header_tokens": "Tokens",

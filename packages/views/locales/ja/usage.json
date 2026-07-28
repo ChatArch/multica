@@ -31,7 +31,8 @@
     "metric_time": "時間",
     "metric_tasks": "タスク",
     "metric_errors": "エラー",
-    "no_data": "この期間に使用量はありません。"
+    "no_data": "この期間に使用量はありません。",
+    "metric_label": "指標"
   },
   "weekly": {
     "title_cost": "週別コスト",
@@ -58,6 +59,7 @@
     "mix_label": "失敗の内訳",
     "codes_label": "エラーコード",
     "by_agent": "失敗の多いエージェント",
+    "sort_label": "失敗の多いエージェントの並び順",
     "sort_failed": "失敗数",
     "sort_rate": "失敗率",
     "header_agent": "エージェント",
@@ -76,6 +78,7 @@
     "title": "リーダーボード",
     "caption": "{{count}} 件のエージェント",
     "caption_with_deleted": "{{count}} 件のエージェント · 削除済み {{deleted}} 件",
+    "sort_label": "エージェントの並び順",
     "deleted_agents": "削除済みエージェント",
     "header_agent": "エージェント",
     "header_tokens": "トークン",

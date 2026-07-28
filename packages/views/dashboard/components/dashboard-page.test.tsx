@@ -381,6 +381,30 @@ describe("DashboardPage — failure visibility", () => {
     expect(offenderBar(1).style.width).toBe("100%");
   });
 
+  it("says which metric the list is ranked by without relying on colour", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    // The active option used to be a colour swap and nothing else, which is
+    // invisible to a screen reader. The group is named too — "Rate, pressed"
+    // means nothing until you know the group ranks the offender list.
+    const group = screen.getByRole("group", { name: "Rank offenders by" });
+    expect(
+      within(group).getByRole("button", { name: "Failures" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(within(group).getByRole("button", { name: "Rate" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    await user.click(within(group).getByRole("button", { name: "Rate" }));
+
+    expect(within(group).getByRole("button", { name: "Rate" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
   it("keeps a two-run agent from hijacking the rate ranking", async () => {
     const user = userEvent.setup();
     renderDashboard();

@@ -31,7 +31,8 @@
     "metric_time": "运行时长",
     "metric_tasks": "任务数",
     "metric_errors": "错误",
-    "no_data": "所选时间范围内暂无消耗。"
+    "no_data": "所选时间范围内暂无消耗。",
+    "metric_label": "指标"
   },
   "weekly": {
     "title_cost": "每周费用",
@@ -58,6 +59,7 @@
     "mix_label": "失败构成",
     "codes_label": "错误码",
     "by_agent": "问题最多的智能体",
+    "sort_label": "错误榜排序依据",
     "sort_failed": "失败数",
     "sort_rate": "失败率",
     "header_agent": "智能体",
@@ -76,6 +78,7 @@
     "title": "排行榜",
     "caption": "{{count}} 个智能体",
     "caption_with_deleted": "{{count}} 个智能体 · {{deleted}} 个已删除",
+    "sort_label": "智能体排序依据",
     "deleted_agents": "已删除的智能体",
     "header_agent": "智能体",
     "header_tokens": "Token",

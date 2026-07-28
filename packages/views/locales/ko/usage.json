@@ -31,7 +31,8 @@
     "metric_time": "시간",
     "metric_tasks": "작업",
     "metric_errors": "오류",
-    "no_data": "이 기간에는 사용량이 없습니다."
+    "no_data": "이 기간에는 사용량이 없습니다.",
+    "metric_label": "지표"
   },
   "weekly": {
     "title_cost": "주별 비용",
@@ -58,6 +59,7 @@
     "mix_label": "실패 구성",
     "codes_label": "오류 코드",
     "by_agent": "실패가 많은 에이전트",
+    "sort_label": "오류 순위 기준",
     "sort_failed": "실패 수",
     "sort_rate": "실패율",
     "header_agent": "에이전트",
@@ -76,6 +78,7 @@
     "title": "리더보드",
     "caption": "에이전트 {{count}}개",
     "caption_with_deleted": "에이전트 {{count}}개 · 삭제됨 {{deleted}}개",
+    "sort_label": "에이전트 순위 기준",
     "deleted_agents": "삭제된 에이전트",
     "header_agent": "에이전트",
     "header_tokens": "토큰",

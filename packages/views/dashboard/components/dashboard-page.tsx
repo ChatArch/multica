@@ -141,21 +141,36 @@ const EMPTY_AGENTS: Agent[] = [];
 // Local segmented control — same visual language the runtime usage section
 // uses for its period / tab toggles. shadcn's Tabs is wired for full tab
 // pages with ARIA semantics the compact toolbar pill doesn't need.
+//
+// Which option is active was expressed only as a colour swap, which no screen
+// reader can see, so `aria-pressed` carries it too. `label` is required rather
+// than optional because a naked group of toggle buttons is announced without
+// saying WHAT it toggles — "Rate, pressed" is useless until you know the group
+// is the offender ranking. Toggle buttons rather than a radiogroup: a
+// radiogroup owes the user arrow-key roving focus, and these are tab stops
+// wherever they appear in the page.
 function Segmented<T extends string | number>({
   value,
   onChange,
   options,
+  label,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: readonly { label: string; value: T }[];
+  label: string;
 }) {
   return (
-    <div className="inline-flex items-center gap-0.5 rounded-md bg-muted p-0.5">
+    <div
+      role="group"
+      aria-label={label}
+      className="inline-flex items-center gap-0.5 rounded-md bg-muted p-0.5"
+    >
       {options.map((o) => (
         <button
           key={String(o.value)}
           type="button"
+          aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
           className={`rounded-sm px-2.5 py-1 text-xs font-medium transition-colors ${
             o.value === value
@@ -493,6 +508,7 @@ export function DashboardPage() {
             onChange={setProjectValue}
           />
           <Segmented
+            label={t(($) => $.dim.label)}
             value={dim}
             onChange={handleDimChange}
             options={[
@@ -501,6 +517,7 @@ export function DashboardPage() {
             ]}
           />
           <Segmented
+            label={t(($) => $.filter.period_label)}
             value={days}
             onChange={setDays}
             options={allowedRanges.map((r) => ({ label: r.label, value: r.days }))}
@@ -783,6 +800,7 @@ function TrendBlock({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <h4 className="text-sm font-semibold">{title}</h4>
         <Segmented
+          label={t(($) => $.daily.metric_label)}
           value={metric}
           onChange={setMetric}
           options={[
@@ -984,6 +1002,7 @@ function ErrorsBreakdown({
               </h5>
               <div className="flex flex-wrap items-center justify-end gap-3">
                 <Segmented
+                  label={t(($) => $.errors.sort_label)}
                   value={sortBy}
                   onChange={setSortBy}
                   options={sortOptions}
@@ -1341,7 +1360,12 @@ function Leaderboard({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 pt-4 pb-3">
         <h4 className="text-sm font-semibold">{t(($) => $.leaderboard.title)}</h4>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <Segmented value={sortBy} onChange={setSortBy} options={sortOptions} />
+          <Segmented
+            label={t(($) => $.leaderboard.sort_label)}
+            value={sortBy}
+            onChange={setSortBy}
+            options={sortOptions}
+          />
           <span className="text-xs text-muted-foreground">
             {deletedAgentCount > 0
               ? t(($) => $.leaderboard.caption_with_deleted, {

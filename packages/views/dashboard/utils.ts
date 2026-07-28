@@ -718,12 +718,10 @@ export function sortAgentFailures(
 //
 // This rewrites the RAW per-(agent, reason) rows rather than merging the
 // aggregated ones, so the bucket is just another agent_id by the time
-// `aggregateAgentFailures` runs and its per-class counts stay exact. Merging
-// after aggregation loses the class breakdown: each row carries only its own
-// dominant class, so folding two agents would attribute each one's ENTIRE
-// failure count to that single class. An agent failing auth 6 / timeout 5
-// would contribute 11 to auth and nothing to timeout, and a bucket whose real
-// composition was timeout 15 / auth 6 would announce itself as Auth.
+// `aggregateAgentFailures` runs: its totals, rate, class split and rank all
+// come out of the same code path as every other row. Merging aggregated rows
+// would mean re-deriving `total` and `rate` by hand at the merge site — a
+// second, easily-skewed copy of arithmetic that already exists once.
 export function anonymizeUnresolvedAgentRows(
   rows: DashboardFailureByAgent[],
   knownAgentIds: ReadonlySet<string> | null,
