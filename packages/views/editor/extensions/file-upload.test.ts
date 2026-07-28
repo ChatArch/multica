@@ -4,7 +4,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { Slice } from "@tiptap/pm/model";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
-import { ImageExtension } from "./index";
+import { ImageExtension, createEditorExtensions } from "./index";
 import { FileCardExtension } from "./file-card";
 import {
   createFileUploadExtension,
@@ -393,6 +393,42 @@ describe("paste-as-file", () => {
 
     await vi.waitFor(() => expect(handler).toHaveBeenCalled());
     expect(pastedTextSource(real)).toBeUndefined();
+  });
+
+  it("wins the paste over markdownPaste in the REAL extension order", async () => {
+    // Both paste handlers are catch-alls, so which one ProseMirror consults
+    // first is the whole feature. Tiptap reverses the extension array before
+    // collecting plugins (@tiptap/core `get plugins()`), and neither extension
+    // sets a priority — so the ordering that decides this lives in
+    // createEditorExtensions, not in either file. Build the production array so
+    // a reorder there fails HERE instead of silently disabling the feature.
+    const upload = deferred<UploadResult | null>();
+    const handler = vi.fn((_file: File) => upload.promise);
+    const onUploadFileRef = { current: handler };
+    const thresholdRef = { current: THRESHOLD };
+    const element = document.createElement("div");
+    document.body.appendChild(element);
+    const editor = new Editor({
+      element,
+      extensions: createEditorExtensions({
+        onUploadFileRef: onUploadFileRef as React.RefObject<
+          ((file: File) => Promise<UploadResult | null>) | undefined
+        >,
+        pasteAsFileThresholdRef: thresholdRef as React.RefObject<number | undefined>,
+        disableMentions: true,
+      }),
+    });
+    editors.push(editor);
+
+    const long = "# heading\n\n" + "x".repeat(THRESHOLD + 1);
+    expect(paste(editor, { text: long })).toBe(true);
+
+    await vi.waitFor(() => expect(handler).toHaveBeenCalled());
+    expect(handler.mock.calls[0]![0].name).toBe(PASTED_TEXT_FILENAME);
+    // markdownPaste did NOT get to parse it into the body.
+    expect(editor.getMarkdown()).not.toContain("x".repeat(THRESHOLD + 1));
+
+    upload.resolve(null);
   });
 
   it("keeps a long paste inline inside a code block", () => {
