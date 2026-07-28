@@ -208,12 +208,17 @@ export interface CoordinatedUploads {
    * genuinely cannot show:
    *  - inherited from the persisted draft — it outlived the mount that started
    *    it, and its placeholder node died with that mount;
-   *  - failed or interrupted — `uploadAndInsertFile` removes the node on
-   *    failure, so without a chip the outcome would be invisible;
    *  - started here but no longer in the document — the user deleted the
    *    placeholder (Cmd+Z right after a paste is the easy way). The upload
    *    keeps running and `gate.isBlocked` keeps blocking send on it, so
-   *    hiding it would leave a dead send button with nothing explaining it.
+   *    hiding it would leave a dead send button with nothing explaining it;
+   *  - `interrupted` — a reload killed an upload a session ago, and the user
+   *    has to be told the file never made it.
+   *
+   * `failed` is deliberately NOT in that list: this hook removes a failed
+   * upload outright rather than marking it (see the settle handler). The
+   * branch below still covers the status because an older client may have
+   * persisted one.
    */
   orphanUploads: DraftUpload[];
   /** Completed attachment rows — the editor preview set; submit binds the
@@ -321,7 +326,8 @@ export function useCoordinatedUploads(
           // upload. Started-here is necessary but not sufficient.
           return !editorGate.uploading || !inlineUploadIdsRef.current.has(u.clientUploadId);
         }
-        // failed / interrupted: the node is gone, so the chip is all there is.
+        // interrupted (and any `failed` left by an older client): no node
+        // exists for it, so the chip is all there is.
         return true;
       }),
     [uploads, editorGate.uploading],
@@ -359,21 +365,13 @@ export function useCoordinatedUploads(
       const pastedText = pastedTextSource(file);
 
       if (file.size > MAX_FILE_SIZE) {
-        // Never enters the coordinator — surface it as a failed placeholder so
-        // the composer shows the reason instead of silently dropping the file.
+        // Never enters the coordinator, and never enters the draft either —
+        // see the settle handler below for why a failure leaves no placeholder.
         const reason = "File exceeds 100 MB limit";
         if (pastedText !== undefined) {
-          // A paste has no on-disk copy to retry from: give the text back
-          // rather than leaving a failed chip standing in for lost content.
+          // A paste has no on-disk copy to re-attach from, so the text goes
+          // back into the composer instead of being lost with the upload.
           deliverPastedTextBack(target, editorRef, pastedText);
-        } else if (target) {
-          target.addUpload(placeholder);
-          target.failUpload(clientUploadId, reason);
-        } else {
-          setLocalUploads((prev) => [
-            ...prev,
-            { clientUploadId, status: "failed", filename: file.name, size: file.size, error: reason },
-          ]);
         }
         toast.error(t(($) => $.upload.failed, { filename: file.name, reason }));
         return Promise.resolve(null);
@@ -420,35 +418,33 @@ export function useCoordinatedUploads(
               resolve(toUploadResult(outcome.attachment));
             } else {
               const reason = outcome.error.message;
-              if (pastedText !== undefined) {
-                // Paste-as-file: the text has no copy anywhere else, so it is
-                // restored instead of being represented by a failed chip. Runs
-                // whether or not this mount survived — deliverPastedTextBack
-                // owns that choice, and it is the ONLY responder so the live
-                // and dead cases can never both fire or both be skipped.
-                if (target) {
-                  if (target.getUploads().some((u) => u.clientUploadId === clientUploadId)) {
-                    target.removeUpload(clientUploadId);
+              // A failure leaves NOTHING behind. The toast below has already
+              // said it, at the moment it happened, and the file is still on
+              // disk — a chip adds no information and cannot retry (the bytes
+              // were never persisted). Keeping one costs more than it gives:
+              // it survives reload and reopen until dismissed by hand, and
+              // `isMeaningful` counts it, so a single flaky request keeps an
+              // otherwise-empty draft alive for the full 30-day TTL.
+              //
+              // `interrupted` is the opposite case and still gets a chip: it
+              // is discovered a session later, when the user no longer
+              // remembers attaching anything.
+              if (target) {
+                if (target.getUploads().some((u) => u.clientUploadId === clientUploadId)) {
+                  target.removeUpload(clientUploadId);
+                  // Paste-as-file has no on-disk copy to re-attach from, so
+                  // its text goes back into the composer.
+                  if (pastedText !== undefined) {
                     deliverPastedTextBack(target, editorRef, pastedText);
                   }
-                } else {
-                  setLocalUploads((prev) =>
-                    prev.filter((u) => u.clientUploadId !== clientUploadId),
-                  );
-                  deliverPastedTextBack(undefined, editorRef, pastedText);
-                }
-              } else if (target) {
-                if (target.getUploads().some((u) => u.clientUploadId === clientUploadId)) {
-                  target.failUpload(clientUploadId, reason);
                 }
               } else {
                 setLocalUploads((prev) =>
-                  prev.map((u) =>
-                    u.clientUploadId === clientUploadId
-                      ? { clientUploadId, status: "failed", filename: file.name, size: file.size, error: reason }
-                      : u,
-                  ),
+                  prev.filter((u) => u.clientUploadId !== clientUploadId),
                 );
+                if (pastedText !== undefined) {
+                  deliverPastedTextBack(undefined, editorRef, pastedText);
+                }
               }
               toast.error(t(($) => $.upload.failed, { filename: file.name, reason }));
               resolve(null);

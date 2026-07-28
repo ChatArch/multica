@@ -653,10 +653,11 @@ describe("comment composers — upload submit gate", () => {
     });
   });
 
-  it("still shows a chip when an inline upload FAILS", async () => {
-    // uploadAndInsertFile removes the placeholder node on failure, so
-    // suppressing the chip for uploads this mount started would leave the
-    // outcome visible only in a toast that has already gone.
+  it("leaves nothing behind when an upload fails", async () => {
+    // The toast already said it, at the moment it happened, and the file is
+    // still on disk. A chip cannot retry (the bytes were never persisted) and
+    // `isMeaningful` counts it, so keeping one would hold an otherwise-empty
+    // draft alive across reloads until dismissed by hand.
     const { container } = renderCommentInput();
     activateComposer("comment-composer-shell");
 
@@ -667,7 +668,12 @@ describe("comment composers — upload submit gate", () => {
       pending.fail();
     });
 
-    expect(await screen.findByText(/doomed\.png/)).toBeTruthy();
+    await waitFor(() =>
+      expect(useCommentDraftStore.getState().getUploads("new:issue-1")).toHaveLength(0),
+    );
+    expect(screen.queryByText(/doomed\.png/)).toBeNull();
+    // The empty draft is gone with it, not kept alive by a dead placeholder.
+    expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBeFalsy();
   });
 
   it("shows a chip for an upload inherited from the persisted draft", async () => {
