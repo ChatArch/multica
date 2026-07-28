@@ -23,10 +23,10 @@
  *
  * It also owns the post-send FOCUS decision (`afterAccepted`). Where the caret
  * lands after a send is a per-surface product call — a reply box the user keeps
- * writing in refocuses, a top-level comment hands attention to the posted
- * comment instead — but the mechanics are identical everywhere and easy to get
- * wrong (must run after the clear, must survive a dialog focus trap, must not
- * steal focus the user moved elsewhere mid-flight). Those live here once.
+ * writing in refocuses, a top-level comment ends the turn and drops the caret —
+ * but the mechanics are identical everywhere and easy to get wrong (must run
+ * after the clear, must survive a dialog focus trap, must not steal focus the
+ * user moved elsewhere mid-flight). Those live here once.
  */
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
@@ -36,8 +36,8 @@ import type { UploadGate } from "./use-upload-gate";
 /**
  * What happens to keyboard focus after an accepted submit.
  *  - `refocus`: put the caret back in the composer so the user keeps writing.
- *  - `blur`: drop the caret, because something else on the page is now the
- *    thing to look at (the just-posted comment scrolling into view).
+ *  - `blur`: drop the caret, because the send ended the turn and the composer
+ *    should stop reading as "still writing".
  *  - `none`: leave focus exactly where the send left it.
  */
 export type ComposerAfterAccepted = "refocus" | "blur" | "none";

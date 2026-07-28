@@ -234,9 +234,8 @@ interface ContentEditorRef {
    */
   focusAtAnchor: (anchor: TextAnchor) => void;
   /** Drop focus from the editor. Used by `useComposerSubmit`'s
-   *  `afterAccepted: "blur"` on surfaces that hand attention to something
-   *  else after a send (a posted comment scrolling into view), so the caret
-   *  stops competing with it. */
+   *  `afterAccepted: "blur"` on surfaces where a send ends the turn, so the
+   *  composer stops reading as "still writing". */
   blur: () => void;
   uploadFile: (file: File) => void;
   /** True when file uploads are still in progress. */
