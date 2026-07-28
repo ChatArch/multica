@@ -97,11 +97,19 @@ is a no-op; a malformed UUID is rejected at the request boundary.
     [@all](mention://all/all)
 
 It addresses everyone on the issue. It does NOT make any specific agent run.
-And it is special at trigger time: in `commentMentionsOthersButNotAssignee`
-(`server/internal/handler/comment.go`), a comment that carries an `@all`
-mention is treated as a broadcast that SUPPRESSES the issue assignee's
-automatic on-comment trigger. Use `@all` to announce, not to request work from
-the assignee.
+And it is special at trigger time: a comment that carries an `@all` mention is
+treated as a broadcast that SUPPRESSES the issue assignee's automatic
+on-comment trigger (and the other implicit routing fallbacks — thread parent /
+conversation owner). Use `@all` to announce, not to request work from the
+assignee.
+
+`@all` only suppresses those IMPLICIT routes. An EXPLICIT `@agent` / `@squad`
+mention in the same comment still fires normally (MUL-5411): a comment reading
+`[@all](mention://all/all) heads up — [@Preflight](mention://agent/<uuid>)
+please take this` enqueues Preflight and nobody else. Explicit mentions win over
+the broadcast; see `computeCommentAgentTriggers` in
+`server/internal/handler/comment.go`, where the explicit-mention branch is
+evaluated BEFORE the `@all` short-circuit.
 
 ## What does NOT happen (so the result doesn't surprise you)
 

@@ -1049,6 +1049,86 @@ func TestPreviewCommentTriggers_AssigneeAndSuppress(t *testing.T) {
 	}
 }
 
+// TestPreviewCommentTriggers_AllPlusExplicitAgentMentionStillTriggers pins
+// MUL-5411: `@all` only suppresses the IMPLICIT assignee auto-trigger. A comment
+// that carries `@all` AND an explicit `@agent` must still enqueue that agent —
+// the old ordering short-circuited on `@all` and dropped every trigger, so a
+// "[@all] ... [@Preflight]" comment silently ran nothing.
+func TestPreviewCommentTriggers_AllPlusExplicitAgentMentionStillTriggers(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	assigneeID := createHandlerTestAgent(t, "Preview All Assignee", nil)
+	mentionedID := createHandlerTestAgent(t, "Preview All Mentioned", nil)
+	issueID := createCommentTriggerPreviewIssue(t, "comment trigger all plus mention", "agent", assigneeID)
+	content := fmt.Sprintf("[@all](mention://all/all) heads up — [@Mentioned](mention://agent/%s) please take this", mentionedID)
+
+	preview := previewCommentTriggersForTest(t, issueID, map[string]any{"content": content})
+	// Only the explicitly named agent runs: @all does not fan out to agents and
+	// does not resurrect the assignee fallback.
+	requirePreviewAgents(t, preview, mentionedID)
+	if preview.Agents[0].Source != string(commentTriggerSourceMentionAgent) {
+		t.Fatalf("preview source = %q, want %q", preview.Agents[0].Source, commentTriggerSourceMentionAgent)
+	}
+
+	postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": content})
+	if got := countQueuedCommentTriggerTasks(t, issueID, mentionedID); got != 1 {
+		t.Fatalf("mentioned agent queued tasks = %d, want 1", got)
+	}
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
+		t.Fatalf("assignee queued tasks = %d, want 0 (@all suppresses the assignee fallback)", got)
+	}
+}
+
+// TestPreviewCommentTriggers_AllPlusExplicitSquadMentionStillTriggers is the
+// squad half of MUL-5411: an `@all` broadcast must not swallow an explicit
+// `@squad` mention either — the squad leader still wakes.
+func TestPreviewCommentTriggers_AllPlusExplicitSquadMentionStillTriggers(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	leaderID := createHandlerTestAgent(t, "Preview All Squad Leader", nil)
+	squadID := createCommentTriggerPreviewSquad(t, "Preview All Squad "+t.Name(), leaderID)
+	issueID := createCommentTriggerPreviewIssue(t, "comment trigger all plus squad mention", "", "")
+	content := fmt.Sprintf("[@all](mention://all/all) FYI — [@Squad](mention://squad/%s) please pick this up", squadID)
+
+	preview := previewCommentTriggersForTest(t, issueID, map[string]any{"content": content})
+	requirePreviewAgents(t, preview, leaderID)
+	if preview.Agents[0].Source != string(commentTriggerSourceMentionSquadLeader) {
+		t.Fatalf("preview source = %q, want %q", preview.Agents[0].Source, commentTriggerSourceMentionSquadLeader)
+	}
+
+	postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": content})
+	if got := countQueuedCommentTriggerTasks(t, issueID, leaderID); got != 1 {
+		t.Fatalf("squad leader queued tasks = %d, want 1", got)
+	}
+}
+
+// TestPreviewCommentTriggers_AllPlusMemberMentionStaysSuppressed guards the
+// other side of the MUL-5411 reorder: `@all` alongside a `@member` mention (no
+// agent/squad named) still triggers nothing.
+func TestPreviewCommentTriggers_AllPlusMemberMentionStaysSuppressed(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	assigneeID := createHandlerTestAgent(t, "Preview All Member Assignee", nil)
+	issueID := createCommentTriggerPreviewIssue(t, "comment trigger all plus member mention", "agent", assigneeID)
+	content := fmt.Sprintf("[@all](mention://all/all) and [@Member](mention://member/%s) heads up", testUserID)
+
+	preview := previewCommentTriggersForTest(t, issueID, map[string]any{"content": content})
+	if got := len(preview.Agents); got != 0 {
+		t.Fatalf("@all + @member preview agents = %d, want 0: %+v", got, preview.Agents)
+	}
+
+	postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": content})
+	if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
+		t.Fatalf("assignee queued tasks = %d, want 0", got)
+	}
+}
+
 func TestPreviewCommentTriggers_AllSuppressesAssigneeAndPendingDedupes(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
