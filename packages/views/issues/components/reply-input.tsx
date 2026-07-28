@@ -140,6 +140,9 @@ function ReplyInput({
     };
   }, []);
   const submittedEntryRef = useRef<unknown>(null);
+  // See CommentInput: bound to the branch that actually wiped the editor, so a
+  // draft the stale-submit guard kept is never disturbed.
+  const editorScrubbedRef = useRef(false);
 
   const { submitting, submit } = useComposerSubmit({
     editorRef,
@@ -150,8 +153,9 @@ function ReplyInput({
     // reply lands directly above the box that is still focused — nothing needs
     // to pull the eye elsewhere. `containerRef` keeps this from stealing focus
     // if the user moved to another composer while the reply was in flight.
-    afterAccepted: "refocus",
+    afterAccepted: () => (editorScrubbedRef.current ? "refocus" : "none"),
     onSubmit: (content) => {
+      editorScrubbedRef.current = false;
       if (draftKey) {
         // Flush pending debounce before snapshotting — see CommentInput.
         const pending = editorRef.current?.flushPendingUpdate?.();
@@ -191,6 +195,7 @@ function ReplyInput({
       setContent("");
       setIsEmpty(true);
       setSuppressedAgentIds(new Set());
+      editorScrubbedRef.current = true;
     },
   });
 

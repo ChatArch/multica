@@ -448,6 +448,38 @@ describe("comment composers", () => {
     });
 
     expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBe("draft A plus more");
+    // …and the post-send caret policy must stand down with it: the guard left
+    // the editor holding "draft A plus more", so blurring would yank the caret
+    // out of the sentence the user is still writing.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(focusCalls.blurred).toBe(0);
+  });
+
+  // Same coupling on the reply side: refocus is bound to having actually wiped
+  // the editor, not merely to acceptance.
+  it("does not refocus a reply box whose mid-flight draft was kept", async () => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    renderReplyInput({ onSubmit, draftKey: "reply:issue-1:comment-1" });
+    activateComposer("reply-composer-shell");
+    const editor = screen.getByTestId("editor");
+    fireEvent.change(editor, { target: { value: "reply A" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    fireEvent.change(editor, { target: { value: "reply A plus more" } });
+    focusCalls.focused = 0;
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft("reply:issue-1:comment-1")).toBe(
+      "reply A plus more",
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(focusCalls.focused).toBe(0);
   });
 
   // MUL-5181 P0: a submit that outlives its composer may only clear the draft

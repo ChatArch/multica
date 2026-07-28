@@ -60,10 +60,16 @@ export interface ComposerSubmitOptions {
   normalize?: (raw: string) => string;
   /**
    * Focus handling once `onAccepted` has cleared the composer. Defaults to
-   * `none`. Pass a function to decide at accept time: chat resolves to `none`
-   * when the owner sent fire-and-forget while the user was already on another
-   * session, because the shared editor is then showing a DIFFERENT draft that
-   * must not be grabbed.
+   * `none`.
+   *
+   * INVARIANT: a surface whose `onAccepted` can decline to clear must pass a
+   * FUNCTION and resolve to `none` on those paths. Every composer here has a
+   * stale-submit guard that keeps text typed during the request — and chat can
+   * be sent fire-and-forget while the user is on another session, leaving the
+   * shared editor on someone else's draft. Acting on a document the accepted
+   * handler deliberately left alone drops the caret out of a sentence the user
+   * is still writing. A literal mode is only safe when acceptance ALWAYS
+   * scrubs the editor.
    */
   afterAccepted?: ComposerAfterAccepted | (() => ComposerAfterAccepted);
   /**

@@ -125,6 +125,11 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
     };
   }, []);
   const submittedEntryRef = useRef<unknown>(null);
+  // Set by `onAccepted` only on the branch that actually wiped the editor; read
+  // back by `afterAccepted`. Bound this way because the stale-submit guard can
+  // leave a mid-flight draft in place: dropping the caret then would yank it
+  // out of the sentence the user is still typing.
+  const editorScrubbedRef = useRef(false);
 
   const { submitting, submit } = useComposerSubmit({
     editorRef,
@@ -132,8 +137,9 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
     // A top-level comment ends a turn: the caret is dropped rather than kept,
     // so the composer stops reading as "still writing" once the comment is
     // posted above it. Thread replies are the opposite — see ReplyInput.
-    afterAccepted: "blur",
+    afterAccepted: () => (editorScrubbedRef.current ? "blur" : "none"),
     onSubmit: (content) => {
+      editorScrubbedRef.current = false;
       // Flush the editor's pending debounce before snapshotting — a late flush
       // of pre-submit typing must not read as an edit made during the request.
       const pending = editorRef.current?.flushPendingUpdate?.();
@@ -172,6 +178,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
       setContent("");
       setIsEmpty(true);
       setSuppressedAgentIds(new Set());
+      editorScrubbedRef.current = true;
     },
   });
 
