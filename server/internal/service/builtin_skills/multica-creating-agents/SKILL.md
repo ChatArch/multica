@@ -109,7 +109,7 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 | `name` | `agent.name` | required, 400 if empty | listings, runtime payload |
 | `description` | `agent.description` | 400 if > 255 code points | catalog/listing only — NOT the runtime prompt |
 | `instructions` | `agent.instructions` | none | daemon → provider at claim time |
-| `avatar_url` | `agent.avatar_url` | none; an explicit non-empty value is preserved, while omitted/empty creates a random `emoji:<glyph>` avatar | catalog/listing UI only — NOT the runtime prompt |
+| `avatar_url` | `agent.avatar_url` | an explicit value goes through the same publish check as update (403 if it points at a file attached to an issue/comment/chat); omitted/empty/whitespace-only stores NULL | catalog/listing UI only — NOT the runtime prompt |
 | `runtime_id` | `agent.runtime_id` | required (400) + must resolve to a runtime in this workspace | selects runtime/provider |
 | `model` | `agent.model` (nullable) | none beyond runtime support | daemon reads; empty = runtime default |
 | `thinking_level` | `agent.thinking_level` (nullable) | provider-level enum; unknown literal → 400 | daemon; empty = runtime default |
@@ -123,7 +123,8 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 
 Defaults when omitted or explicitly `null`: `max_concurrent_tasks` → `6`.
 Other defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
-`custom_args` → `[]`, `avatar_url` → a random `emoji:<glyph>`, `visibility` →
+`custom_args` → `[]`, `avatar_url` → NULL (no placeholder is generated — the UI
+falls back to the icon of the agent's runtime), `visibility` →
 `private`
 (all materialized server-side before the insert). `custom_args`/`runtime_config`
 are typed `[]string`/`any` and marshaled as-is — the JSON-shape rejection

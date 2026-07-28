@@ -17,6 +17,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
+import { AgentRuntimeIcon } from "./agent-runtime-icon";
 import {
   SettingsCard,
   SettingsRow,
@@ -174,6 +175,7 @@ export function AgentDetailInspector({
                 size={56}
                 disabled={!canEdit}
                 onUploaded={(url) => update({ avatar_url: url })}
+                fallback={<AgentRuntimeIcon agentId={agent.id} />}
               />
             </div>
           </SettingsRow>
