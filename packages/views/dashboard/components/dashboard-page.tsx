@@ -28,6 +28,7 @@ import {
   dashboardRunTimeDailyOptions,
   dashboardFailuresDailyOptions,
   dashboardFailuresByAgentOptions,
+  FAILURE_CLASSES,
   type FailureClass,
 } from "@multica/core/dashboard";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -78,12 +79,17 @@ import {
   computeFailureTotals,
   DELETED_AGENTS_ROW_ID,
   formatDuration,
+  hasRateSample,
   mergeAgentDashboardRows,
+  MIN_RATE_SAMPLE,
+  OFFENDER_METRIC,
+  sortAgentFailures,
   type AgentDashboardRow,
   type AgentFailureRow,
   type FailureClassRow,
   type FailureReasonRow,
   type FailureTotals,
+  type OffenderSort,
 } from "../utils";
 
 // Period selector — mirrors the runtime detail page so users see the same
@@ -866,6 +872,11 @@ function useFailureClassLabel(): (c: FailureClass) => string {
 // plus a header, instead of running to 30+ rows on a busy workspace.
 const TOP_OFFENDER_LIMIT = 8;
 
+// Shared by the offender column header and every offender row, so the two
+// cannot drift out of alignment.
+const OFFENDER_GRID =
+  "grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_4rem_4rem_4rem] items-center gap-3";
+
 /**
  * Failure breakdown for the selected window: what class of thing broke, and
  * which agents it broke for.
@@ -895,11 +906,32 @@ function ErrorsBreakdown({
   const classLabel = useFailureClassLabel();
   const [showReasons, setShowReasons] = useState(false);
   const [showAllAgents, setShowAllAgents] = useState(false);
+  const [sortBy, setSortBy] = useState<OffenderSort>("failed");
 
-  const maxAgent = agentRows.reduce((m, r) => Math.max(m, r.failed), 0);
+  const sortOptions = useMemo(
+    () => [
+      { value: "failed" as const, label: t(($) => $.errors.sort_failed) },
+      { value: "rate" as const, label: t(($) => $.errors.sort_rate) },
+    ],
+    [t],
+  );
+
+  const sortedAgents = useMemo(
+    () => sortAgentFailures(agentRows, sortBy),
+    [agentRows, sortBy],
+  );
+
+  // The leader fills the track, measured over every row rather than the
+  // visible ones so a bar means the same thing collapsed and expanded. Reading
+  // it off the leader (instead of a max over the raw rows) also keeps the Rate
+  // scale usable: a demoted small-sample row can out-rate the leader, and
+  // scaling to it would squash every meaningful bar to a sliver.
+  const leader = sortedAgents[0];
+  const maxValue = leader ? OFFENDER_METRIC[sortBy](leader) : 0;
+
   const visibleAgents = showAllAgents
-    ? agentRows
-    : agentRows.slice(0, TOP_OFFENDER_LIMIT);
+    ? sortedAgents
+    : sortedAgents.slice(0, TOP_OFFENDER_LIMIT);
 
   return (
     <div className="rounded-lg border bg-card">
@@ -920,8 +952,13 @@ function ErrorsBreakdown({
         <>
           <div className="border-b p-4">
             <div className="mb-2.5 flex items-center justify-between gap-2">
+              {/* Spells out its own denominator. The header above quotes a
+                  rate over every run (3.3% of 8575); this section splits the
+                  failures alone (287). Two percentages one above the other
+                  with different denominators read as a contradiction unless
+                  each says what it is counting. */}
               <h5 className="text-xs font-medium text-muted-foreground">
-                {t(($) => $.errors.by_class)}
+                {t(($) => $.errors.mix_title, { failed: totals.failed })}
               </h5>
               <button
                 type="button"
@@ -941,29 +978,66 @@ function ErrorsBreakdown({
           </div>
 
           <div className="p-4">
-            <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h5 className="text-xs font-medium text-muted-foreground">
                 {t(($) => $.errors.by_agent)}
               </h5>
-              {agentRows.length > TOP_OFFENDER_LIMIT ? (
-                <button
-                  type="button"
-                  onClick={() => setShowAllAgents((v) => !v)}
-                  className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                >
-                  {showAllAgents
-                    ? t(($) => $.errors.show_less, { count: TOP_OFFENDER_LIMIT })
-                    : t(($) => $.errors.show_all, { count: agentRows.length })}
-                </button>
-              ) : null}
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <Segmented
+                  value={sortBy}
+                  onChange={setSortBy}
+                  options={sortOptions}
+                />
+                {sortedAgents.length > TOP_OFFENDER_LIMIT ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllAgents((v) => !v)}
+                    className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {showAllAgents
+                      ? t(($) => $.errors.show_less, {
+                          count: TOP_OFFENDER_LIMIT,
+                        })
+                      : t(($) => $.errors.show_all, {
+                          count: sortedAgents.length,
+                        })}
+                  </button>
+                ) : null}
+              </div>
             </div>
+            {/* Column headers, as on the leaderboard: `4 / 10 · 40%` was one
+                unlabelled blob and the reader had to guess which number was
+                which. The active metric's column is emphasised so it is
+                obvious what the ranking and the bars measure. */}
+            {sortedAgents.length > 0 ? (
+              <div
+                className={`${OFFENDER_GRID} border-b py-2 text-xs font-medium text-muted-foreground`}
+              >
+                <span>{t(($) => $.errors.header_agent)}</span>
+                <span />
+                <span
+                  className={`text-right ${sortBy === "failed" ? "text-foreground" : ""}`}
+                >
+                  {t(($) => $.errors.header_failed)}
+                </span>
+                <span className="text-right">
+                  {t(($) => $.errors.header_runs)}
+                </span>
+                <span
+                  className={`text-right ${sortBy === "rate" ? "text-foreground" : ""}`}
+                >
+                  {t(($) => $.errors.header_rate)}
+                </span>
+              </div>
+            ) : null}
             <ul aria-label={t(($) => $.errors.by_agent)} className="divide-y">
               {visibleAgents.map((row) => (
                 <AgentFailureItem
                   key={row.agentId}
                   row={row}
                   name={agents.find((a) => a.id === row.agentId)?.name ?? null}
-                  maxFailed={maxAgent}
+                  maxValue={maxValue}
+                  sortBy={sortBy}
                   classLabel={classLabel}
                 />
               ))}
@@ -1012,7 +1086,7 @@ function ClassComposition({
         ))}
       </div>
       <ul
-        aria-label={t(($) => $.errors.by_class)}
+        aria-label={t(($) => $.errors.mix_label)}
         className="flex flex-wrap items-center gap-x-4 gap-y-1.5"
       >
         {rows.map((row) => (
@@ -1045,7 +1119,7 @@ function ReasonList({ rows }: { rows: FailureReasonRow[] }) {
   const { t } = useT("usage");
   return (
     <ul
-      aria-label={t(($) => $.errors.by_class)}
+      aria-label={t(($) => $.errors.codes_label)}
       className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2"
     >
       {rows.map((row) => (
@@ -1069,27 +1143,52 @@ function ReasonList({ rows }: { rows: FailureReasonRow[] }) {
 
 /**
  * One offender row, shaped like the leaderboard row directly above this card:
- * identity, then a proportional bar, then the numbers.
+ * identity, then a proportional bar, then one column per number.
  *
- * Was two lines (name+stats over a full-width bar), which at 30 agents made
- * the card taller than the rest of the page combined. Folding the bar into
- * its own grid column halves the height and lines the numbers up into a
- * scannable column.
+ * The bar measures whatever the list is currently sorted by, and the matching
+ * column is emphasised — the same lockstep the leaderboard keeps. Before, the
+ * bar always measured absolute failures while the loudest number on the row
+ * was the rate, so the worst-rate agent could sit near the bottom with one of
+ * the shortest bars.
+ *
+ * The bar is stacked by failure class, which is also the only thing its colour
+ * means. A row that fails one way is a solid block; a row failing five ways is
+ * visibly striped — a distinction the old single dominant-class badge erased.
  */
 function AgentFailureItem({
   row,
   name,
-  maxFailed,
+  maxValue,
+  sortBy,
   classLabel,
 }: {
   row: AgentFailureRow;
   name: string | null;
-  maxFailed: number;
+  maxValue: number;
+  sortBy: OffenderSort;
   classLabel: (c: FailureClass) => string;
 }) {
   const { t } = useT("usage");
   const wsPaths = useWorkspacePaths();
-  const barColor = FAILURE_CLASS_COLOR[row.topClass ?? "other"];
+
+  const segments = FAILURE_CLASSES.filter((c) => row.classes[c] > 0);
+  // Text equivalent of the stacked bar. The bar is the only place the class
+  // split is rendered now that the badge is gone, so it has to carry a name
+  // for screen readers as well as a hover affordance for everyone else.
+  const composition = segments
+    .map((c) => `${classLabel(c)} ${row.classes[c]}`)
+    .join(" · ");
+
+  // Clamped, not just scaled: under the Rate ranking a small-sample row is
+  // demoted below the leader while still able to carry a higher rate, and an
+  // unclamped width would overflow the track.
+  const value = OFFENDER_METRIC[sortBy](row);
+  const pct = maxValue > 0 ? Math.min(100, (value / maxValue) * 100) : 0;
+
+  // Below MIN_RATE_SAMPLE runs the rate is arithmetic, not signal (1/1 is
+  // 100%). Those rows sort last under Rate and never take the emphasis that
+  // marks the active column, but they keep rendering and say why on hover.
+  const weakSample = !hasRateSample(row);
 
   // The row links into the agent's Overview, whose ActivityTab lists recent
   // runs with each failure's reason — the drill-down from "this agent is the
@@ -1102,22 +1201,15 @@ function AgentFailureItem({
   // here would leak a bare UUID — and, for a private agent, leak its
   // existence and failure profile to a member who cannot see it.
   const label = (
-    <span className="flex min-w-0 items-center gap-2">
-      <span
-        className={`truncate text-xs${name ? "" : " italic text-muted-foreground"}`}
-      >
-        {name ?? t(($) => $.errors.other_agents)}
-      </span>
-      {row.topClass ? (
-        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[10px] text-muted-foreground">
-          {classLabel(row.topClass)}
-        </span>
-      ) : null}
+    <span
+      className={`block truncate text-xs${name ? "" : " italic text-muted-foreground"}`}
+    >
+      {name ?? t(($) => $.errors.other_agents)}
     </span>
   );
 
   return (
-    <li className="grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto] items-center gap-3 py-2">
+    <li className={`${OFFENDER_GRID} py-2`}>
       {name ? (
         <AppLink
           href={`${wsPaths.agentDetail(row.agentId)}?view=overview`}
@@ -1131,19 +1223,45 @@ function AgentFailureItem({
       )}
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className="h-full rounded-full transition-[width] duration-300 ease-out"
-          style={{
-            width: `${maxFailed > 0 ? (row.failed / maxFailed) * 100 : 0}%`,
-            backgroundColor: barColor,
-          }}
-        />
+          role="img"
+          aria-label={composition}
+          title={composition}
+          className="flex h-full overflow-hidden rounded-full transition-[width] duration-300 ease-out"
+          style={{ width: `${pct}%` }}
+        >
+          {segments.map((c) => (
+            <div
+              key={c}
+              className="h-full"
+              style={{
+                width: `${(row.classes[c] / row.failed) * 100}%`,
+                backgroundColor: FAILURE_CLASS_COLOR[c],
+              }}
+            />
+          ))}
+        </div>
       </div>
-      <span className="whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">
-        {t(($) => $.errors.agent_rate, {
-          failed: row.failed,
-          total: row.total,
-          rate: formatRate(row.failed, row.total),
-        })}
+      <span
+        className={`text-right text-xs tabular-nums ${sortBy === "failed" ? "font-medium text-foreground" : "text-muted-foreground"}`}
+      >
+        {row.failed}
+      </span>
+      <span className="text-right text-xs tabular-nums text-muted-foreground">
+        {row.total}
+      </span>
+      <span
+        title={
+          weakSample
+            ? t(($) => $.errors.low_sample, { count: MIN_RATE_SAMPLE })
+            : undefined
+        }
+        className={`text-right text-xs tabular-nums ${
+          sortBy === "rate" && !weakSample
+            ? "font-medium text-foreground"
+            : "text-muted-foreground"
+        }`}
+      >
+        {formatRate(row.failed, row.total)}
       </span>
     </li>
   );

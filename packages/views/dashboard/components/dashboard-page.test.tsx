@@ -227,6 +227,23 @@ function renderDashboard() {
   );
 }
 
+// The Top offenders section — the sort control and column headers sit beside
+// the list, not inside it.
+function offenderCard(): HTMLElement {
+  return screen.getByRole("list", { name: "Top offenders" })
+    .parentElement as HTMLElement;
+}
+
+// The filled part of one offender row's bar. `role="img"` is on the fill (it
+// carries the class-split label), and its inline width is the metric the list
+// is currently ranked by.
+function offenderBar(index: number): HTMLElement {
+  const rows = within(
+    screen.getByRole("list", { name: "Top offenders" }),
+  ).getAllByRole("listitem");
+  return within(rows[index] as HTMLElement).getByRole("img");
+}
+
 describe("DashboardPage — viewing timezone drives the query key", () => {
   beforeEach(() => {
     queryKeys.length = 0;
@@ -323,11 +340,14 @@ describe("DashboardPage — failure visibility", () => {
 
     // Auth (3) outranks Timeout (1), and both are named by class rather than
     // by the raw failure_reason enum.
-    const byClass = within(screen.getByRole("list", { name: "By class" }));
+    const byClass = within(screen.getByRole("list", { name: "Failure mix" }));
     expect(byClass.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Auth3",
       "Timeout1",
     ]);
+    // The section names its own denominator: the header above it quotes a
+    // rate over all 10 runs, this one splits the 4 failures.
+    expect(screen.getByText("Failure mix · 4")).toBeInTheDocument();
 
     const byAgent = within(screen.getByRole("list", { name: "Top offenders" }));
     const link = byAgent.getByRole("link", { name: /Agent One/ });
@@ -335,8 +355,46 @@ describe("DashboardPage — failure visibility", () => {
     // while its recent runs (and each failure's reason) live in the Overview
     // pane's ActivityTab.
     expect(link).toHaveAttribute("href", "/acme/agents/agent-1?view=overview");
-    // 4 of that agent's 10 terminal runs failed, and Auth is what dominates.
-    expect(byAgent.getByText("4 / 10 · 40%")).toBeInTheDocument();
+    // One labelled column per number instead of the old unlabelled
+    // `4 / 10 · 40%` blob.
+    const row = byAgent.getAllByRole("listitem")[0] as HTMLElement;
+    expect(within(row).getByText("4")).toBeInTheDocument();
+    expect(within(row).getByText("10")).toBeInTheDocument();
+    expect(within(row).getByText("40%")).toBeInTheDocument();
+    // The bar is the only place the class split lives now that the dominant-
+    // class badge is gone, so it has to name that split for screen readers.
+    expect(within(row).getByRole("img")).toHaveAccessibleName("Auth 3 · Timeout 1");
+  });
+
+  it("moves the bar onto whichever metric the list is ranked by", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    // Agent One failed 4 of 10; the anonymous bucket failed 2 of 2. Under
+    // Failures the bucket is half the leader's bar. Under Rate it is 100% —
+    // a bar that stayed on the failure count while the row shouted "100%" is
+    // exactly the mismatch this control exists to remove.
+    expect(offenderBar(1).style.width).toBe("50%");
+
+    await user.click(within(offenderCard()).getByRole("button", { name: "Rate" }));
+
+    expect(offenderBar(1).style.width).toBe("100%");
+  });
+
+  it("keeps a two-run agent from hijacking the rate ranking", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    await user.click(within(offenderCard()).getByRole("button", { name: "Rate" }));
+
+    // 2/2 is a 100% rate and 4/10 is 40%, but two runs is not evidence. The
+    // small-sample row is demoted, not dropped — the list still has to
+    // reconcile with the workspace failure count above it.
+    const rows = within(screen.getByRole("list", { name: "Top offenders" }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+    expect(rows[0]).toMatch(/Agent One/);
+    expect(rows[1]).toMatch(/Other agents/);
   });
 
   it("reveals the raw failure_reason values behind the class summary", async () => {

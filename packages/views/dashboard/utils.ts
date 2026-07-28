@@ -608,15 +608,19 @@ export interface AgentFailureRow {
   failed: number;
   total: number;
   rate: number;
-  // Heaviest class for this agent — the "what kind of broken" hint on the
-  // top-offenders row. null when the agent has no failures at all.
-  topClass: FailureClass | null;
+  // Full per-class split of this agent's failures, which the offender row
+  // draws as a stacked bar. Carries the whole composition rather than just
+  // the heaviest class: "fails one way" and "fails five ways" are different
+  // problems, and a single dominant-class label collapsed them into the same
+  // row. Every class is present (0 when unused) so the bar can be built
+  // without existence checks.
+  classes: FailureClassCounts;
 }
 
-// Per-agent failure totals, worst first. Ranked by absolute failure count
-// rather than rate: an agent with 1/1 failed is a 100% rate but is rarely the
-// thing an operator should look at before the agent that failed 40 times.
-// The rate rides along on the row so the reader can still see it.
+// Per-agent failure totals, worst first. Default order is absolute failure
+// count: an agent with 1/1 failed is a 100% rate but is rarely the thing an
+// operator should look at before the agent that failed 40 times. The rate
+// rides along on the row, and `sortAgentFailures` can re-rank on it.
 //
 // Agents with zero failures are dropped — this list is a triage aid, not a
 // census; the leaderboard above it already shows every agent.
@@ -638,24 +642,62 @@ export function aggregateAgentFailures(
     entry.failed += r.task_count;
     entry.classes[failureClassOf(r.failure_reason)] += r.task_count;
   }
-  return Array.from(map.entries())
-    .filter(([, v]) => v.failed > 0)
-    .map(([agentId, v]) => {
-      let topClass: FailureClass | null = null;
-      for (const c of FAILURE_CLASSES) {
-        if (v.classes[c] > 0 && (topClass === null || v.classes[c] > v.classes[topClass])) {
-          topClass = c;
-        }
-      }
-      return {
+  return sortAgentFailures(
+    Array.from(map.entries())
+      .filter(([, v]) => v.failed > 0)
+      .map(([agentId, v]) => ({
         agentId,
         failed: v.failed,
         total: v.total,
         rate: v.total > 0 ? v.failed / v.total : 0,
-        topClass,
-      };
-    })
-    .toSorted((a, b) => b.failed - a.failed || b.rate - a.rate);
+        classes: v.classes,
+      })),
+    "failed",
+  );
+}
+
+// Which metric ranks the offender list, and therefore how long its bars are.
+// The two used to disagree: the list ranked on absolute failures while the
+// most prominent number on the row was the rate, so the bar looked like it
+// measured a percentage it had nothing to do with. Mirrors LeaderboardSort's
+// contract — sort metric, bar length and the emphasised column move together.
+export type OffenderSort = "failed" | "rate";
+
+export const OFFENDER_METRIC: Record<
+  OffenderSort,
+  (r: AgentFailureRow) => number
+> = {
+  failed: (r) => r.failed,
+  rate: (r) => r.rate,
+};
+
+// Minimum terminal runs before an agent's failure rate is allowed to compete
+// on the Rate ranking. One run that failed is a 100% rate, and without a floor
+// that row wins outright and buries every agent worth looking at.
+//
+// Small-sample rows are demoted, NOT hidden: this list has to keep reconciling
+// with the workspace failure count above it, and an agent that failed its only
+// two runs is still a real thing an operator may want to see.
+export const MIN_RATE_SAMPLE = 10;
+
+export function hasRateSample(row: AgentFailureRow): boolean {
+  return row.total >= MIN_RATE_SAMPLE;
+}
+
+// Re-rank the offender rows for the selected metric. Ties break on the other
+// metric so an equal-valued bucket keeps a stable, meaningful order instead of
+// reshuffling on every render.
+export function sortAgentFailures(
+  rows: AgentFailureRow[],
+  sortBy: OffenderSort,
+): AgentFailureRow[] {
+  if (sortBy === "failed") {
+    return rows.toSorted((a, b) => b.failed - a.failed || b.rate - a.rate);
+  }
+  const sample = (r: AgentFailureRow) => (hasRateSample(r) ? 0 : 1);
+  return rows.toSorted(
+    (a, b) => sample(a) - sample(b) || b.rate - a.rate || b.failed - a.failed,
+  );
 }
 
 // Fold rows whose agent the viewer cannot resolve into one aggregated bucket
