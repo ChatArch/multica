@@ -1,22 +1,28 @@
 "use client";
 
-import { ArrowUpRight, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useAuthStore } from "@multica/core/auth";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useDiscordCardDismissed } from "./use-discord-card-dismissed";
 import { useT } from "../i18n";
 
 /**
- * Dismissible "Join our Discord" entry pinned to the bottom of the left
- * sidebar (above the help launcher). Once dismissed it stays hidden for
- * that user on this browser — see {@link useDiscordCardDismissed}.
+ * Dismissible "Join our Discord" entry sharing the sidebar footer strip with
+ * the help launcher. Once dismissed it stays hidden for that user on this
+ * browser — see {@link useDiscordCardDismissed}.
  *
  * Deliberately shaped as a sidebar row, not a bordered card: it matches
  * SidebarMenuButton metrics (h-8 / rounded-md / gap-2 / text-body) and
  * carries no resting border or fill. A dismissible promo is the
  * lowest-priority item in the sidebar, so it must not be drawn heavier than
- * the navigation above it. The external-link arrow mirrors the Help menu's
- * outbound items.
+ * the navigation above it.
+ *
+ * No external-link arrow, unlike the Help menu's outbound items: sharing one
+ * 224px strip with the help trigger leaves 128px for the label, and the arrow
+ * plus the dismiss button together overflow that in en (109px) and zh (125px).
+ * The dismiss affordance wins because it is a user-facing capability and the
+ * arrow is only a hint — the Discord mark already signals the destination.
+ * `flex-1 min-w-0` makes the label truncate rather than push the trigger off.
  */
 export function JoinDiscordCard() {
   const { t } = useT("layout");
@@ -26,7 +32,7 @@ export function JoinDiscordCard() {
   if (dismissed) return null;
 
   return (
-    <div className="group/discord relative">
+    <div className="group/discord relative min-w-0 flex-1">
       <a
         href={DISCORD_URL}
         target="_blank"
@@ -37,7 +43,6 @@ export function JoinDiscordCard() {
         <span className="truncate">
           {t(($) => $.sidebar.discord_card.title)}
         </span>
-        <ArrowUpRight className="size-3 shrink-0 text-muted-foreground/50" />
       </a>
       {/* Revealed on hover/focus so the resting row stays quiet. Coarse
           pointers get no hover, so keep it permanently visible there. */}
