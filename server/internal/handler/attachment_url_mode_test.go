@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -124,9 +125,10 @@ func TestAttachmentToResponse_StableModeDropsSignature(t *testing.T) {
 	}
 }
 
-// TestAttachmentToResponse_SignedModeStillRotates documents why this change
-// exists at all: the signed value is re-minted per request, so identical
-// content yields different bytes and defeats content-keyed caching.
+// TestAttachmentToResponse_SignedModeRotatesButStableDoesNot documents why this
+// change exists at all: the signed value is a function of an expiry the server
+// re-derives per request, so identical content yields different bytes on every
+// read and defeats content-keyed caching. Stable mode has no such term.
 func TestAttachmentToResponse_SignedModeRotatesButStableDoesNot(t *testing.T) {
 	withCloudFrontSigner(t)
 
@@ -140,6 +142,31 @@ func TestAttachmentToResponse_SignedModeRotatesButStableDoesNot(t *testing.T) {
 	}
 	if strings.Contains(stableA.DownloadURL, "Policy=") || strings.Contains(stableA.DownloadURL, "Signature=") {
 		t.Errorf("stable download_url leaked signature params: %q", stableA.DownloadURL)
+	}
+
+	// The rotation half. attachmentToResponse mints its expiry from time.Now()
+	// at second granularity, so calling it twice in a row would usually land in
+	// the same second and produce identical bytes — asserting on that directly
+	// would be a flaky test of a real property. Drive the signer with two
+	// explicit expiries instead: it proves the URL varies with the expiry term,
+	// which is exactly what makes the response unstable as the clock advances.
+	signed := testHandler.attachmentToResponse(att, attachmentURLModeSigned)
+	if !strings.Contains(signed.DownloadURL, "Policy=") {
+		t.Fatalf("signed mode should embed a policy, got %q", signed.DownloadURL)
+	}
+	base := time.Now()
+	first := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute))
+	second := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute+time.Second))
+	if first == second {
+		t.Errorf("signed URL did not change with the expiry; rotation is the premise of this whole change")
+	}
+	if strings.Split(first, "?")[0] != strings.Split(second, "?")[0] {
+		t.Errorf("only the query should rotate, the resource path must be stable: %q vs %q", first, second)
+	}
+	// And re-signing with the SAME expiry must reproduce the same bytes —
+	// otherwise the rotation above would prove nothing about the clock.
+	if again := testHandler.CFSigner.SignedURL(att.Url, base.Add(30*time.Minute)); again != first {
+		t.Errorf("signing is not deterministic for a fixed expiry: %q vs %q", again, first)
 	}
 }
 
