@@ -105,9 +105,10 @@ only.
 
 | Contract | Line | Behavior |
 |---|---|---|
-| `authorizeAgentEnv` gate | 66 | loads agent, then applies the two checks below |
-| Agent actors denied | 80–84 | `if actorType == "agent"` → 403 "agents may not access env management endpoints" (MUL-2600 impersonation guard) |
-| Owner/admin only | 86 | `requireWorkspaceRole(..., "owner", "admin")` |
+| `authorizeAgentEnv` gate | 76 | loads agent, then applies the two checks below |
+| Agent actors denied | 90–94 | `if actorType == "agent"` → 403 "agents may not access env management endpoints" (MUL-2600 impersonation guard); runs FIRST, so an agent is denied even when its backing human owns the target agent |
+| Agent owner or ws owner/admin | 96–103 | `requireWorkspaceRole(..., "owner", "admin", "member")` then `canManageAgentEnv` → 403 otherwise (MUL-5438) |
+| `canManageAgentEnv` predicate | 120 | workspace owner/admin, or `agent.owner_id == member.user_id`; a NULL `owner_id` never matches |
 
 ## Routes — `server/cmd/server/router.go`
 

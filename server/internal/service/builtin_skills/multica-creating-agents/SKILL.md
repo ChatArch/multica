@@ -20,7 +20,7 @@ These commands read state and have no side effects:
 ```bash
 multica agent get <agent-id> --output json      # full persisted agent record
 multica agent skills list <agent-id> --output json   # current skill bindings
-multica agent env get <agent-id> --output json  # plaintext env (owner/admin only, agents denied)
+multica agent env get <agent-id> --output json  # plaintext env (agent owner or ws owner/admin; agents denied)
 ```
 
 `agent get` returns the persisted agent including `runtime_id`, `model`,
@@ -189,14 +189,15 @@ Read-side facts (these are the wrong assumptions to avoid):
   list/get/create/update` and WS events return only `has_custom_env` (bool) and
   `custom_env_key_count` (int).
 - Reading plaintext values requires the dedicated `GET /api/agents/{id}/env`
-  endpoint (`multica agent env get`). It is gated to workspace **owner/admin**
-  members, and **agent actors are denied** regardless of the backing member's
-  role — a running agent cannot read another agent's secrets.
+  endpoint (`multica agent env get`). It is gated to the **agent's own human
+  owner** or a workspace **owner/admin**, and **agent actors are denied**
+  regardless of the backing member's role — a running agent cannot read another
+  agent's secrets, not even one its own human owns.
 - Writing values after creation does NOT go through `agent update`. The generic
   update handler rejects any `custom_env` field with a 400 ("use PUT
   /api/agents/{id}/env"). Plaintext env writes are handled by
-  `PUT /api/agents/{id}/env` (`multica agent env set`), which is owner/admin-only
-  and writes an audit row.
+  `PUT /api/agents/{id}/env` (`multica agent env set`), which carries the same
+  gate and writes an audit row.
 
 ### mcp_config
 

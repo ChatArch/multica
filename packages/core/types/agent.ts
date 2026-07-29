@@ -649,8 +649,9 @@ export interface UpdateAgentRequest {
   /**
    * NOTE: `custom_env` is intentionally NOT updatable through this
    * request shape. Env edits flow through `client.updateAgentEnv` /
-   * `PUT /api/agents/{id}/env` — that path is owner/admin only,
-   * denies agent actors, and writes a persistent audit row. The
+   * `PUT /api/agents/{id}/env` — that path admits the agent owner or a
+   * workspace owner/admin, denies agent actors, and writes a
+   * persistent audit row. The
    * server REJECTS any `PUT /api/agents/{id}` body that includes
    * `custom_env` with a 400; do not put the field in this payload.
    * MUL-2600.

@@ -97,14 +97,14 @@ var agentEnvCmd = &cobra.Command{
 
 var agentEnvGetCmd = &cobra.Command{
 	Use:   "get <agent-id>",
-	Short: "Print an agent's custom_env as a JSON map (workspace owner/admin only; every call is recorded)",
+	Short: "Print an agent's custom_env as a JSON map (agent owner or workspace owner/admin; every call is recorded)",
 	Args:  exactArgs(1),
 	RunE:  runAgentEnvGet,
 }
 
 var agentEnvSetCmd = &cobra.Command{
 	Use:   "set <agent-id>",
-	Short: "Replace an agent's custom_env (workspace owner/admin only; values equal to **** preserve the existing entry)",
+	Short: "Replace an agent's custom_env (agent owner or workspace owner/admin; values equal to **** preserve the existing entry)",
 	Args:  exactArgs(1),
 	RunE:  runAgentEnvSet,
 }
@@ -190,8 +190,9 @@ func init() {
 	agentUpdateCmd.Flags().String("service-tier", "", "New Codex execution service tier from the selected model's runtime catalog. Pass an empty string to clear and inherit local Codex configuration.")
 	agentUpdateCmd.Flags().String("custom-args", "", "New custom CLI arguments as JSON array. For model selection prefer --model; some providers (codex app-server, openclaw) reject --model in custom_args.")
 	// custom_env is intentionally NOT part of `agent update`. Use
-	// `multica agent env set <id>` — that path is owner/admin-only,
-	// denies agent actors, and writes a persisted audit trail.
+	// `multica agent env set <id>` — that path admits the agent owner or a
+	// workspace owner/admin, denies agent actors, and writes a persisted
+	// audit trail.
 	//
 	// mcp_config, unlike custom_env, IS updatable here: it is persisted
 	// through the generic UpdateAgent endpoint (there is no dedicated
