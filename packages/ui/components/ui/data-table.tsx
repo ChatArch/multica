@@ -342,6 +342,13 @@ export function DataTable<TData>({
     estimateSize: () => virtualRowHeight,
     getItemKey: getVirtualRowKey,
     overscan: virtualOverscan,
+    // Rows are not all one height. Callers use renderRow for group headers and
+    // end-of-column footers, which are shorter than a data row, so a single
+    // estimate drifts from the real layout as those accumulate — the window
+    // lands off the rows it should be showing and the scrollbar overshoots the
+    // bottom. Each mounted row reports its own height instead, and the
+    // estimate only covers rows that have never been on screen.
+    measureElement: (element) => element.getBoundingClientRect().height,
   });
   const virtualItems = rowVirtualizer.getVirtualItems();
   const firstVirtualItem = virtualItems[0];
@@ -358,6 +365,7 @@ export function DataTable<TData>({
     onRowClick,
     renderRow,
     hasExplicitSize,
+    measureRow: rowVirtualizer.measureElement,
     virtualizeRows,
     virtualItems,
     virtualPaddingTop,
@@ -560,6 +568,8 @@ interface DataTableBodyProps<TData> {
   onRowClick?: (row: Row<TData>) => void;
   renderRow?: (row: Row<TData>) => React.ReactNode;
   hasExplicitSize: (columnId: string) => boolean;
+  // The virtualizer's own measuring ref; rows report their height through it.
+  measureRow: (element: HTMLElement | null) => void;
   virtualizeRows: boolean;
   virtualItems: VirtualItem[];
   virtualPaddingTop: number;
@@ -573,19 +583,35 @@ function DataTableBody<TData>({
   onRowClick,
   renderRow,
   hasExplicitSize,
+  measureRow,
   virtualizeRows,
   virtualItems,
   virtualPaddingTop,
   virtualPaddingBottom,
 }: DataTableBodyProps<TData>) {
-  const renderDataRow = (row: Row<TData>) => {
+  const renderDataRow = (row: Row<TData>, index?: number) => {
+    // The virtualizer reads an element's own height off `data-index`, so a row
+    // has to be tagged and handed the measuring ref. renderRow returns a <tr>
+    // the caller built; cloning is how it joins in without every caller having
+    // to thread the two through.
+    const measured =
+      index === undefined
+        ? {}
+        : { "data-index": index, ref: measureRow };
+
     const customRow = renderRow?.(row);
     if (customRow != null) {
-      return <React.Fragment key={row.id}>{customRow}</React.Fragment>;
+      return React.isValidElement(customRow) && index !== undefined
+        ? React.cloneElement(
+            customRow as React.ReactElement<Record<string, unknown>>,
+            { key: row.id, ...measured },
+          )
+        : <React.Fragment key={row.id}>{customRow}</React.Fragment>;
     }
     return (
       <TableRow
         key={row.id}
+        {...measured}
         data-state={row.getIsSelected() && "selected"}
         onClick={onRowClick ? () => onRowClick(row) : undefined}
         // `group` lets pinned cells track row hover via group-hover (their bg
@@ -645,7 +671,7 @@ function DataTableBody<TData>({
             {renderVirtualSpacer("top", virtualPaddingTop)}
             {virtualItems.map((virtualItem) => {
               const row = rows[virtualItem.index];
-              return row ? renderDataRow(row) : null;
+              return row ? renderDataRow(row, virtualItem.index) : null;
             })}
             {renderVirtualSpacer("bottom", virtualPaddingBottom)}
           </>
