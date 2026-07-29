@@ -7,25 +7,80 @@ import (
 )
 
 // agentDiscoveryInterval is how often a running daemon re-checks which agent
-// CLIs are installed. Each round is a handful of exec.LookPath calls — the
+// CLIs are installed. A round is a handful of exec.LookPath calls — the
 // login-shell fallback is separately rate-limited by the much longer
 // shellResolveTTL — so this can be short enough that installing a CLI feels
 // immediate. Overridable for tests.
 var agentDiscoveryInterval = 2 * time.Minute
 
-// agentDiscoveryLoop periodically re-runs CLI discovery so a provider installed
-// while the daemon is running comes online without a restart (MUL-5439).
+// agentConvergeMaxBackoff caps the retry delay for a discovered provider that
+// keeps failing to register (permanently below the minimum supported version, a
+// CLI whose --version never succeeds, a server that keeps rejecting the
+// register). Discovery itself stays on agentDiscoveryInterval; only the
+// expensive half — version probes plus one register call per workspace — backs
+// off, so a stuck provider cannot turn into a busy loop. Overridable for tests.
+var agentConvergeMaxBackoff = 30 * time.Minute
+
+// agentDiscoveryLoop keeps the registered runtime set converged on the agent
+// CLIs actually installed on this machine, so a CLI installed while the daemon
+// is running comes online without a restart (MUL-5439).
+//
+// Each tick does the cheap half unconditionally: re-probe availability and
+// publish anything new. The expensive half (version probes + registration) runs
+// only when some discovered provider is not yet registered for every tracked
+// workspace — which is derived from live state, not remembered from the round
+// that discovered it. That is what makes a failed first attempt retry: a
+// provider whose version probe timed out, or whose register call failed, is
+// still "missing" on the next tick and gets tried again. It also means a
+// provider rejected for being below the minimum version recovers on its own
+// after an in-place upgrade.
 func (d *Daemon) agentDiscoveryLoop(ctx context.Context) {
 	ticker := time.NewTicker(agentDiscoveryInterval)
 	defer ticker.Stop()
+
+	var (
+		backoff   time.Duration
+		nextRetry time.Time
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			d.refreshAgentAvailability(ctx)
+		case now := <-ticker.C:
+			gained := d.refreshAgentAvailability()
+			missing := d.providersMissingRuntimes()
+			if len(missing) == 0 {
+				backoff = 0
+				continue
+			}
+			// A newly discovered provider always gets an immediate attempt;
+			// otherwise honor the backoff earned by previous failures.
+			if len(gained) == 0 && now.Before(nextRetry) {
+				continue
+			}
+			before := len(missing)
+			d.convergeRuntimeRegistrations(ctx)
+			if len(d.providersMissingRuntimes()) < before {
+				backoff = 0
+			} else {
+				backoff = nextConvergeBackoff(backoff)
+			}
+			nextRetry = now.Add(backoff)
 		}
 	}
+}
+
+// nextConvergeBackoff doubles the retry delay, starting at one discovery
+// interval and capped at agentConvergeMaxBackoff.
+func nextConvergeBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return agentDiscoveryInterval
+	}
+	next := current * 2
+	if next > agentConvergeMaxBackoff {
+		return agentConvergeMaxBackoff
+	}
+	return next
 }
 
 // agents returns the current built-in agent availability set.
@@ -65,26 +120,19 @@ func (d *Daemon) skippedAgentsSnapshot() map[string]string {
 	return out
 }
 
-// refreshAgentAvailability re-runs CLI discovery on a live daemon and registers
-// any provider that appeared since the last probe.
+// refreshAgentAvailability re-runs CLI discovery and publishes providers that
+// appeared since the last probe. It performs no registration — that is
+// convergeRuntimeRegistrations, driven by live state so a failure retries.
 //
-// Why this exists: the availability set used to be built exactly once, in
-// LoadConfig, so a CLI installed while the daemon was running was invisible
-// until the daemon restarted. On Desktop that is worse than it sounds — the app
-// defaults to autoStop=false and auto-start only compares CLI versions, so
-// quitting and reopening the app does not restart the daemon, and the user is
-// left with a CLI that runs fine in their shell but never appears under
-// Runtimes (MUL-5439, GH #6077).
-//
-// Deliberately one-directional: only providers GAINED since the last probe
-// trigger a refresh. A provider that stops resolving is kept, because a
-// transient PATH difference (a daemon restarted from a narrower environment, a
-// version manager mid-upgrade) would otherwise tear down a runtime that is
-// working — and possibly executing a task. Removal stays the job of an explicit
-// restart, where the user chose the environment.
+// Deliberately one-directional: only providers GAINED are acted on. A provider
+// that stops resolving is kept, because a transient environment difference (a
+// daemon restarted from a narrower PATH, a version manager mid-upgrade) would
+// otherwise tear down a runtime that is working — and possibly executing a
+// task. Removal stays the job of an explicit restart, where the user chose the
+// environment.
 //
 // Returns the providers that were added, for logging and tests.
-func (d *Daemon) refreshAgentAvailability(ctx context.Context) []string {
+func (d *Daemon) refreshAgentAvailability() []string {
 	current := d.agents()
 	probed := probeAgentCLIs()
 
@@ -110,51 +158,133 @@ func (d *Daemon) refreshAgentAvailability(ctx context.Context) []string {
 		merged[name] = probed[name]
 	}
 	d.agentsAvailable.Store(&merged)
-	d.logger.Info("agent CLI discovered after startup; registering", "providers", gained)
-
-	d.registerNewlyAvailableRuntimes(ctx)
+	d.logger.Info("agent CLI discovered after startup", "providers", gained)
 	return gained
 }
 
-// registerNewlyAvailableRuntimes re-registers every tracked workspace with the
-// current availability set, so providers added by refreshAgentAvailability get
-// runtime rows without restarting the daemon.
+// providersMissingRuntimes returns the discovered providers that do not have a
+// built-in runtime registered for every tracked workspace.
 //
-// One probe round serves every workspace (same reasoning as the sync loop:
-// built-in CLIs are per machine, not per workspace). RecoverOrphans is
-// deliberately NOT called here — unlike the runtime_gone recovery path, the
-// surviving runtime IDs may still be executing tasks for the user, and failing
-// those as orphans would kill live work (MUL-3332).
-func (d *Daemon) registerNewlyAvailableRuntimes(ctx context.Context) {
-	d.mu.Lock()
-	workspaceIDs := make([]string, 0, len(d.workspaces))
-	for id := range d.workspaces {
-		workspaceIDs = append(workspaceIDs, id)
+// This is the retry signal for the discovery loop, and it is derived from live
+// state rather than remembered: a provider only leaves this set once the daemon
+// actually holds a runtime row for it in every workspace it watches. Custom
+// profile runtimes (ProfileID set) are ignored — they register from a
+// workspace's profile list, not from CLI discovery, and a profile that happens
+// to share a protocol_family with a built-in must not mask the built-in.
+//
+// Returns nothing when no workspace is tracked yet: there is nothing to
+// register against, and the initial registration will carry the full set.
+func (d *Daemon) providersMissingRuntimes() []string {
+	available := d.agents()
+	if len(available) == 0 {
+		return nil
 	}
-	d.mu.Unlock()
-	if len(workspaceIDs) == 0 {
-		return
-	}
-	sort.Strings(workspaceIDs)
 
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.workspaces) == 0 {
+		return nil
+	}
+	missing := make(map[string]struct{})
+	for _, ws := range d.workspaces {
+		registered := make(map[string]struct{}, len(ws.runtimeIDs))
+		for _, id := range ws.runtimeIDs {
+			rt, ok := d.runtimeIndex[id]
+			if !ok || rt.ProfileID != "" {
+				continue
+			}
+			registered[rt.Provider] = struct{}{}
+		}
+		for name := range available {
+			if _, ok := registered[name]; !ok {
+				missing[name] = struct{}{}
+			}
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(missing))
+	for name := range missing {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// convergeRuntimeRegistrations registers the current built-in set for every
+// tracked workspace that is missing one of them.
+//
+// One version-probe round serves every workspace (built-in CLIs are per
+// machine, not per workspace). Failures are logged and left for the next
+// discovery tick — nothing here records "already handled", so a partial
+// failure across workspaces retries only the workspaces that still need it.
+//
+// RecoverOrphans is deliberately NOT called: unlike the runtime_gone recovery
+// path, the surviving runtime IDs may still be executing tasks for the user,
+// and failing those as orphans would kill live work (MUL-3332).
+func (d *Daemon) convergeRuntimeRegistrations(ctx context.Context) {
+	// detectBuiltinRuntimes version-gates the availability set and publishes
+	// this round's drops for /health, so a provider that cannot register still
+	// gets a visible reason even though registration is skipped.
 	builtins := d.detectBuiltinRuntimes(ctx)
 	if len(builtins) == 0 {
 		return
 	}
+	detected := make(map[string]struct{}, len(builtins))
+	for _, rt := range builtins {
+		detected[rt["type"]] = struct{}{}
+	}
+
+	d.mu.Lock()
+	type target struct {
+		id      string
+		missing []string
+	}
+	var targets []target
+	for id, ws := range d.workspaces {
+		registered := make(map[string]struct{}, len(ws.runtimeIDs))
+		for _, rid := range ws.runtimeIDs {
+			rt, ok := d.runtimeIndex[rid]
+			if !ok || rt.ProfileID != "" {
+				continue
+			}
+			registered[rt.Provider] = struct{}{}
+		}
+		var missing []string
+		for name := range detected {
+			if _, ok := registered[name]; !ok {
+				missing = append(missing, name)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			targets = append(targets, target{id: id, missing: missing})
+		}
+	}
+	d.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].id < targets[j].id })
 
 	var changed bool
-	for _, id := range workspaceIDs {
-		resp, profileSig, err := d.registerRuntimesForWorkspaceBatch(ctx, id, builtins)
+	for _, t := range targets {
+		resp, profileSig, err := d.registerRuntimesForWorkspaceBatch(ctx, t.id, builtins)
 		if err != nil {
-			d.logger.Warn("register newly available runtimes failed", "workspace_id", id, "error", err)
+			// Left in the missing set on purpose: the next tick retries.
+			d.logger.Warn("register newly available runtimes failed; will retry",
+				"workspace_id", t.id, "providers", t.missing, "error", err)
 			continue
 		}
-		newIDs, _, ok := d.applyRegisterResponseInPlace(id, resp, profileSig)
+		newIDs, ok := d.mergeRegisterResponseInPlace(t.id, resp, profileSig)
 		if !ok {
 			continue
 		}
 		if len(newIDs) > 0 {
 			changed = true
+			d.logger.Info("registered runtime for newly installed agent CLI",
+				"workspace_id", t.id, "providers", t.missing, "runtime_ids", newIDs)
 		}
 	}
 	if changed {

@@ -910,6 +910,92 @@ func (d *Daemon) applyRegisterResponseInPlace(workspaceID string, resp *Register
 	return newIDs, droppedIDs, true
 }
 
+// mergeRegisterResponseInPlace applies a register response ADDITIVELY: returned
+// runtimes are indexed and appended, and a prior runtime ID that the response
+// did not mention is left alone.
+//
+// applyRegisterResponseInPlace treats the response as authoritative and drops
+// unmentioned IDs, which is right for the convergence paths that deliberately
+// re-derive a workspace's whole runtime set. It is wrong for CLI discovery
+// (MUL-5439): that payload carries built-in runtimes only, and
+// appendProfileRuntimes is best-effort — one failed GetRuntimeProfiles call
+// (older server, network blip) produces a builtins-only response, which under
+// the authoritative rule would evict the workspace's custom profile runtimes
+// from runtimeIndex and stop their heartbeats, possibly mid-task. The server's
+// register endpoint is a pure per-entry upsert and prunes nothing, so omitted
+// runtimes still exist server-side and must be kept locally.
+//
+// ID rotation is still handled: when the response returns a different ID for a
+// provider/profile pair the workspace already had, that specific old ID is
+// replaced rather than accumulating a duplicate heartbeat.
+func (d *Daemon) mergeRegisterResponseInPlace(workspaceID string, resp *RegisterResponse, profileSig string) (newIDs []string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws, exists := d.workspaces[workspaceID]
+	if !exists {
+		return nil, false
+	}
+
+	// Index the workspace's current runtimes by identity (provider + profile)
+	// so a rotated ID replaces its predecessor instead of doubling it.
+	type runtimeKey struct{ provider, profileID string }
+	existingByKey := make(map[runtimeKey]string, len(ws.runtimeIDs))
+	kept := make([]string, 0, len(ws.runtimeIDs)+len(resp.Runtimes))
+	for _, id := range ws.runtimeIDs {
+		if rt, found := d.runtimeIndex[id]; found {
+			existingByKey[runtimeKey{rt.Provider, rt.ProfileID}] = id
+		}
+		kept = append(kept, id)
+	}
+
+	present := make(map[string]struct{}, len(kept))
+	for _, id := range kept {
+		present[id] = struct{}{}
+	}
+	for _, rt := range resp.Runtimes {
+		d.runtimeIndex[rt.ID] = rt
+		if _, already := present[rt.ID]; already {
+			continue
+		}
+		key := runtimeKey{rt.Provider, rt.ProfileID}
+		if oldID, rotated := existingByKey[key]; rotated && oldID != rt.ID {
+			// Same runtime, new ID: swap in place and retire the old entry.
+			for i, id := range kept {
+				if id == oldID {
+					kept[i] = rt.ID
+					break
+				}
+			}
+			delete(d.runtimeIndex, oldID)
+			delete(present, oldID)
+			present[rt.ID] = struct{}{}
+			existingByKey[key] = rt.ID
+			newIDs = append(newIDs, rt.ID)
+			continue
+		}
+		kept = append(kept, rt.ID)
+		present[rt.ID] = struct{}{}
+		existingByKey[key] = rt.ID
+		newIDs = append(newIDs, rt.ID)
+	}
+	ws.runtimeIDs = kept
+
+	if resp.ReposVersion != "" {
+		ws.reposVersion = resp.ReposVersion
+		ws.allowedRepoURLs = repoAllowlist(resp.Repos)
+	}
+	if len(resp.Settings) > 0 {
+		ws.settings = resp.Settings
+	}
+	// Only cache a signature we actually fetched; empty means the profile fetch
+	// failed and the previous value must survive so real drift is still
+	// detectable later.
+	if profileSig != "" {
+		ws.profileSetSig = profileSig
+	}
+	return newIDs, true
+}
+
 func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, workspaceID string) error {
 	resp, profileSig, err := d.registerRuntimesForWorkspace(ctx, workspaceID)
 	if err != nil {
