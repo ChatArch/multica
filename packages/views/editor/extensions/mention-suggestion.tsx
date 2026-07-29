@@ -306,7 +306,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
         (isSearching || searchedQuery !== normalizedQuery);
 
       return (
-        <div className="rounded-md border bg-popover p-2 text-xs text-muted-foreground shadow-md">
+        <div className="rounded-md border bg-popover p-2 text-caption text-muted-foreground shadow-md">
           {isWaitingForServer
             ? t(($) => $.mention.searching)
             : t(($) => $.mention.no_results)}
@@ -366,7 +366,7 @@ export const MentionList = forwardRef<MentionListRef, MentionListProps>(
       >
         {groups.map((group) => (
           <div key={group.label}>
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/80">
+            <div className="px-3 py-2 text-micro font-semibold uppercase tracking-wide text-muted-foreground/80">
               {groupLabel(group.label)}
             </div>
             {renderRows(group)}
@@ -401,7 +401,7 @@ function MentionRow({
       <button
         type="button"
         ref={buttonRef}
-        className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors ${
+        className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-caption transition-colors ${
           selected ? "bg-accent" : "hover:bg-accent/50"
         } ${isClosed ? "opacity-60" : ""}`}
         onClick={onSelect}
@@ -435,7 +435,7 @@ function MentionRow({
       <button
         type="button"
         ref={buttonRef}
-        className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors ${
+        className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-caption transition-colors ${
           selected ? "bg-accent" : "hover:bg-accent/50"
         }`}
         onClick={onSelect}
@@ -462,7 +462,7 @@ function MentionRow({
     <button
       type="button"
       ref={buttonRef}
-      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-xs transition-colors ${
+      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-caption transition-colors ${
         selected ? "bg-accent" : "hover:bg-accent/50"
       }`}
       onClick={onSelect}
@@ -479,12 +479,12 @@ function MentionRow({
       {item.type === "agent" && (
         // "Agent" is a glossary-protected product term — kept un-translated.
         // eslint-disable-next-line i18next/no-literal-string
-        <Badge variant="outline" className="ml-auto text-[10px] h-4 px-1.5">Agent</Badge>
+        <Badge variant="outline" className="ml-auto text-micro h-4 px-1.5">Agent</Badge>
       )}
       {item.type === "squad" && (
         // "Squad" is a glossary-protected product term — kept un-translated.
         // eslint-disable-next-line i18next/no-literal-string
-        <Badge variant="outline" className="ml-auto text-[10px] h-4 px-1.5">Squad</Badge>
+        <Badge variant="outline" className="ml-auto text-micro h-4 px-1.5">Squad</Badge>
       )}
     </button>
   );

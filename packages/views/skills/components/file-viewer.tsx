@@ -25,7 +25,7 @@ function FrontmatterCard({ data }: { data: SkillFrontmatter }) {
     <div className="mb-4 rounded-lg border bg-muted/30 px-4 py-3">
       <div className="grid gap-1.5">
         {Object.entries(data).map(([key, value]) => (
-          <div key={key} className="flex gap-2 text-xs">
+          <div key={key} className="flex gap-2 text-caption">
             <span className="shrink-0 font-medium text-muted-foreground min-w-[80px]">
               {key}
             </span>
@@ -65,7 +65,7 @@ export function FileViewer({
     <div className="flex h-full flex-col">
       {/* File header */}
       <div className="flex h-10 items-center justify-between gap-3 border-b px-4">
-        <span className="text-xs font-mono text-muted-foreground truncate">
+        <span className="text-caption font-mono text-muted-foreground truncate">
           {path}
         </span>
         <div className="flex items-center gap-1">
@@ -117,7 +117,7 @@ export function FileViewer({
                 ? t(($) => $.file_viewer.markdown_placeholder)
                 : t(($) => $.file_viewer.raw_placeholder)
             }
-            className="h-full min-h-full resize-none rounded-none border-0 font-mono text-sm leading-relaxed focus-visible:ring-0"
+            className="h-full min-h-full resize-none rounded-none border-0 font-mono text-body leading-relaxed focus-visible:ring-0"
           />
         )}
       </div>

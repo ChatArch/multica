@@ -574,7 +574,7 @@ export function TableColumnPicker({
             </>
           )}
           {systemColumns.length === 0 && visibleProperties.length === 0 && (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+            <p className="px-2 py-6 text-center text-caption text-muted-foreground">
               {t(($) => $.table.columns.no_results)}
             </p>
           )}
@@ -609,7 +609,7 @@ export function TableIssueSearch({
         onChange={(event) => onChange(event.target.value)}
         aria-label={placeholder}
         placeholder={placeholder}
-        className="h-7 pl-7 pr-7 text-xs"
+        className="h-7 pl-7 pr-7 text-caption"
       />
       {value && (
         <Button
@@ -716,7 +716,7 @@ export function InlineTitle({
       ) : (
         <span className="w-4 shrink-0" />
       )}
-      <span className="w-16 shrink-0 text-xs text-muted-foreground">
+      <span className="w-16 shrink-0 text-caption text-muted-foreground">
         {row.issue.identifier}
       </span>
       <IssueAgentActivityIndicator issueId={row.issue.id} />
@@ -835,7 +835,7 @@ function LazyLabelCell({
             <LabelChip key={label.id} label={label} />
           ))}
           {labels.length > 2 && (
-            <span className="text-xs text-muted-foreground">+{labels.length - 2}</span>
+            <span className="text-caption text-muted-foreground">+{labels.length - 2}</span>
           )}
         </>
       ) : (
@@ -870,7 +870,7 @@ export function IssueTableGroupRow({
       <TableCell colSpan={colSpan} className="h-9 px-4 py-1.5">
         <button
           type="button"
-          className="sticky left-4 flex w-fit items-center gap-2 text-xs font-medium"
+          className="sticky left-4 flex w-fit items-center gap-2 text-caption font-medium"
         >
           {group.collapsed ? (
             <ChevronRight className="size-3.5" />
@@ -1137,7 +1137,7 @@ function IssueTableBodyCell({
       );
     case "identifier":
       return (
-        <span className="text-xs text-muted-foreground">{issue.identifier}</span>
+        <span className="text-caption text-muted-foreground">{issue.identifier}</span>
       );
     case "status":
       return (
@@ -1226,7 +1226,7 @@ function IssueTableBodyCell({
     case "created_at":
     case "updated_at":
       return (
-        <span className="text-xs text-muted-foreground">
+        <span className="text-caption text-muted-foreground">
           {new Intl.DateTimeFormat(i18n.language, {
             month: "short",
             day: "numeric",
@@ -1237,7 +1237,7 @@ function IssueTableBodyCell({
     case "child_progress": {
       const progress = meta.childProgressMap.get(issue.id);
       return progress ? (
-        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5 text-caption text-muted-foreground">
           <ProgressRing done={progress.done} total={progress.total} size={15} />
           {progress.done}/{progress.total}
         </span>

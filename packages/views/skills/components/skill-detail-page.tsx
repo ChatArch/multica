@@ -135,10 +135,10 @@ function AddFileInline({
           if (e.key === "Escape") onCancel();
         }}
         placeholder={t(($) => $.detail.add_file.placeholder)}
-        className="h-7 font-mono text-xs"
+        className="h-7 font-mono text-caption"
       />
       {error && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p role="alert" className="mt-1 text-caption text-destructive">
           {error}
         </p>
       )}
@@ -162,7 +162,7 @@ function UsedBySection({ agents }: { agents: Agent[] }) {
   const { t } = useT("skills");
   if (agents.length === 0) {
     return (
-      <div className="rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
+      <div className="rounded-md border border-dashed px-3 py-4 text-center text-caption text-muted-foreground">
         {t(($) => $.detail.sidebar.used_by_empty)}
       </div>
     );
@@ -182,9 +182,9 @@ function UsedBySection({ agents }: { agents: Agent[] }) {
             size="md"
           />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-medium">{a.name}</div>
+            <div className="truncate text-caption font-medium">{a.name}</div>
             {a.description && (
-              <div className="truncate text-xs text-muted-foreground">
+              <div className="truncate text-caption text-muted-foreground">
                 {a.description}
               </div>
             )}
@@ -217,7 +217,7 @@ function OriginSidebarCard({
 
   return (
     <div className="rounded-md border bg-muted/30 p-3">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-caption font-medium text-muted-foreground">
         {isRuntime ? (
           <HardDrive className="h-3 w-3" />
         ) : (
@@ -226,22 +226,22 @@ function OriginSidebarCard({
         {label}
       </div>
       {runtime && (
-        <div className="mt-1 break-all text-xs text-foreground">
+        <div className="mt-1 break-all text-caption text-foreground">
           {runtimeDisplayName(runtime)}
         </div>
       )}
       {origin.source_path && (
-        <div className="mt-1 break-all font-mono text-xs text-foreground">
+        <div className="mt-1 break-all font-mono text-caption text-foreground">
           {origin.source_path}
         </div>
       )}
       {origin.source_url && (
-        <div className="mt-1 break-all font-mono text-xs text-foreground">
+        <div className="mt-1 break-all font-mono text-caption text-foreground">
           {origin.source_url}
         </div>
       )}
       {origin.provider && (
-        <div className="mt-1 font-mono text-xs text-muted-foreground">
+        <div className="mt-1 font-mono text-caption text-muted-foreground">
           {t(($) => $.detail.origin_card.provider, { provider: origin.provider })}
         </div>
       )}
@@ -546,8 +546,8 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <AlertCircle className="h-8 w-8 text-muted-foreground/40" />
-          <p className="text-sm font-medium">{t(($) => $.detail.not_found.title)}</p>
-          <p className="max-w-xs text-xs text-muted-foreground">
+          <p className="text-body font-medium">{t(($) => $.detail.not_found.title)}</p>
+          <p className="max-w-xs text-caption text-muted-foreground">
             {error instanceof Error ? error.message : t(($) => $.detail.not_found.fallback)}
           </p>
           <AppLink
@@ -584,14 +584,14 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       <BreadcrumbHeader
         segments={[{ href: paths.skills(), label: t(($) => $.page.title) }]}
         leaf={
-          <span className="truncate font-mono text-xs text-foreground">
+          <span className="truncate font-mono text-caption text-foreground">
             {skill.name}
           </span>
         }
         actions={
           <>
             {!canEdit && (
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 text-caption text-muted-foreground">
                 <Lock className="h-3 w-3" />
                 {t(($) => $.detail.read_only)}
               </span>
@@ -631,7 +631,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       {supportingQueryDown && (
         <div
           role="status"
-          className="flex shrink-0 items-start gap-2 border-b bg-warning/10 px-4 py-2 text-xs text-muted-foreground"
+          className="flex shrink-0 items-start gap-2 border-b bg-warning/10 px-4 py-2 text-caption text-muted-foreground"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
           <span>{t(($) => $.detail.supporting_data_warning)}</span>
@@ -643,7 +643,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         {/* File tree */}
         <aside className="flex max-h-44 w-full shrink-0 flex-col border-b md:max-h-none md:w-56 md:border-b-0 md:border-r">
           <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <span className="text-caption font-medium uppercase tracking-wider text-muted-foreground">
               {t(($) => $.detail.files_label, { count: totalFileCount(skill) })}
             </span>
             {canEdit && (
@@ -705,13 +705,13 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
               readOnly={!canEdit}
               onChange={(e) => setName(e.target.value)}
               placeholder={t(($) => $.detail.name_placeholder)}
-              className="h-9 border-0 bg-transparent px-0 text-lg font-semibold shadow-none focus-visible:ring-0 read-only:cursor-default dark:bg-transparent"
+              className="h-9 border-0 bg-transparent px-0 text-title font-semibold shadow-none focus-visible:ring-0 read-only:cursor-default dark:bg-transparent"
               aria-label={t(($) => $.detail.name_aria)}
             />
             <div className="space-y-1">
               <Label
                 htmlFor="skill-description"
-                className="text-xs text-muted-foreground"
+                className="text-caption text-muted-foreground"
               >
                 <Pencil className="h-3 w-3" />
                 {t(($) => $.detail.description_label)}
@@ -723,7 +723,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder={t(($) => $.detail.description_placeholder)}
                 rows={2}
-                className="resize-none text-sm read-only:cursor-default"
+                className="resize-none text-body read-only:cursor-default"
               />
             </div>
             <ResourceLabelPicker
@@ -731,7 +731,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
               resourceId={skill.id}
               canEdit={canEdit}
             />
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted-foreground">
               {originLabel && (
                 <span className="inline-flex items-center gap-1">
                   {origin?.type === "runtime_local" ? (
@@ -772,7 +772,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
             <div
               role="status"
               aria-live="polite"
-              className="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs"
+              className="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption"
             >
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
               <div className="flex-1">
@@ -804,7 +804,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
               className="flex flex-wrap items-center gap-2 border-t bg-muted/30 px-4 py-2"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-              <span className="text-xs text-muted-foreground">
+              <span className="text-caption text-muted-foreground">
                 {t(($) => $.detail.save_bar.unsaved)}
               </span>
               <div className="ml-auto flex items-center gap-1.5">
@@ -842,10 +842,10 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         {/* Sidebar */}
         <aside className="flex w-full shrink-0 flex-col gap-4 border-t bg-muted/20 px-4 py-4 md:w-72 md:overflow-y-auto md:border-l md:border-t-0">
           <div>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-caption font-medium uppercase tracking-wider text-muted-foreground">
               {t(($) => $.detail.sidebar.metadata)}
             </h3>
-            <dl className="space-y-1.5 text-xs">
+            <dl className="space-y-1.5 text-caption">
               <div className="flex gap-2">
                 <dt className="min-w-20 text-muted-foreground">
                   {t(($) => $.detail.sidebar.created)}
@@ -892,7 +892,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
 
           {origin && origin.type !== "manual" && (
             <div>
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <h3 className="mb-2 text-caption font-medium uppercase tracking-wider text-muted-foreground">
                 {t(($) => $.detail.sidebar.origin)}
               </h3>
               <OriginSidebarCard origin={origin} runtime={originRuntime} />
@@ -901,7 +901,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
 
           <div>
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="min-w-0 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <h3 className="min-w-0 truncate text-caption font-medium uppercase tracking-wider text-muted-foreground">
                 {t(($) => $.detail.sidebar.used_by, { count: skillAgents.length })}
               </h3>
               <Button
@@ -918,10 +918,10 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
           </div>
 
           <div>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-caption font-medium uppercase tracking-wider text-muted-foreground">
               {t(($) => $.detail.sidebar.permissions)}
             </h3>
-            <p className="text-xs leading-relaxed text-muted-foreground">
+            <p className="text-caption leading-relaxed text-muted-foreground">
               {canEdit
                 ? t(($) => $.detail.sidebar.permissions_owner)
                 : creator
@@ -953,7 +953,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
                   })}
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive">
             {t(($) => $.detail.delete_dialog.warning)}
           </div>
           <DialogFooter>

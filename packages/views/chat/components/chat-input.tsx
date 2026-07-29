@@ -600,13 +600,13 @@ export function ChatInput({
                     disabled={!projectSelectionEnabled}
                     aria-label={t(($) => $.input.change_project_context)}
                     title={t(($) => $.input.change_project_context)}
-                    className="flex h-6 max-w-56 items-center gap-1.5 rounded-full border border-surface-border bg-surface-raised px-2 pr-7 text-xs font-medium text-foreground transition-colors hover:bg-accent/60"
+                    className="flex h-6 max-w-56 items-center gap-1.5 rounded-full border border-surface-border bg-surface-raised px-2 pr-7 text-caption font-medium text-foreground transition-colors hover:bg-accent/60"
                   />
                 }
               />
             </div>
             {projectContextUnsupported && (
-              <span className="inline-flex min-w-0 items-center gap-1 text-xs text-warning">
+              <span className="inline-flex min-w-0 items-center gap-1 text-caption text-warning">
                 <TriangleAlert className="size-3 shrink-0" />
                 {t(($) => $.input.project_context_unsupported)}
               </span>
