@@ -381,7 +381,15 @@ export function DataTable<TData>({
             ...columnSizeVars,
           }}
         >
-          <TableHeader className="sticky top-0 z-10 bg-muted/30 backdrop-blur">
+          {/* Opaque rather than translucent-and-blurred. A backdrop-filter on
+            * a sticky element with content scrolling beneath it is a known
+            * Chromium compositing fault (electron#12906, chromium#339841685) —
+            * the blur layer has to recompute its backdrop every frame while
+            * virtualisation adds and removes the rows underneath it, and the
+            * strip flickers black. The mix resolves to the same colour
+            * bg-muted/30 composited to, and a header that scrolled content
+            * passes behind has no reason to show it through anyway. */}
+          <TableHeader className="sticky top-0 z-10 bg-[color-mix(in_oklab,var(--muted)_30%,var(--background))]">
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id} className="hover:bg-transparent">
                 {headerGroup.headers.map((header) => {
