@@ -51,6 +51,7 @@ vi.mock("@multica/core/auth", () => ({
 
 import {
   createMentionSuggestion,
+  MAX_MENTION_QUERY_LENGTH,
   MentionList,
   type MentionListRef,
   type MentionItem,
@@ -129,11 +130,77 @@ function itemArgs(query: string) {
   };
 }
 
+// shouldShow() args. `uiEvent` mirrors the meta ProseMirror stamps on the
+// transaction that inserts pasted ("paste") or dropped ("drop") content;
+// ordinary typing leaves it undefined.
+function shouldShowArgs(query: string, uiEvent?: "paste" | "drop") {
+  return {
+    query,
+    text: `@${query}`,
+    editor: {} as never,
+    range: { from: 0, to: query.length + 1 },
+    transaction: {
+      getMeta: (key: string) => (key === "uiEvent" ? uiEvent : undefined),
+    } as never,
+  };
+}
+
 describe("createMentionSuggestion", () => {
   beforeEach(() => {
     searchIssuesMock.mockReset();
     searchProjectsMock.mockReset();
     Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  // -------------------------------------------------------------------------
+  // shouldShow — MUL-5429. `allowSpaces` lets the suggestion regex run from the
+  // `@` to the end of the line, so pasting `npx @scope/pkg --token=eyJ...`
+  // opened an empty picker that then swallowed Enter (the empty-list Enter
+  // capture below is deliberate, so the fix has to stop the picker opening at
+  // all rather than change that key handling).
+  // -------------------------------------------------------------------------
+
+  it("keeps the picker shut for the transaction that pastes text containing @", () => {
+    const config = createMentionSuggestion(fakeQc({}));
+
+    expect(config.shouldShow!(shouldShowArgs("aiforui/install --token=eyJhbG", "paste"))).toBe(false);
+  });
+
+  it("keeps the picker shut for dropped text containing @", () => {
+    const config = createMentionSuggestion(fakeQc({}));
+
+    expect(config.shouldShow!(shouldShowArgs("aiforui/install", "drop"))).toBe(false);
+  });
+
+  it("keeps the picker shut once the query outgrows any real mention target", () => {
+    const config = createMentionSuggestion(fakeQc({}));
+    const overLong = "a".repeat(MAX_MENTION_QUERY_LENGTH + 1);
+
+    // Not a paste transaction — this is the tail guard for edits made after the
+    // pasted text has already landed in the document.
+    expect(config.shouldShow!(shouldShowArgs(overLong))).toBe(false);
+  });
+
+  it("still opens for a typed query, including a long multi-word issue search", () => {
+    const config = createMentionSuggestion(fakeQc({}));
+
+    expect(config.shouldShow!(shouldShowArgs("alice"))).toBe(true);
+    expect(config.shouldShow!(shouldShowArgs("login redirect bug on desktop"))).toBe(true);
+    // Exactly at the cap is still a mention; the cap is inclusive.
+    expect(config.shouldShow!(shouldShowArgs("a".repeat(MAX_MENTION_QUERY_LENGTH)))).toBe(true);
+  });
+
+  // Known boundary, documented in the MUL-5429 PR: a SHORT pasted `@` token
+  // (query under the cap) is blocked on the paste transaction itself, but the
+  // next keystroke is an ordinary transaction with a still-short query, so the
+  // picker legitimately re-opens. No threshold can close this — it is inherent
+  // to `allowSpaces`. It is acceptable because the Escape fix means one Escape
+  // now dismisses just the picker instead of the whole dialog.
+  it("re-opens after a short pasted token once the user keeps typing (known boundary)", () => {
+    const config = createMentionSuggestion(fakeQc({}));
+
+    expect(config.shouldShow!(shouldShowArgs("foo/bar", "paste"))).toBe(false);
+    expect(config.shouldShow!(shouldShowArgs("foo/bar"))).toBe(true);
   });
 
   it("keeps the mention query active across spaces for multi-word search", () => {

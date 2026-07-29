@@ -4,9 +4,13 @@ import StarterKit from "@tiptap/starter-kit";
 import { Suggestion, type SuggestionProps } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { forwardRef, useImperativeHandle } from "react";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import {
+  createSuggestionPopupRender,
+  isPasteLikeTransaction,
+  isPickerAcceptKey,
+} from "./suggestion-popup";
 import { PatchedListItem } from "./list-item";
 
 interface TestItem {
@@ -72,7 +76,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function makeEditor(char: "@" | "/") {
+function makeEditor(char: "@" | "/", options: { pasteGuard?: boolean } = {}) {
   const pluginKey = new PluginKey(`test-${char}-suggestion`);
   const item = char === "@"
     ? { id: "u1", label: "Alice" }
@@ -86,6 +90,10 @@ function makeEditor(char: "@" | "/") {
           editor: this.editor,
           char,
           pluginKey,
+          // Mirrors the real mention/slash wiring's paste guard (MUL-5429).
+          ...(options.pasteGuard
+            ? { shouldShow: ({ transaction }) => !isPasteLikeTransaction(transaction) }
+            : {}),
           items: () => [item],
           command: ({ editor: ed, range, props }) => {
             ed.commands.insertContentAt(range, `${char}${props.label}`);
@@ -214,6 +222,123 @@ describe("createSuggestionPopupRender", () => {
       });
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// isPasteLikeTransaction (MUL-5429) — driven through the REAL Suggestion plugin
+// rather than a hand-built props object, so these also pin the meta contract:
+// prosemirror-view commits a paste with `uiEvent: "paste"` and a drop with
+// `uiEvent: "drop"`. If upstream ever renames those, the paired "typed text
+// still opens the picker" case stays green while these go red.
+// ---------------------------------------------------------------------------
+
+describe("paste guard", () => {
+  // Focus first, in its own act(): focusing dispatches selection transactions
+  // of its own, and those carry no uiEvent meta. Landing them BEFORE the
+  // insert keeps the paste/drop transaction the last one applied, so the
+  // assertion reads the picker state that transaction produced. (A later
+  // meta-less transaction re-opening the picker is the documented MUL-5429
+  // boundary, covered in mention-suggestion.test.tsx — not what these pin.)
+  async function pasteLike(ed: Editor, char: "@" | "/", uiEvent: "paste" | "drop") {
+    await act(async () => {
+      ed.commands.focus("end");
+    });
+    await act(async () => {
+      ed.view.dispatch(
+        ed.state.tr.insertText(`npx ${char}scope`).setMeta("uiEvent", uiEvent),
+      );
+    });
+  }
+
+  it.each(["@", "/"] as const)(
+    "keeps the %s picker shut when the trigger arrives in a pasted transaction",
+    async (char) => {
+      const ed = makeEditor(char, { pasteGuard: true });
+
+      await pasteLike(ed, char, "paste");
+
+      expect(screen.queryByTestId("suggestion-popup")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["@", "/"] as const)(
+    "keeps the %s picker shut when the trigger arrives in a dropped transaction",
+    async (char) => {
+      const ed = makeEditor(char, { pasteGuard: true });
+
+      await pasteLike(ed, char, "drop");
+
+      expect(screen.queryByTestId("suggestion-popup")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["@", "/"] as const)(
+    "still opens the %s picker when the identical text is typed instead of pasted",
+    async (char) => {
+      const ed = makeEditor(char, { pasteGuard: true });
+
+      // Same text, ordinary transaction — proves the two cases above fail for
+      // the paste meta specifically, not because the text never matched.
+      await triggerSuggestion(ed, `npx ${char}scope`);
+
+      expect(screen.getByTestId("suggestion-popup")).toBeInTheDocument();
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Escape containment (MUL-5429): Escape while a picker is open must close ONLY
+// the picker. ProseMirror calls preventDefault() for a handled key but never
+// stops propagation, and Base UI's dismiss layer listens for Escape on
+// `document` in the BUBBLE phase without consulting defaultPrevented — so
+// without an explicit stopPropagation the same keypress also closed the host
+// create-issue dialog and threw the draft away. The plain document listener
+// below stands in for that dismiss layer.
+// ---------------------------------------------------------------------------
+
+describe("Escape containment while a picker is open", () => {
+  function watchHostEscape() {
+    const hostEscape = vi.fn();
+    document.addEventListener("keydown", hostEscape);
+    return {
+      hostEscape,
+      stop: () => document.removeEventListener("keydown", hostEscape),
+    };
+  }
+
+  it.each(["@", "/"] as const)(
+    "closes the %s popup on Escape without letting the key reach the host dialog",
+    async (char) => {
+      const ed = makeEditor(char);
+      await triggerSuggestion(ed, `${char}a`);
+      const { hostEscape, stop } = watchHostEscape();
+
+      await act(async () => {
+        fireEvent.keyDown(ed.view.dom, { key: "Escape" });
+      });
+      stop();
+
+      await expectPopupClosed();
+      expect(hostEscape).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still lets Escape reach the host when no picker is open", async () => {
+    const ed = makeEditor("@");
+    await act(async () => {
+      ed.commands.focus("end");
+    });
+    const { hostEscape, stop } = watchHostEscape();
+
+    await act(async () => {
+      fireEvent.keyDown(ed.view.dom, { key: "Escape" });
+    });
+    stop();
+
+    // With no picker open Escape is the host dialog's own close shortcut and
+    // must keep working — the fix must not swallow Escape unconditionally.
+    expect(hostEscape).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

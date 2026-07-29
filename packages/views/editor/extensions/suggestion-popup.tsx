@@ -4,7 +4,23 @@ import type { ComponentType } from "react";
 import { autoUpdate, computePosition, flip, offset, shift, size } from "@floating-ui/dom";
 import { ReactRenderer } from "@tiptap/react";
 import { exitSuggestion, type SuggestionKeyDownProps, type SuggestionProps } from "@tiptap/suggestion";
-import type { PluginKey } from "@tiptap/pm/state";
+import type { PluginKey, Transaction } from "@tiptap/pm/state";
+
+/**
+ * True when a transaction is ProseMirror inserting pasted or dropped content
+ * rather than the user typing.
+ *
+ * The suggestion plugin re-runs `findSuggestionMatch` on EVERY transaction, so
+ * without this check pasting a line that merely happens to contain the trigger
+ * character — `npx @scope/pkg`, a `/usr/local/bin` path — pops the picker open
+ * over content the user never meant as a mention or command (MUL-5429).
+ * ProseMirror tags those transactions with a `uiEvent` meta; every picker built
+ * on this module feeds it to the Suggestion `shouldShow` hook.
+ */
+export function isPasteLikeTransaction(transaction: Transaction): boolean {
+  const uiEvent = transaction.getMeta("uiEvent");
+  return uiEvent === "paste" || uiEvent === "drop";
+}
 
 /**
  * Keys that accept the currently highlighted suggestion row.
@@ -216,7 +232,19 @@ export function createSuggestionPopupRender<
       },
 
       onKeyDown: (props: SuggestionKeyDownProps) => {
-        if (props.event.key === "Escape") {
+        // `Esc` is the legacy alias the suggestion plugin also matches on.
+        if (props.event.key === "Escape" || props.event.key === "Esc") {
+          // Escape while a picker is open must close ONLY the picker. Returning
+          // true makes ProseMirror call preventDefault(), but ProseMirror never
+          // stops propagation, and Base UI's dismiss layer listens for Escape on
+          // `document` in the bubble phase without consulting defaultPrevented.
+          // Without stopPropagation the same keypress that closes this popup
+          // also closes the host Dialog and discards the draft (MUL-5429).
+          // This handler is the only layer that knows a picker is open, so
+          // stopping here fixes every host at once (create-issue dialog, chat
+          // input, comment composer).
+          props.event.preventDefault();
+          props.event.stopPropagation();
           cleanup();
           return true;
         }
