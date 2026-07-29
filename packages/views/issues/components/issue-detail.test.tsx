@@ -107,20 +107,24 @@ vi.mock("@multica/core/paths", async () => {
   };
 });
 
-// Mock navigation
-vi.mock("../../navigation", () => ({
-  AppLink: ({ children, href, ...props }: any) => (
-    <a href={href} {...props}>
-      {children}
-    </a>
-  ),
-  useNavigation: () => ({
-    push: vi.fn(),
-    pathname: "/issues/issue-1",
-    getShareableUrl: (p: string) => `https://app.multica.com${p}`,
-  }),
-  useBackOrReplace: () => vi.fn(),
-  NavigationProvider: ({ children }: { children: React.ReactNode }) => children,
+// Navigation is NOT mocked: the real AppLink and NavigationProvider run, with
+// a fake adapter standing in for the platform. Where a sub-issue row or the
+// parent breadcrumb lands is decided inside AppLink, so a stub anchor here
+// would only prove that props were forwarded, never that a click opens a tab.
+//
+// `openInNewTab` is the platform switch — defined on desktop, deliberately
+// undefined on web so real anchors keep their native behaviour. Tests set it
+// per case; `beforeEach` resets it to the web shape.
+const navigationAdapter = vi.hoisted(() => ({
+  push: vi.fn(),
+  replace: vi.fn(),
+  back: vi.fn(),
+  pathname: "/test/issues/issue-1",
+  searchParams: new URLSearchParams(),
+  getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+  openInNewTab: undefined as
+    | undefined
+    | ((path: string, title?: string, opts?: { activate?: boolean }) => void),
 }));
 
 // Mock editor components (Tiptap requires real DOM)
@@ -551,6 +555,7 @@ const mockTimeline: TimelineEntry[] = [
 // ---------------------------------------------------------------------------
 
 import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { NavigationProvider } from "../../navigation";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -565,15 +570,24 @@ function createTestQueryClient() {
   });
 }
 
+/**
+ * Every render of IssueDetail goes through here. NavigationProvider is not
+ * optional scaffolding: IssueDetail calls useBackOrReplace, and its AppLinks
+ * read the adapter to decide whether a click navigates or opens a tab.
+ */
+function withProviders(queryClient: QueryClient, ui: React.ReactNode) {
+  return (
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <NavigationProvider value={navigationAdapter}>
+        <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+      </NavigationProvider>
+    </I18nProvider>
+  );
+}
+
 function renderIssueDetail(issueId = "issue-1") {
   const queryClient = createTestQueryClient();
-  return render(
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <QueryClientProvider client={queryClient}>
-        <IssueDetail issueId={issueId} />
-      </QueryClientProvider>
-    </I18nProvider>,
-  );
+  return render(withProviders(queryClient, <IssueDetail issueId={issueId} />));
 }
 
 function renderIssueDetailWithHighlight(
@@ -591,11 +605,10 @@ function renderIssueDetailWithHighlight(
     queryClient.setQueryData(["issues", "timeline", issueId], mockTimeline);
   }
   const result = render(
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <QueryClientProvider client={queryClient}>
-        <IssueDetail issueId={issueId} highlightCommentId={highlightCommentId} />
-      </QueryClientProvider>
-    </I18nProvider>,
+    withProviders(
+      queryClient,
+      <IssueDetail issueId={issueId} highlightCommentId={highlightCommentId} />,
+    ),
   );
   return { ...result, queryClient };
 }
@@ -624,6 +637,8 @@ describe("IssueDetail (shared)", () => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     mockViewport.isMobile = false;
+    // Web shape by default — no adapter, so real anchors keep native behaviour.
+    navigationAdapter.openInNewTab = undefined;
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
     // /timeline returns the entries flat in chronological order (oldest first).
@@ -713,13 +728,8 @@ describe("IssueDetail (shared)", () => {
     );
     // Pre-seed issue-2 so its first render skips the loading skeleton.
     queryClient.setQueryData(["issues", "ws-1", "detail", "issue-2"], issue2);
-    const ui = (issueId: string) => (
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail issueId={issueId} />
-        </QueryClientProvider>
-      </I18nProvider>
-    );
+    const ui = (issueId: string) =>
+      withProviders(queryClient, <IssueDetail issueId={issueId} />);
     const { rerender } = render(ui("issue-1"));
 
     await screen.findByDisplayValue("Add JWT auth to the backend");
@@ -1413,11 +1423,10 @@ describe("IssueDetail (shared)", () => {
 
       const queryClient = createTestQueryClient();
       render(
-        <I18nProvider locale="en" resources={TEST_RESOURCES}>
-          <QueryClientProvider client={queryClient}>
-            <IssueDetail issueId="issue-1" highlightCommentId="reply-1" />
-          </QueryClientProvider>
-        </I18nProvider>,
+        withProviders(
+          queryClient,
+          <IssueDetail issueId="issue-1" highlightCommentId="reply-1" />,
+        ),
       );
 
       // After expansion, the reply must appear in the DOM (inside the now
@@ -1611,6 +1620,196 @@ describe("IssueDetail (shared)", () => {
       const due = screen.getByText("Jan 1");
       expect(due.closest("span")?.className).not.toContain("text-destructive");
       expect(due.closest("span")?.className).toContain("text-muted-foreground");
+    });
+
+    // A sub-issue row is a Reference, not Navigation: the list is part of the
+    // parent's reading context, so opening a child must not cost the reader
+    // their scroll position, expanded sections or comment draft. This is
+    // deliberately unlike an issue list row — see the rule at the top of
+    // packages/views/navigation/types.ts.
+    describe("opens as a reference, not in place", () => {
+      async function renderOneRow() {
+        mockApiObj.listChildIssues.mockResolvedValue({
+          issues: [
+            subIssue({
+              id: "child-1",
+              number: 11,
+              identifier: "TES-11",
+              title: "Fix login flow",
+            }),
+          ],
+        });
+        renderIssueDetail();
+        const title = await screen.findByText("Fix login flow");
+        const link = title.closest("a");
+        if (!link) throw new Error("sub-issue row is not a link");
+        return link;
+      }
+
+      it("opens a FOREGROUND tab on desktop and does not navigate in place", async () => {
+        const openInNewTab = vi.fn();
+        navigationAdapter.openInNewTab = openInNewTab;
+
+        fireEvent.click(await renderOneRow());
+
+        expect(openInNewTab).toHaveBeenCalledWith(
+          "/test/issues/child-1",
+          "TES-11",
+          { activate: true },
+        );
+        expect(navigationAdapter.push).not.toHaveBeenCalled();
+      });
+
+      it("leaves the click to the browser on web, where the anchor already opens a real tab", async () => {
+        // No adapter (web). The row must be a real anchor carrying target and
+        // a rel guard, and the click must reach the browser unprevented —
+        // window.open would flatten the modifier semantics the browser has.
+        const link = await renderOneRow();
+
+        expect(link).toHaveAttribute("href", "/test/issues/child-1");
+        expect(link).toHaveAttribute("target", "_blank");
+        expect(link).toHaveAttribute("rel", "noopener noreferrer");
+        // fireEvent returns false when preventDefault was called.
+        expect(fireEvent.click(link)).toBe(true);
+        expect(navigationAdapter.push).not.toHaveBeenCalled();
+      });
+
+      it("inverts to a BACKGROUND tab on cmd/ctrl-click", async () => {
+        const openInNewTab = vi.fn();
+        navigationAdapter.openInNewTab = openInNewTab;
+
+        fireEvent.click(await renderOneRow(), { metaKey: true });
+
+        // No `activate` — the modifier means "keep me where I am".
+        expect(openInNewTab).toHaveBeenCalledWith("/test/issues/child-1", "TES-11");
+        expect(navigationAdapter.push).not.toHaveBeenCalled();
+      });
+
+      it("inverts to a BACKGROUND tab on middle click", async () => {
+        const openInNewTab = vi.fn();
+        navigationAdapter.openInNewTab = openInNewTab;
+        const link = await renderOneRow();
+
+        // fireEvent has no auxClick helper, so dispatch the real event.
+        link.dispatchEvent(
+          new MouseEvent("auxclick", { bubbles: true, button: 1, cancelable: true }),
+        );
+
+        expect(openInNewTab).toHaveBeenCalledWith("/test/issues/child-1", "TES-11");
+        expect(navigationAdapter.push).not.toHaveBeenCalled();
+      });
+
+      it("keeps the inline pickers and the select checkbox off the navigation path", async () => {
+        // The pickers and checkbox are siblings of the AppLink, not children,
+        // so a click on them can never reach it. Guards the row's structure:
+        // nesting them inside the link would open a tab on every status edit.
+        const openInNewTab = vi.fn();
+        navigationAdapter.openInNewTab = openInNewTab;
+        const link = await renderOneRow();
+        const row = link.parentElement;
+
+        expect(row?.contains(screen.getByLabelText("Select TES-11"))).toBe(true);
+        expect(link.contains(screen.getByLabelText("Select TES-11"))).toBe(false);
+
+        fireEvent.click(screen.getByLabelText("Select TES-11"));
+        expect(openInNewTab).not.toHaveBeenCalled();
+        expect(navigationAdapter.push).not.toHaveBeenCalled();
+      });
+
+      it("still opens the shared actions menu on right-click, with a single Open in new tab item", async () => {
+        // The context menu is a surface-level singleton, so the row's own
+        // new-tab default must not have grown a second copy of the action.
+        const link = await renderOneRow();
+
+        fireEvent.contextMenu(link);
+
+        expect(await screen.findAllByText("Open in new tab")).toHaveLength(1);
+      });
+    });
+  });
+
+  // The parent issue is reachable from two places on this page and both are
+  // References for the same reason as the sub-issue rows — they point out of
+  // what the user is reading. The header breadcrumb is deliberately NOT one:
+  // an ancestor crumb is a "go up" affordance, so it stays in place.
+  describe("parent issue links", () => {
+    const parentIssue: Issue = {
+      ...mockIssue,
+      id: "parent-1",
+      number: 9,
+      identifier: "TES-9",
+      title: "Auth epic",
+    };
+
+    beforeEach(() => {
+      mockApiObj.getIssue.mockImplementation((issueId: string) =>
+        Promise.resolve(
+          issueId === "parent-1"
+            ? parentIssue
+            : { ...mockIssue, parent_issue_id: "parent-1" },
+        ),
+      );
+    });
+
+    /** The "Sub-issue of …" line under the title, and the sidebar card. */
+    async function findParentLinks() {
+      await screen.findAllByText("Auth epic");
+      return screen
+        .getAllByText("Auth epic")
+        .map((el) => el.closest("a"))
+        .filter((a): a is HTMLAnchorElement => a !== null);
+    }
+
+    it("opens a FOREGROUND tab on desktop from every entry point", async () => {
+      const openInNewTab = vi.fn();
+      navigationAdapter.openInNewTab = openInNewTab;
+      renderIssueDetail();
+
+      const links = await findParentLinks();
+      // The breadcrumb under the title plus the sidebar "Parent issue" card.
+      expect(links.length).toBeGreaterThan(1);
+
+      for (const link of links) {
+        openInNewTab.mockClear();
+        fireEvent.click(link);
+        expect(openInNewTab).toHaveBeenCalledWith(
+          "/test/issues/parent-1",
+          "TES-9",
+          { activate: true },
+        );
+      }
+      expect(navigationAdapter.push).not.toHaveBeenCalled();
+    });
+
+    it("leaves the click to the browser on web", async () => {
+      renderIssueDetail();
+
+      for (const link of await findParentLinks()) {
+        expect(link).toHaveAttribute("href", "/test/issues/parent-1");
+        expect(link).toHaveAttribute("target", "_blank");
+        expect(fireEvent.click(link)).toBe(true);
+      }
+      expect(navigationAdapter.push).not.toHaveBeenCalled();
+    });
+
+    it("keeps the header breadcrumb crumb navigating in place", async () => {
+      const openInNewTab = vi.fn();
+      navigationAdapter.openInNewTab = openInNewTab;
+      renderIssueDetail();
+
+      // "TES-9" labels three links: the header crumb, the breadcrumb under
+      // the title, and the sidebar card. Exactly one of them — the crumb —
+      // must still be an in-place link.
+      await screen.findAllByText("TES-9");
+      const inPlace = screen
+        .getAllByText("TES-9")
+        .map((el) => el.closest("a"))
+        .filter((a): a is HTMLAnchorElement => a !== null && !a.hasAttribute("target"));
+      expect(inPlace).toHaveLength(1);
+
+      fireEvent.click(inPlace[0]!);
+      expect(openInNewTab).not.toHaveBeenCalled();
+      expect(navigationAdapter.push).toHaveBeenCalledWith("/test/issues/parent-1");
     });
   });
 });

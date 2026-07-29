@@ -143,6 +143,42 @@ describe("AppLink", () => {
       expect(order).toEqual(["onClick", "openInNewTab"]);
     });
 
+    it("cmd/ctrl-click inverts the default to a BACKGROUND tab", () => {
+      // A Reference surface opens foreground on a plain click, so the
+      // modifier has to mean the opposite of what it means on a Navigation
+      // surface — not "open a tab" but "open it without taking me there".
+      const push = vi.fn();
+      const openInNewTab = vi.fn();
+      const adapter = makeAdapter({ push, openInNewTab });
+
+      renderLink(adapter, {
+        href: "/issues",
+        target: "_blank",
+        newTabTitle: "MUL-7",
+      });
+      fireEvent.click(screen.getByText("go"), { metaKey: true });
+
+      expect(openInNewTab).toHaveBeenCalledWith("/issues", "MUL-7");
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it("cmd/ctrl-click without an adapter (web) stays out of the browser's way", () => {
+      // The browser backgrounds a modifier-click even on target=_blank, so
+      // the inversion is already correct natively. preventDefault here would
+      // replace three distinct behaviours (background, new window, foreground)
+      // with one.
+      const push = vi.fn();
+      const adapter = makeAdapter({ push });
+
+      renderLink(adapter, { href: "/issues", target: "_blank" });
+      const defaultNotPrevented = fireEvent.click(screen.getByText("go"), {
+        metaKey: true,
+      });
+
+      expect(defaultNotPrevented).toBe(true);
+      expect(push).not.toHaveBeenCalled();
+    });
+
     it("renders the target and a rel guard on the anchor", () => {
       renderLink(makeAdapter(), { href: "/issues", target: "_blank" });
       const anchor = screen.getByText("go");

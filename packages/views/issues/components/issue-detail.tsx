@@ -636,6 +636,12 @@ function SubIssueRow({
   // and no risk of the native checkbox / picker triggers being blocked.
   // Right-click anywhere on the row opens the shared issue actions menu
   // (priority, labels, dates, delete, …) — the same menu as list rows.
+  //
+  // target="_blank": a sub-issue row is a Reference, not Navigation — the list
+  // is part of the parent's reading context rather than a picker, so opening a
+  // child must not cost the reader their place in the parent. This is
+  // deliberately unlike an issue list row; see the rule at the top of
+  // packages/views/navigation/types.ts.
   return (
     <IssueActionsContextMenu issue={child}>
       <div
@@ -685,6 +691,8 @@ function SubIssueRow({
         />
         <AppLink
           href={paths.issueDetail(child.id)}
+          target="_blank"
+          newTabTitle={child.identifier}
           className="flex min-w-0 flex-1 items-center gap-2.5"
         >
           <span className="text-[11px] text-muted-foreground tabular-nums font-medium shrink-0">
@@ -1972,8 +1980,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </button>
           {parentIssueOpen && <div className="pl-2">
             <div className="flex items-center gap-0.5 rounded-md px-2 -mx-2 hover:bg-accent/50 transition-colors group">
+              {/* Same parent, same rule as the breadcrumb under the title —
+                  the sidebar card is a second entry point to one reference,
+                  and the two must not disagree about where a click lands. */}
               <AppLink
                 href={paths.issueDetail(parentIssue.id)}
+                target="_blank"
+                newTabTitle={parentIssue.identifier}
                 className="flex flex-1 min-w-0 items-center gap-1.5 py-1.5 text-xs"
               >
                 <StatusIcon status={parentIssue.status} className="h-3.5 w-3.5 shrink-0" />
@@ -2359,8 +2372,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           )}
 
           {parentIssue && (
+            // Reference, like the sub-issue rows below it: the breadcrumb
+            // points out of what the user is reading, so it opens beside it
+            // rather than replacing it (packages/views/navigation/types.ts).
             <AppLink
               href={paths.issueDetail(parentIssue.id)}
+              target="_blank"
+              newTabTitle={parentIssue.identifier}
               className="mt-2 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group/parent"
             >
               <span className="font-medium shrink-0">{t(($) => $.detail.sub_issue_of)}</span>
