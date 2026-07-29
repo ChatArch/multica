@@ -391,7 +391,7 @@ function NameCell({ row }: { row: AgentListRow }) {
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Lock className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+                  <Lock className="h-3 w-3 shrink-0 text-faint-foreground" />
                 }
               />
               <TooltipContent>{VISIBILITY_TOOLTIP.private}</TooltipContent>
@@ -421,7 +421,7 @@ function StatusCell({ row }: { row: AgentListRow }) {
   if (agent.archived_at) {
     return (
       <ListGridCell>
-        <span className="text-caption text-muted-foreground/60">
+        <span className="text-caption text-muted-foreground">
           {t(($) => $.row.archived)}
         </span>
       </ListGridCell>
@@ -430,7 +430,7 @@ function StatusCell({ row }: { row: AgentListRow }) {
   if (!presence) {
     return (
       <ListGridCell>
-        <span className="text-caption text-muted-foreground/40">—</span>
+        <span className="text-caption text-faint-foreground">—</span>
       </ListGridCell>
     );
   }
@@ -460,7 +460,7 @@ function OwnerCell({ row }: { row: AgentListRow }) {
   if (!agent.owner_id) {
     return (
       <ListGridCell className="hidden @2xl:flex">
-        <span className="text-caption text-muted-foreground/40">—</span>
+        <span className="text-caption text-faint-foreground">—</span>
       </ListGridCell>
     );
   }
@@ -520,7 +520,7 @@ function RuntimeCell({ row }: { row: AgentListRow }) {
           </span>
         </span>
       ) : (
-        <span className="text-caption text-muted-foreground/40">—</span>
+        <span className="text-caption text-faint-foreground">—</span>
       )}
     </ListGridCell>
   );
@@ -532,7 +532,7 @@ function LastActiveCell({ row }: { row: AgentListRow }) {
   return (
     <ListGridCell className="hidden @2xl:flex">
       {days === null ? (
-        <span className="truncate text-caption text-muted-foreground/40">
+        <span className="truncate text-caption text-muted-foreground">
           {row.agent.archived_at ? "—" : t(($) => $.last_active.none)}
         </span>
       ) : (
