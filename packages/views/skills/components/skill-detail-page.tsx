@@ -75,7 +75,10 @@ import {
   type SkillActionsContext,
 } from "./skill-list-actions";
 import { useT } from "../../i18n";
-import { ResourceLabelPicker } from "../../labels/resource-label-picker";
+import {
+  ResourceLabelPicker,
+  useResourceLabelsEnabled,
+} from "../../labels/resource-label-picker";
 
 const SKILL_MD = "SKILL.md";
 
@@ -191,10 +194,18 @@ function useOriginLabel(origin: OriginInfo | null, runtime: AgentRuntime | null)
 }
 
 /**
- * Identity block under the breadcrumb: mark, name, description, and a single
- * meta line. Mirrors the agent detail header so the two detail pages read as
- * the same product. Name and description are display-only here and edited on
- * the Overview tab, exactly as the agent page edits them under Settings.
+ * Identity strip under the breadcrumb: mark, name, and the counts that say
+ * what this skill is made of. One line, because everything a reader would
+ * scroll past it for is a field on the Overview tab.
+ *
+ * The description is not repeated here. It used to be, above an editable copy
+ * of itself two tabs' worth of chrome below — every visit to a page whose only
+ * verbs are edit, add and delete paid for a read-only restatement of a field
+ * the next screenful lets you change. The list this page is reached from
+ * already carries the description for anyone deciding whether to open it.
+ *
+ * The agent detail header still has the taller form. Bringing it across is a
+ * separate change to a page this branch does not otherwise touch.
  */
 function SkillIdentity({
   skill,
@@ -215,49 +226,44 @@ function SkillIdentity({
   const isRuntimeOrigin = origin?.type === "runtime_local";
 
   return (
-    <div className="shrink-0 border-b px-4 pb-5 pt-4 sm:px-6">
-      <div className="mx-auto flex max-w-[1440px] items-start gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border bg-muted text-muted-foreground">
-          <Sparkles className="h-5 w-5" aria-hidden="true" />
-        </div>
-        <div className="min-w-0 pt-0.5">
-          <h1 className="min-w-0 text-balance font-mono text-xl font-semibold tracking-tight">
+    <div className="shrink-0 border-b px-4 py-3 sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-1.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-muted text-muted-foreground">
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <h1 className="min-w-0 truncate font-mono text-lg font-semibold tracking-tight">
             {skill.name}
           </h1>
-          {skill.description && (
-            <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-muted-foreground">
-              {skill.description}
-            </p>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground sm:ml-auto">
+          {originLabel && (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              {isRuntimeOrigin ? (
+                <HardDrive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              )}
+              <span className="truncate">{originLabel}</span>
+            </span>
           )}
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            {originLabel && (
-              <span className="inline-flex min-w-0 items-center gap-1.5">
-                {isRuntimeOrigin ? (
-                  <HardDrive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                ) : (
-                  <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                )}
-                <span className="truncate">{originLabel}</span>
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1.5">
-              <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-              {t(($) => $.detail.header.files, { count: totalFileCount(skill) })}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Users className="h-3.5 w-3.5" aria-hidden="true" />
-              {t(($) => $.detail.header.used_by, { count: agentCount })}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
-              {creator
-                ? t(($) => $.detail.header.updated_by, {
-                    when: timeAgo(skill.updated_at),
-                    name: creator.name,
-                  })
-                : t(($) => $.detail.header.updated, { when: timeAgo(skill.updated_at) })}
-            </span>
-          </div>
+          <span className="inline-flex items-center gap-1.5">
+            <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+            {t(($) => $.detail.header.files, { count: totalFileCount(skill) })}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Users className="h-3.5 w-3.5" aria-hidden="true" />
+            {t(($) => $.detail.header.used_by, { count: agentCount })}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
+            {creator
+              ? t(($) => $.detail.header.updated_by, {
+                  when: timeAgo(skill.updated_at),
+                  name: creator.name,
+                })
+              : t(($) => $.detail.header.updated, { when: timeAgo(skill.updated_at) })}
+          </span>
         </div>
       </div>
     </div>
@@ -346,6 +352,7 @@ function OverviewTab({
   onAddToAgents: () => void;
 }) {
   const { t } = useT("skills");
+  const labelsEnabled = useResourceLabelsEnabled();
 
   return (
     <div className="mx-auto w-full max-w-3xl p-4 sm:p-6 md:p-8">
@@ -389,13 +396,15 @@ function OverviewTab({
             </p>
           </PropertyRow>
 
-          <PropertyRow label={t(($) => $.detail.overview.labels)}>
-            <ResourceLabelPicker
-              resourceType="skill"
-              resourceId={skill.id}
-              canEdit={canEdit}
-            />
-          </PropertyRow>
+          {labelsEnabled && (
+            <PropertyRow label={t(($) => $.detail.overview.labels)}>
+              <ResourceLabelPicker
+                resourceType="skill"
+                resourceId={skill.id}
+                canEdit={canEdit}
+              />
+            </PropertyRow>
+          )}
         </div>
       </section>
 

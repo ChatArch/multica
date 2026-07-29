@@ -78,6 +78,9 @@ vi.mock("../../rich-content", () => ({
 }));
 vi.mock("../../labels/resource-label-picker", () => ({
   ResourceLabelPicker: () => <div data-testid="labels" />,
+  // The row is only laid out when the release flag is on; with it off the
+  // picker renders nothing and the label would sit above an empty field.
+  useResourceLabelsEnabled: () => true,
 }));
 vi.mock("./skill-list-actions", () => ({ AddToAgentDialog: () => null }));
 vi.mock("@multica/ui/components/common/capability-banner", () => ({
