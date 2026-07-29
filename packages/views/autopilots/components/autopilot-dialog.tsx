@@ -434,11 +434,11 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
                   : t(($) => $.dialog.header_edit)}
               </span>
             </div>
-            <span className="text-muted-foreground/60">·</span>
+            <span className="text-faint-foreground">·</span>
             <span className="text-muted-foreground">{t(($) => $.dialog.subtitle)}</span>
             {workspaceName && (
               <>
-                <ChevronRight className="size-3 text-muted-foreground/40" />
+                <ChevronRight className="size-3 text-faint-foreground" />
                 <span className="text-muted-foreground">{workspaceName}</span>
               </>
             )}
@@ -532,7 +532,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               <span className="text-micro font-semibold tracking-[0.08em] text-muted-foreground uppercase">
                 {t(($) => $.dialog.runbook_label)}
               </span>
-              <span className="text-caption text-muted-foreground/80">
+              <span className="text-caption text-muted-foreground">
                 {t(($) => $.dialog.runbook_hint)}
               </span>
             </div>

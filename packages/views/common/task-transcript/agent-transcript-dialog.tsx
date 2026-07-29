@@ -167,7 +167,7 @@ function RunDetailRow({
   copied?: boolean;
   copyTitle?: string;
 }) {
-  const valueClass = cn("min-w-0 select-text break-all text-foreground/80", mono && "font-mono");
+  const valueClass = cn("min-w-0 select-text break-all text-foreground", mono && "font-mono");
   if (onCopy) {
     return (
       <button
@@ -1000,7 +1000,7 @@ function SortDirectionToggle({ value, onChange, labels }: SortDirectionTogglePro
 
 function FactDot() {
   return (
-    <span aria-hidden className="text-muted-foreground/40">
+    <span aria-hidden className="text-faint-foreground">
       ·
     </span>
   );
@@ -1137,7 +1137,7 @@ const TranscriptEventRow = ({
             <div className="flex flex-1 items-start gap-1.5 min-w-0">
               <CollapsibleTrigger
                 aria-label={label}
-                className="shrink-0 mt-0.5 cursor-pointer rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+                className="shrink-0 mt-0.5 cursor-pointer rounded p-0.5 text-faint-foreground transition-colors hover:text-foreground"
               >
                 <ChevronRight className="h-3 w-3 rotate-90 transition-transform" />
               </CollapsibleTrigger>
@@ -1173,7 +1173,7 @@ const TranscriptEventRow = ({
                 {hasDetail && (
                   <ChevronRight
                     className={cn(
-                      "h-3 w-3 shrink-0 mt-0.5 text-muted-foreground/50 transition-transform",
+                      "h-3 w-3 shrink-0 mt-0.5 text-faint-foreground transition-transform",
                       expanded && "rotate-90",
                     )}
                   />
@@ -1182,7 +1182,7 @@ const TranscriptEventRow = ({
                   className={cn(
                     "truncate",
                     traceEventSummaryIsMono(kind) && summary && "font-mono text-micro",
-                    !summary && "text-muted-foreground/60",
+                    !summary && "text-muted-foreground",
                   )}
                 >
                   {summary || t(($) => $.transcript.no_output)}
@@ -1192,13 +1192,13 @@ const TranscriptEventRow = ({
           )}
 
           {/* Seq number / index */}
-          <span className="shrink-0 text-micro text-muted-foreground/50 tabular-nums mt-1">
+          <span className="shrink-0 text-micro text-muted-foreground tabular-nums mt-1">
             #{item.seq}
           </span>
 
           {/* Timestamp */}
           {date && (
-            <span className="shrink-0 text-micro text-muted-foreground/50 tabular-nums mt-1" title={date.toLocaleString()}>
+            <span className="shrink-0 text-micro text-muted-foreground tabular-nums mt-1" title={date.toLocaleString()}>
               {date.toLocaleTimeString(undefined, {
                 hour: "2-digit",
                 minute: "2-digit",

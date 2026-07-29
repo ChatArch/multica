@@ -90,7 +90,7 @@ function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
               {t(($) => $.create.method_card[`${titleKey}_desc`])}
             </div>
           </div>
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+          <ChevronRight className="h-4 w-4 shrink-0 text-faint-foreground transition-colors group-hover:text-muted-foreground" />
         </button>
       ))}
     </div>

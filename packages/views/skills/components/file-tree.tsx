@@ -164,7 +164,7 @@ export function FileTree({
   if (tree.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-        <FolderOpen className="h-5 w-5 text-muted-foreground/40" />
+        <FolderOpen className="h-5 w-5 text-faint-foreground" />
         <p className="mt-2 text-caption">{t(($) => $.file_tree.no_files)}</p>
       </div>
     );
