@@ -90,7 +90,13 @@
     --secondary: oklch(0.967 0.001 286.375);
     --secondary-foreground: oklch(0.21 0.006 285.885);
     --muted: oklch(0.967 0.001 286.375);
-    --muted-foreground: oklch(0.552 0.016 285.938);
+    /* Lightness is capped by the darkest light-mode surface this token has to
+       stay legible on, not by the page canvas. --sidebar-accent (0.935) is that
+       surface — sidebar nav labels are text-muted-foreground and switch to it on
+       hover — and WCAG AA 4.5:1 there needs L <= 0.523. 0.505 keeps a margin
+       (4.87:1 on sidebar-accent, 5.89:1 on white). Hue and chroma are unchanged
+       so the neutral ramp does not shift. */
+    --muted-foreground: oklch(0.505 0.016 285.938);
     --accent: oklch(0.967 0.001 286.375);
     --accent-foreground: oklch(0.21 0.006 285.885);
     --destructive: oklch(0.577 0.245 27.325);
