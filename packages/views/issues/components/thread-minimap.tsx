@@ -450,12 +450,12 @@ export function ThreadMinimap({ threads, scrollContainerEl, onJump, className }:
           ref={cardRef}
           onPointerEnter={cancelClose}
           onPointerLeave={scheduleClose}
-          className="pointer-events-auto absolute right-8 top-0 w-72 rounded-lg bg-popover p-2.5 text-body text-popover-foreground shadow-md ring-1 ring-foreground/10 transition-transform duration-150 ease-out motion-reduce:transition-none"
+          className="pointer-events-auto absolute right-8 top-0 w-72 rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 transition-transform duration-150 ease-out motion-reduce:transition-none"
           style={{ transform: `translateY(${preview.y}px) translateY(-50%)` }}
         >
-          <p className="truncate text-body font-semibold text-foreground">{activeTitle}</p>
+          <p className="truncate text-sm font-semibold text-foreground">{activeTitle}</p>
           {activePreview.body && (
-            <p className="mt-1 line-clamp-3 text-body text-muted-foreground">{activePreview.body}</p>
+            <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{activePreview.body}</p>
           )}
         </div>
       )}

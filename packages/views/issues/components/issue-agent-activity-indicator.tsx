@@ -127,7 +127,7 @@ export const IssueAgentActivityIndicator = memo(function IssueAgentActivityIndic
       />
       <span
         className={cn(
-          "text-micro leading-none",
+          "text-[10px] leading-none",
           isRunning
             ? "animate-chat-text-shimmer"
             : "text-muted-foreground",

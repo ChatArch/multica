@@ -140,12 +140,12 @@ export function RuntimeConfigTab({
 
   return (
     <div className="flex h-full flex-col space-y-4">
-      <p className="text-caption text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         {t(($) => $.tab_body.runtime_config.intro)}
       </p>
 
       <fieldset className="space-y-2">
-        <Label className="text-caption font-medium">
+        <Label className="text-xs font-medium">
           {t(($) => $.tab_body.runtime_config.mode_label)}
         </Label>
         <div className="flex gap-2">
@@ -165,7 +165,7 @@ export function RuntimeConfigTab({
                   return { ...s, mode, tokenWasMasked: false };
                 })
               }
-              className={`rounded-md border px-3 py-1.5 text-caption ${
+              className={`rounded-md border px-3 py-1.5 text-xs ${
                 state.mode === mode
                   ? "border-foreground bg-foreground text-background"
                   : "border-border bg-background text-foreground hover:bg-muted"
@@ -175,7 +175,7 @@ export function RuntimeConfigTab({
             </button>
           ))}
         </div>
-        <p className="text-caption text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {isGateway
             ? t(($) => $.tab_body.runtime_config.mode_gateway_hint)
             : t(($) => $.tab_body.runtime_config.mode_local_hint)}
@@ -186,12 +186,12 @@ export function RuntimeConfigTab({
         className={`space-y-3 rounded-md border p-3 ${isGateway ? "" : "opacity-50"}`}
         disabled={!isGateway}
       >
-        <legend className="px-1 text-caption font-medium">
+        <legend className="px-1 text-xs font-medium">
           {t(($) => $.tab_body.runtime_config.gateway_legend)}
         </legend>
 
         <div className="space-y-1.5">
-          <Label htmlFor="openclaw-gw-host" className="text-caption">
+          <Label htmlFor="openclaw-gw-host" className="text-xs">
             {t(($) => $.tab_body.runtime_config.host_label)}
           </Label>
           <Input
@@ -199,12 +199,12 @@ export function RuntimeConfigTab({
             value={state.host}
             onChange={(e) => setState((s) => ({ ...s, host: e.target.value }))}
             placeholder={t(($) => $.tab_body.runtime_config.host_placeholder)}
-            className="font-mono text-caption"
+            className="font-mono text-xs"
           />
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="openclaw-gw-port" className="text-caption">
+          <Label htmlFor="openclaw-gw-port" className="text-xs">
             {t(($) => $.tab_body.runtime_config.port_label)}
           </Label>
           <Input
@@ -214,17 +214,17 @@ export function RuntimeConfigTab({
             placeholder="18789"
             inputMode="numeric"
             aria-invalid={!portValid || undefined}
-            className="font-mono text-caption"
+            className="font-mono text-xs"
           />
           {!portValid && (
-            <p className="text-caption text-destructive">
+            <p className="text-xs text-destructive">
               {t(($) => $.tab_body.runtime_config.port_invalid)}
             </p>
           )}
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="openclaw-gw-token" className="text-caption">
+          <Label htmlFor="openclaw-gw-token" className="text-xs">
             {t(($) => $.tab_body.runtime_config.token_label)}
           </Label>
           <Input
@@ -247,16 +247,16 @@ export function RuntimeConfigTab({
                 : t(($) => $.tab_body.runtime_config.token_placeholder)
             }
             autoComplete="off"
-            className="font-mono text-caption"
+            className="font-mono text-xs"
           />
         </div>
 
         <div className="flex items-center justify-between gap-2 pt-1">
           <div>
-            <Label htmlFor="openclaw-gw-tls" className="text-caption">
+            <Label htmlFor="openclaw-gw-tls" className="text-xs">
               {t(($) => $.tab_body.runtime_config.tls_label)}
             </Label>
-            <p className="text-caption text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t(($) => $.tab_body.runtime_config.tls_hint)}
             </p>
           </div>
@@ -278,7 +278,7 @@ export function RuntimeConfigTab({
 
       <div className="flex items-center justify-end gap-3 pt-2">
         {dirty && (
-          <span className="text-caption text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {t(($) => $.tab_body.common.unsaved_changes)}
           </span>
         )}

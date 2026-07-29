@@ -72,9 +72,9 @@ export function DeleteWorkspaceDialog({
         </DialogHeader>
 
         <div className="space-y-2">
-          <Label htmlFor="delete-workspace-confirm" className="text-caption">
+          <Label htmlFor="delete-workspace-confirm" className="text-xs">
             {t(($) => $.delete_workspace_dialog.type_to_confirm_prefix)}{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-caption">
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
               {workspaceName}
             </code>{" "}
             {t(($) => $.delete_workspace_dialog.type_to_confirm_suffix)}
