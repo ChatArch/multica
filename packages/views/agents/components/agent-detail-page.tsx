@@ -197,8 +197,8 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
           <Lock className="h-8 w-8 text-muted-foreground" />
           <div>
-            <p className="text-sm font-medium">{t(($) => $.detail.no_access_title)}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="text-body font-medium">{t(($) => $.detail.no_access_title)}</p>
+            <p className="mt-1 text-caption text-muted-foreground">
               {t(($) => $.detail.no_access_hint)}
             </p>
           </div>
@@ -222,8 +222,8 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
           <AlertCircle className="h-8 w-8 text-destructive" />
           <div>
-            <p className="text-sm font-medium">{t(($) => $.detail.not_found_title)}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="text-body font-medium">{t(($) => $.detail.not_found_title)}</p>
+            <p className="mt-1 text-caption text-muted-foreground">
               {agentsError instanceof Error
                 ? agentsError.message
                 : t(($) => $.detail.not_found_default)}
@@ -303,7 +303,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
       )}
 
       {isArchived && (
-        <div className="flex shrink-0 items-center gap-2 border-b bg-muted/50 px-6 py-2 text-xs text-muted-foreground">
+        <div className="flex shrink-0 items-center gap-2 border-b bg-muted/50 px-6 py-2 text-caption text-muted-foreground">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           <span className="flex-1">
             {t(($) => $.detail.archived_banner)}
@@ -312,7 +312,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
             <Button
               variant="outline"
               size="sm"
-              className="h-6 text-xs"
+              className="h-6 text-caption"
               onClick={() => handleRestore(agent.id)}
             >
               {t(($) => $.detail.restore)}
@@ -349,10 +349,10 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
                 <AlertCircle className="h-5 w-5 text-destructive" />
               </div>
               <DialogHeader className="flex-1 gap-1">
-                <DialogTitle className="text-sm font-semibold">
+                <DialogTitle className="text-body font-semibold">
                   {t(($) => $.detail.archive_dialog_title)}
                 </DialogTitle>
-                <DialogDescription className="text-xs">
+                <DialogDescription className="text-caption">
                   {t(($) => $.detail.archive_dialog_description, { name: agent.name })}
                 </DialogDescription>
               </DialogHeader>
@@ -412,7 +412,7 @@ function DetailHeader({
   return (
     <header className="shrink-0 border-b bg-background px-4 pb-5 pt-3 sm:px-6">
       <div className="mx-auto max-w-[1440px]">
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
           <AppLink
             href={backHref}
             className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -434,7 +434,7 @@ function DetailHeader({
             />
             <div className="min-w-0 pt-0.5">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                <h1 className="min-w-0 text-balance text-xl font-semibold tracking-tight sm:text-2xl">
+                <h1 className="min-w-0 text-balance text-title-lg font-semibold tracking-tight sm:text-display-sm">
                   {agent.name}
                 </h1>
                 <AgentPresenceIndicator detail={presence} />
@@ -443,7 +443,7 @@ function DetailHeader({
                 {agent.description ||
                   t(($) => $.inspector.no_description_placeholder)}
               </ExpandableDescription>
-              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-caption text-muted-foreground">
                 <span className="inline-flex min-w-0 items-center gap-1.5">
                   <Bot className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span className="truncate">{agent.model || t(($) => $.pickers.model_default)}</span>
@@ -519,7 +519,7 @@ function BackHeader({ paths, title }: { paths: string; title: string }) {
       <div className="flex items-center gap-2">
         <AppLink
           href={paths}
-          className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           {title}

@@ -107,7 +107,7 @@ type AgentResponse struct {
 // handler restores the persisted token instead of overwriting it.
 const runtimeConfigGatewayTokenMask = "***"
 
-func agentToResponse(a db.Agent) AgentResponse {
+func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 	var rc any
 	if a.RuntimeConfig != nil {
 		json.Unmarshal(a.RuntimeConfig, &rc)
@@ -162,7 +162,7 @@ func agentToResponse(a db.Agent) AgentResponse {
 		Name:                     a.Name,
 		Description:              a.Description,
 		Instructions:             a.Instructions,
-		AvatarURL:                textToPtr(a.AvatarUrl),
+		AvatarURL:                h.resolveAvatarURLPtr(textToPtr(a.AvatarUrl)),
 		RuntimeMode:              a.RuntimeMode,
 		RuntimeConfig:            rc,
 		CustomArgs:               customArgs,
@@ -509,7 +509,7 @@ func (h *Handler) hydrateTaskAttributions(ctx context.Context, attrs []*TaskAttr
 			ref.Name = u.Name
 			ref.Email = u.Email
 			if u.AvatarUrl.Valid {
-				ref.AvatarURL = u.AvatarUrl.String
+				ref.AvatarURL = h.resolveAvatarURL(u.AvatarUrl.String)
 			}
 		}
 	}
@@ -839,7 +839,7 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		resp := agentToResponse(a)
+		resp := h.agentToResponse(a)
 		applyInvocationTargetsToResponse(&resp, targets)
 		if skills, ok := skillMap[resp.ID]; ok {
 			resp.Skills = skills
@@ -888,7 +888,7 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "you do not have access to this agent")
 		return
 	}
-	resp := agentToResponse(agent)
+	resp := h.agentToResponse(agent)
 	if !h.enrichAgentResponseWithTargetsHTTP(w, r, &resp, agent.ID) {
 		return
 	}
@@ -1136,6 +1136,11 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	avatarURL, ok := h.newAgentAvatar(w, r, req.AvatarURL)
+	if !ok {
+		return
+	}
+
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start agent create transaction")
@@ -1149,7 +1154,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Name:                     req.Name,
 		Description:              req.Description,
 		Instructions:             req.Instructions,
-		AvatarUrl:                newAgentAvatar(req.AvatarURL),
+		AvatarUrl:                avatarURL,
 		RuntimeMode:              runtime.RuntimeMode,
 		RuntimeConfig:            rc,
 		RuntimeID:                runtime.ID,
@@ -1201,7 +1206,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		created, _ = h.Queries.GetAgent(r.Context(), created.ID)
 	}
 
-	resp := agentToResponse(created)
+	resp := h.agentToResponse(created)
 	if err := h.attachAgentSkills(r.Context(), &resp, created.ID); err != nil {
 		slog.Warn("create agent: load skills for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(created.ID))...)
 	}
@@ -1553,7 +1558,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.Instructions = pgtype.Text{String: *req.Instructions, Valid: true}
 	}
 	if req.AvatarURL != nil {
-		params.AvatarUrl = pgtype.Text{String: *req.AvatarURL, Valid: true}
+		avatarURL, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, existing.AvatarUrl.String)
+		if !ok {
+			return
+		}
+		params.AvatarUrl = pgtype.Text{String: avatarURL, Valid: true}
 	}
 	if req.RuntimeConfig != nil {
 		// Restore the persisted gateway token when the request submitted the
@@ -1880,7 +1889,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := agentToResponse(updated)
+	resp := h.agentToResponse(updated)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("update agent: load invocation targets for response failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent invocation targets")
@@ -1990,7 +1999,7 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 
 	wsID := uuidToString(archived.WorkspaceID)
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
-	resp := agentToResponse(archived)
+	resp := h.agentToResponse(archived)
 	if err := h.attachAgentSkills(r.Context(), &resp, archived.ID); err != nil {
 		slog.Warn("load agent skills after archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
@@ -2025,7 +2034,7 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 
 	wsID := uuidToString(restored.WorkspaceID)
 	slog.Info("agent restored", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
-	resp := agentToResponse(restored)
+	resp := h.agentToResponse(restored)
 	if err := h.attachAgentSkills(r.Context(), &resp, restored.ID); err != nil {
 		slog.Warn("load agent skills after restore failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
@@ -2248,7 +2257,7 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 		resp = append(resp, WorkspaceWorkingAgent{
 			ID:               agentID,
 			Name:             row.Name,
-			AvatarURL:        textToPtr(row.AvatarUrl),
+			AvatarURL:        h.resolveAvatarURLPtr(textToPtr(row.AvatarUrl)),
 			RunningTaskCount: row.RunningTaskCount,
 			IssueIDs:         uuidStringsOrEmpty(row.IssueIds),
 		})

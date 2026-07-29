@@ -110,7 +110,7 @@ export const SlashCommandList = forwardRef<
   if (items.length === 0) {
     if (hideOnEmpty) return null;
     return (
-      <div className="rounded-md border bg-popover p-2 text-xs text-muted-foreground shadow-md">
+      <div className="rounded-md border bg-popover p-2 text-caption text-muted-foreground shadow-md">
         {t(($) =>
           query.trim()
             ? $.slash_command.no_results
@@ -141,7 +141,7 @@ export const SlashCommandList = forwardRef<
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
-            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-xs transition-colors ${
+            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-caption transition-colors ${
               selectedIndex === index ? "bg-accent" : "hover:bg-accent/50"
             }`}
             onClick={() => selectItem(index)}
