@@ -101,11 +101,11 @@ function TreeNodeItem({
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-center gap-1.5 py-1 text-left text-xs hover:bg-accent/50 rounded-sm"
-          style={{ paddingLeft: `${depth * 12 + 8}px` }}
+          className="flex h-8 w-full items-center gap-1.5 rounded-md pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          style={{ paddingLeft: `${depth * 12 + 10}px` }}
         >
-          <ChevronIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
-          <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <ChevronIcon className="h-3 w-3 shrink-0" />
+          <FolderIcon className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{node.name}</span>
         </button>
         {expanded && (
@@ -130,16 +130,18 @@ function TreeNodeItem({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={isSelected}
       onClick={() => onSelect(node.path)}
       className={cn(
-        "flex w-full items-center gap-1.5 py-1 text-left text-xs rounded-sm",
+        "flex h-8 w-full items-center gap-2 rounded-md pr-2.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         isSelected
-          ? "bg-accent text-accent-foreground"
-          : "hover:bg-accent/50",
+          ? "bg-surface-selected font-medium text-surface-selected-foreground"
+          : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
       )}
-      style={{ paddingLeft: `${depth * 12 + 8 + 16}px` }}
+      style={{ paddingLeft: `${depth * 12 + 10}px` }}
     >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{node.name}</span>
     </button>
   );
@@ -170,8 +172,10 @@ export function FileTree({
     );
   }
 
+  // No `role="tablist"` here: the caller owns the list semantics so a rail
+  // split into "main" + "supporting" groups stays a single tab list.
   return (
-    <div className="py-1 px-1">
+    <div className="flex flex-col gap-0.5">
       {tree.map((node) => (
         <TreeNodeItem
           key={node.path}
