@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -839,5 +840,99 @@ func TestCursorToolPayloadKeyIsDeterministic(t *testing.T) {
 	}
 	if got := cursorToolPayloadKey(map[string]json.RawMessage{"toolCallId": json.RawMessage(`"x"`)}); got != "" {
 		t.Fatalf("key without a tool payload = %q, want empty", got)
+	}
+}
+
+// TestCursorUnknownTypeTallySummary pins the rendering the daemon log depends
+// on: sorted so it diffs cleanly across runs, and "name=count" so an operator
+// can see at a glance which event went missing and how often.
+func TestCursorUnknownTypeTallySummary(t *testing.T) {
+	t.Parallel()
+
+	var tally cursorUnknownTypeTally
+	if got := tally.summary(); got != "" {
+		t.Errorf("empty tally summary = %q, want %q", got, "")
+	}
+	if tally.total != 0 {
+		t.Errorf("empty tally total = %d, want 0", tally.total)
+	}
+
+	for _, eventType := range []string{"tool_calls", "reasoning", "tool_calls", "reasoning", "tool_calls"} {
+		tally.observe(eventType)
+	}
+	if want := "reasoning=2,tool_calls=3"; tally.summary() != want {
+		t.Errorf("summary = %q, want %q", tally.summary(), want)
+	}
+	if tally.total != 5 {
+		t.Errorf("total = %d, want 5", tally.total)
+	}
+}
+
+// TestCursorUnknownTypeTallyNormalizesKeys keeps the tally content-free: a type
+// value carrying punctuation or arbitrary length must not be copied into daemon
+// logs verbatim, it collapses to the same bounded labels observedCursorEventType
+// produces everywhere else.
+func TestCursorUnknownTypeTallyNormalizesKeys(t *testing.T) {
+	t.Parallel()
+
+	var tally cursorUnknownTypeTally
+	tally.observe("")
+	tally.observe("   ")
+	tally.observe("tool call with spaces")
+	tally.observe(strings.Repeat("x", 65))
+
+	if want := "invalid=2,unknown=2"; tally.summary() != want {
+		t.Errorf("summary = %q, want %q", tally.summary(), want)
+	}
+}
+
+// TestCursorUnknownTypeTallyBoundsCardinality guards the daemon against a
+// stream that emits an unbounded set of novel type names: the map must stop
+// growing at the cap and fold the rest into the overflow bucket, while the
+// total still counts every event.
+func TestCursorUnknownTypeTallyBoundsCardinality(t *testing.T) {
+	t.Parallel()
+
+	var tally cursorUnknownTypeTally
+	const extra = 50
+	for i := 0; i < cursorUnknownTypeCardinalityCap+extra; i++ {
+		tally.observe(fmt.Sprintf("type-%03d", i))
+	}
+
+	if len(tally.counts) != cursorUnknownTypeCardinalityCap+1 {
+		t.Errorf("distinct keys = %d, want %d (cap + overflow bucket)",
+			len(tally.counts), cursorUnknownTypeCardinalityCap+1)
+	}
+	if got := tally.counts[cursorUnknownTypeOverflowKey]; got != extra {
+		t.Errorf("overflow bucket = %d, want %d", got, extra)
+	}
+	if tally.total != cursorUnknownTypeCardinalityCap+extra {
+		t.Errorf("total = %d, want %d", tally.total, cursorUnknownTypeCardinalityCap+extra)
+	}
+	// A capped key already in the map keeps accumulating under its own name.
+	tally.observe("type-000")
+	if got := tally.counts["type-000"]; got != 2 {
+		t.Errorf("known key count = %d, want 2", got)
+	}
+	// The overflow label cannot be produced by normalizing a real type name, so
+	// a stream cannot forge counts into the bucket.
+	if observedCursorEventType(cursorUnknownTypeOverflowKey) != "invalid" {
+		t.Errorf("overflow key %q is collidable with a real type name", cursorUnknownTypeOverflowKey)
+	}
+}
+
+// TestCursorBenignEventType pins which unhandled types must stay silent. `user`
+// is the CLI echoing our own prompt and appears in every run: tallying it would
+// make the unknown-type warning fire always, which is the same as never.
+func TestCursorBenignEventType(t *testing.T) {
+	t.Parallel()
+
+	if !cursorBenignEventType("user") {
+		t.Error("`user` must be treated as benign; it is present in every recorded run")
+	}
+	for _, eventType := range []string{"tool_calls", "reasoning", "toolCall", ""} {
+		if cursorBenignEventType(eventType) {
+			t.Errorf("%q must NOT be benign — it has to be reported as protocol drift", eventType)
+		}
 	}
 }

@@ -120,7 +120,17 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// and surfaced once as a bounded, content-free diagnostic so an upstream
 		// protocol addition is visible instead of silent.
 		unknownSubtypeCount := 0
+		// unknownTypes tracks top-level event types the switch below does not
+		// handle. See cursorUnknownTypeTally: this is what makes a renamed
+		// tool/reasoning event loud instead of silent (MUL-5434).
+		var unknownTypes cursorUnknownTypeTally
 		lastEventType := "none"
+		// assistantBytes counts only model-authored streamed text. It is kept
+		// separate from `output` because the result event also writes into
+		// `output`, which made the reported last_assistant_bytes equal to
+		// result_bytes on a run where the assistant streamed nothing at all —
+		// hiding the exact signal needed to tell those two cases apart.
+		assistantBytes := 0
 		// stepUsage accumulates per-step token counts from "step_finish" events.
 		// resultUsage holds authoritative session totals from "result" events.
 		// If the result event includes usage, we use resultUsage exclusively;
@@ -167,7 +177,7 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 			case "assistant":
 				assistantEventCount++
-				b.handleCursorAssistant(&evt, msgCh, &output)
+				assistantBytes += b.handleCursorAssistant(&evt, msgCh, &output)
 
 			case "thinking":
 				// Reasoning is a top-level event streamed as deltas, not a
@@ -272,6 +282,7 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					_ = json.Unmarshal(evt.Part, &part)
 					if part.Text != "" {
 						output.WriteString(part.Text)
+						assistantBytes += len(part.Text)
 						trySend(msgCh, Message{Type: MessageText, Content: part.Text})
 					}
 				}
@@ -286,6 +297,22 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					u.OutputTokens += int64(part.Tokens.Output)
 					u.CacheReadTokens += int64(part.Tokens.Cache.Read)
 					stepUsage[model] = u
+				}
+
+			default:
+				// A top-level type this parser does not handle. Falling through
+				// here is completely silent otherwise, and that silence is the
+				// bug: if the CLI renames `tool_call` or `thinking`, every tool
+				// and reasoning row vanishes while the run still reports
+				// success, tool_use_count=0 and no diagnostic at all — which is
+				// indistinguishable from a model that legitimately used no
+				// tools (MUL-5434). Count it so the two cases can be told apart.
+				//
+				// Counting is all we do. An unrecognized event is never coerced
+				// into a tool or reasoning message: guessing at upstream
+				// additions is the failure mode MUL-5231 already fixed once.
+				if !cursorBenignEventType(evt.Type) {
+					unknownTypes.observe(evt.Type)
 				}
 			}
 		}
@@ -363,20 +390,23 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 
 		logStreamProtocolObservation(b.cfg.Logger, streamProtocolObservation{
-			provider:            "cursor-agent",
-			cliVersion:          b.cfg.CLIVersion,
-			model:               opts.Model,
-			exitCode:            streamProcessExitCode(exitErr),
-			eventCount:          eventCount,
-			invalidEventCount:   invalidEventCount,
-			assistantEventCount: assistantEventCount,
-			toolUseCount:        toolUseCount,
-			sawResult:           resultSeen,
-			resultIsError:       resultIsError,
-			resultBytes:         resultBytes,
-			lastAssistantBytes:  output.Len(),
-			scannerError:        scanErr != nil && !resultSeen,
-			lastEventType:       lastEventType,
+			provider:              "cursor-agent",
+			cliVersion:            b.cfg.CLIVersion,
+			model:                 opts.Model,
+			exitCode:              streamProcessExitCode(exitErr),
+			eventCount:            eventCount,
+			invalidEventCount:     invalidEventCount,
+			assistantEventCount:   assistantEventCount,
+			toolUseCount:          toolUseCount,
+			sawResult:             resultSeen,
+			resultIsError:         resultIsError,
+			resultBytes:           resultBytes,
+			lastAssistantBytes:    assistantBytes,
+			scannerError:          scanErr != nil && !resultSeen,
+			lastEventType:         lastEventType,
+			unknownEventTypeCount: unknownTypes.total,
+			unknownEventTypes:     unknownTypes.summary(),
+			unknownSubtypeCount:   unknownSubtypeCount,
 		})
 
 		if unknownSubtypeCount > 0 {
@@ -384,6 +414,17 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// thinking/tool_call subtype we chose to ignore, so a protocol
 			// addition is diagnosable without the parser having guessed at it.
 			b.cfg.Logger.Warn("cursor-agent ignored unknown event subtypes", "count", unknownSubtypeCount)
+		}
+
+		if unknownTypes.total > 0 {
+			// Same contract one level up, and the higher-value signal of the
+			// two: an unhandled top-level type means whole events — possibly
+			// every tool call in the run — never reached the transcript. Read
+			// this together with tool_use_count in the summary above.
+			b.cfg.Logger.Warn("cursor-agent ignored unknown event types",
+				"count", unknownTypes.total,
+				"types", unknownTypes.summary(),
+			)
 		}
 
 		b.cfg.Logger.Info("cursor-agent finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
@@ -443,25 +484,100 @@ func observedCursorEventType(value string) string {
 	return value
 }
 
-func (b *cursorBackend) handleCursorAssistant(evt *cursorStreamEvent, ch chan<- Message, output *strings.Builder) {
+// cursorBenignEventTypes are top-level events the parser knowingly does not
+// forward and which are NOT evidence of protocol drift. `user` is the CLI
+// echoing our own prompt back on the stream (present in every recorded run), so
+// tallying it would fire the unknown-type warning on every single task — and a
+// warning that always fires is a warning nobody reads.
+var cursorBenignEventTypes = map[string]struct{}{
+	"user": {},
+}
+
+func cursorBenignEventType(eventType string) bool {
+	_, ok := cursorBenignEventTypes[strings.TrimSpace(eventType)]
+	return ok
+}
+
+// cursorUnknownTypeCardinalityCap bounds how many distinct unknown type names
+// the tally retains. A stream emitting novel type names (or garbage that still
+// parses as JSON) must not grow the map without limit inside a long-running
+// daemon; names past the cap collapse into one overflow bucket.
+const cursorUnknownTypeCardinalityCap = 16
+
+// cursorUnknownTypeOverflowKey holds the counts that exceeded the cardinality
+// cap. The parentheses cannot collide with a real type name: observedCursorEventType
+// only ever returns identifier characters, "unknown", or "invalid".
+const cursorUnknownTypeOverflowKey = "(overflow)"
+
+// cursorUnknownTypeTally counts top-level event types the parser does not
+// handle. It is the signal that separates "the CLI renamed an event we rely on"
+// from "the model genuinely used no tools" — before this existed, a renamed
+// `tool_call` fell through the type switch and the run reported success with
+// tool_use_count=0 and no diagnostic whatsoever, which is exactly what a
+// tool-free run looks like (MUL-5434).
+//
+// Only normalized identifiers and counts are retained, never payload content,
+// so the tally is safe to log beside the rest of the protocol summary.
+type cursorUnknownTypeTally struct {
+	total  int
+	counts map[string]int
+}
+
+func (t *cursorUnknownTypeTally) observe(eventType string) {
+	t.total++
+	if t.counts == nil {
+		t.counts = make(map[string]int, 4)
+	}
+	key := observedCursorEventType(eventType)
+	if _, seen := t.counts[key]; !seen && len(t.counts) >= cursorUnknownTypeCardinalityCap {
+		key = cursorUnknownTypeOverflowKey
+	}
+	t.counts[key]++
+}
+
+// summary renders the tally as a stable, sorted "name=count" list (e.g.
+// "reasoning=9,tool_calls=6") so it can be grepped and diffed across runs.
+func (t *cursorUnknownTypeTally) summary() string {
+	if len(t.counts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(t.counts))
+	for key := range t.counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, t.counts[key]))
+	}
+	return strings.Join(parts, ",")
+}
+
+// handleCursorAssistant forwards one assistant event's content blocks and
+// returns how many bytes of model-authored text it appended to output. The
+// caller tracks that separately from output.Len(), which also absorbs the
+// terminal result text.
+func (b *cursorBackend) handleCursorAssistant(evt *cursorStreamEvent, ch chan<- Message, output *strings.Builder) int {
 	if evt.Message == nil {
-		return
+		return 0
 	}
 
 	var content cursorAssistantMessage
 	if err := json.Unmarshal(evt.Message, &content); err != nil {
-		return
+		return 0
 	}
 
 	// Note: per-message usage in assistant events is intentionally ignored.
 	// Token usage is taken exclusively from "result" events (session totals)
 	// to avoid double-counting.
 
+	written := 0
 	for _, block := range content.Content {
 		switch block.Type {
 		case "output_text", "text":
 			if block.Text != "" {
 				output.WriteString(block.Text)
+				written += len(block.Text)
 				trySend(ch, Message{Type: MessageText, Content: block.Text})
 			}
 		case "thinking":
@@ -481,6 +597,7 @@ func (b *cursorBackend) handleCursorAssistant(evt *cursorStreamEvent, ch chan<- 
 			})
 		}
 	}
+	return written
 }
 
 // cursorThinkingStream turns the CLI's `thinking` event sequence into the

@@ -102,6 +102,16 @@ type streamProtocolObservation struct {
 	scannerError               bool
 	lastEventType              string
 	anthropicBaseURLConfigured bool
+	// unknownEventTypeCount / unknownEventTypes / unknownSubtypeCount report
+	// stream events the parser did not turn into messages. They belong on this
+	// line rather than only in a separate warning because the diagnosis needs
+	// them side by side with toolUseCount: "tools=0 AND unknown types present"
+	// means a renamed upstream event ate the tool rows, while "tools=0 and
+	// nothing unknown" means the model really used no tools. Set by providers
+	// that track them; zero elsewhere.
+	unknownEventTypeCount int
+	unknownEventTypes     string
+	unknownSubtypeCount   int
 }
 
 // logStreamProtocolObservation records only protocol metadata. It deliberately
@@ -124,6 +134,9 @@ func logStreamProtocolObservation(logger *slog.Logger, obs streamProtocolObserva
 		"last_assistant_bytes", obs.lastAssistantBytes,
 		"scanner_error", obs.scannerError,
 		"last_event_type", obs.lastEventType,
+		"unknown_event_type_count", obs.unknownEventTypeCount,
+		"unknown_event_types", obs.unknownEventTypes,
+		"unknown_subtype_count", obs.unknownSubtypeCount,
 		"anthropic_base_url_configured", obs.anthropicBaseURLConfigured,
 	)
 }
