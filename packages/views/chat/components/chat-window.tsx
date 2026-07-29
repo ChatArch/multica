@@ -726,7 +726,10 @@ export function ChatWindow() {
 
   const isVisible = isOpen && (isExpanded || boundsReady);
 
-  const containerClass = "absolute bottom-2 right-2 z-50 flex flex-col overflow-hidden rounded-xl bg-surface-raised shadow-[var(--floating-shadow)] ring-1 ring-surface-border";
+  // `@container`: the window is user-resizable from 360px to 90% of the
+  // viewport, so the chat body's gutter (CHAT_GUTTER) has to key off the
+  // window's own width, not the page behind it.
+  const containerClass = "absolute bottom-2 right-2 z-50 flex flex-col overflow-hidden rounded-xl bg-surface-raised shadow-[var(--floating-shadow)] ring-1 ring-surface-border @container";
   const containerStyle: React.CSSProperties = {
     transformOrigin: "bottom right",
     pointerEvents: isOpen ? "auto" : "none",

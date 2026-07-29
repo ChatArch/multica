@@ -223,8 +223,10 @@ export function ChatPage() {
   // banner + input. Identical composition to the floating window's body, so a
   // brand-new chat (no active session) shows the agent-aware empty state + input.
   // No compose-box agent selector — the agent is fixed when the chat starts.
+  // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
+  // THIS pane, which the user resizes independently of the browser window.
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="flex flex-1 flex-col min-h-0 @container">
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
