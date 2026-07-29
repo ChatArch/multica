@@ -2578,7 +2578,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     adding them to things (MUL-5483). */}
                 {isSubscribed && subscriptionReason === "delegated" && (
                   <Tooltip>
-                    <TooltipTrigger className="text-xs text-muted-foreground cursor-default">
+                    {/* Quiet surface, not plain body text: this is metadata
+                        explaining a state, and must not read as a second
+                        action sitting next to Unsubscribe. */}
+                    <TooltipTrigger className="cursor-default rounded-full bg-muted px-2 py-0.5 text-[11px] leading-5 text-muted-foreground">
                       {t(($) => $.detail.delegated_subscription_badge)}
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-64">

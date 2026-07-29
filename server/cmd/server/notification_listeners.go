@@ -275,7 +275,7 @@ func notifySubscribers(
 	body string,
 	details []byte,
 ) {
-	notified := notifyIssueSubscribers(ctx, queries, bus,
+	notified, tierSuppressed := notifyIssueSubscribers(ctx, queries, bus,
 		issueID, issueID, issueStatus, workspaceID, e, exclude,
 		notifType, severity, title, body, details)
 
@@ -296,11 +296,21 @@ func notifySubscribers(
 	}
 
 	// Merge already-notified IDs into exclude set for parent subscribers.
-	parentExclude := make(map[string]bool, len(exclude)+len(notified))
+	parentExclude := make(map[string]bool, len(exclude)+len(notified)+len(tierSuppressed))
 	for id := range exclude {
 		parentExclude[id] = true
 	}
 	for id := range notified {
+		parentExclude[id] = true
+	}
+	// Recipients the delegated tier just filtered out for THIS child must not
+	// get the same event smuggled back in through the parent's subscriber list.
+	// The common shape is exactly that: the human directly created the parent
+	// (reason='creator', full delivery) while their agent filed the children
+	// (reason='delegated', reduced). Without this the tier suppresses nothing
+	// in the one case it exists for — an agent-built tree under a parent the
+	// human is watching (MUL-5483).
+	for id := range tierSuppressed {
 		parentExclude[id] = true
 	}
 
@@ -316,7 +326,11 @@ func notifySubscribers(
 // subscriberIssueID, but creates inbox items pointing to targetIssueID.
 // This allows querying subscribers from a parent issue while the notification
 // links to the sub-issue where the change actually occurred.
-// Returns the set of member IDs that were notified.
+//
+// Returns two sets of member IDs: those that were notified, and those the
+// delegated delivery tier deliberately filtered out. The caller propagates the
+// second set into the parent bubble so a suppressed event cannot be
+// re-delivered through an ancestor subscription (see notifySubscribers).
 func notifyIssueSubscribers(
 	ctx context.Context,
 	queries *db.Queries,
@@ -332,14 +346,15 @@ func notifyIssueSubscribers(
 	title string,
 	body string,
 	details []byte,
-) map[string]bool {
+) (map[string]bool, map[string]bool) {
 	notified := map[string]bool{}
+	tierSuppressed := map[string]bool{}
 
 	subs, err := queries.ListIssueSubscribers(ctx, parseUUID(subscriberIssueID))
 	if err != nil {
 		slog.Error("failed to list subscribers for notification",
 			"issue_id", subscriberIssueID, "error", err)
-		return notified
+		return notified, tierSuppressed
 	}
 
 	// Batch-load notification preferences for all member subscribers.
@@ -371,6 +386,13 @@ func notifyIssueSubscribers(
 
 		// Skip if this notification type is muted by the user
 		if prefs, ok := userPrefs[subID]; ok && isNotifMuted(prefs, notifType) {
+			continue
+		}
+
+		// Delegated subscriptions deliver a narrower event set than direct
+		// ones — see deliverToSubscriber.
+		if !deliverToSubscriber(sub.Reason, notifType, issueStatus) {
+			tierSuppressed[subID] = true
 			continue
 		}
 
@@ -411,7 +433,7 @@ func notifyIssueSubscribers(
 		})
 	}
 
-	return notified
+	return notified, tierSuppressed
 }
 
 // notifyDirect creates an inbox item for a specific recipient. Skips if the

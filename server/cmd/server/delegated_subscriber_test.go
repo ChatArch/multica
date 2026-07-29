@@ -298,6 +298,84 @@ func TestDeliverToSubscriber_DelegatedTier(t *testing.T) {
 	}
 }
 
+// TestDelegatedTier_NotBypassedByParentBubble is the case a unit test of
+// deliverToSubscriber alone cannot catch, and the one that actually occurs: the
+// human directly created the PARENT (reason='creator', full delivery) while
+// their agent filed the children (reason='delegated', reduced). status_changed
+// bubbles from a child to the parent's subscribers, so without propagating the
+// tier decision the bubble re-delivers exactly what the child's tier suppressed
+// — and the noise control does nothing in the only shape it exists for.
+func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
+	ctx := context.Background()
+	queries := db.New(testPool)
+	bus := events.New()
+
+	agentID, runtimeID := firstFixtureAgent(t)
+	parentID := createTestIssue(t, testWorkspaceID, testUserID)
+	t.Cleanup(func() { cleanupTestIssue(t, parentID) })
+
+	// Human is a DIRECT subscriber of the parent.
+	if err := queries.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
+		IssueID:  util.MustParseUUID(parentID),
+		UserType: "member",
+		UserID:   util.MustParseUUID(testUserID),
+		Reason:   "creator",
+	}); err != nil {
+		t.Fatalf("subscribe parent: %v", err)
+	}
+
+	// Agent files a child; the delegated rule subscribes the human to it.
+	registerSubscriberListeners(bus, queries)
+	task := createAgentTaskWithOriginator(t, agentID, runtimeID, util.MustParseUUID(testUserID))
+	childID := createAgentOriginIssue(t, agentID, "agent_create", task, util.MustParseUUID(parentID))
+	publishAgentIssueCreated(bus, childID, agentID)
+
+	if got := subscriberReason(t, queries, childID, "member", testUserID); got != "delegated" {
+		t.Fatalf("child subscription reason = %q, want delegated", got)
+	}
+
+	countInbox := func() int {
+		t.Helper()
+		var n int
+		if err := testPool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM inbox_item WHERE recipient_type='member' AND recipient_id=$1 AND issue_id=$2`,
+			testUserID, childID,
+		).Scan(&n); err != nil {
+			t.Fatalf("count inbox: %v", err)
+		}
+		return n
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE issue_id = $1`, childID)
+	})
+
+	// The new status travels as notifySubscribers' issueStatus argument, not on
+	// the event, so one agent-actored event value serves every transition. The
+	// agent actor matters: notifyIssueSubscribers skips the actor, and a
+	// human-actored event would skip the very recipient under test.
+	agentEvent := events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: testWorkspaceID,
+		ActorType:   "agent",
+		ActorID:     agentID,
+	}
+
+	// Routine forward progress on the child: suppressed on the child AND not
+	// smuggled in through the parent.
+	notifySubscribers(ctx, queries, bus, childID, "in_progress", testWorkspaceID,
+		agentEvent, nil, "status_changed", "info", "child", "", emptyDetails)
+	if n := countInbox(); n != 0 {
+		t.Fatalf("routine child progress reached the inbox %d time(s) — the parent bubble bypassed the delegated tier", n)
+	}
+
+	// A status that genuinely wants the human still gets through, exactly once.
+	notifySubscribers(ctx, queries, bus, childID, "in_review", testWorkspaceID,
+		agentEvent, nil, "status_changed", "info", "child", "", emptyDetails)
+	if n := countInbox(); n != 1 {
+		t.Fatalf("expected exactly 1 inbox row for the in_review handoff, got %d", n)
+	}
+}
+
 // TestDeliverToSubscriber_UnknownReasonIsDirect: 'reason' is an open vocabulary
 // (a new rule can add one without a migration touching this file). An
 // unrecognized reason must fall back to FULL delivery — silently dropping a
