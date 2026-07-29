@@ -192,10 +192,10 @@ func TestWindowsOpenclawShimColocatedNodeIsCredited(t *testing.T) {
 // context check keeps this correct.
 //
 // The shim waits only briefly: execOpenclawCLI sets no WaitDelay, so
-// cmd.Output() stays parked until the descendant closes stdout, i.e. the call
-// returns only once that descendant has exited. A long wait would just make
-// this test hostage to it, not leave a process behind — the ~2s observed in CI
-// is the ping finishing, not a leak.
+// cmd.Output() stays parked until the output pipes os/exec manages for it
+// (stdout and stderr both) reach EOF. `ping` inherits those write ends and
+// holds them until it exits, so the ~2s observed in CI is it finishing rather
+// than a process left behind; a long wait would only make the test slower.
 func TestWindowsOpenclawShimTimeoutIsNotMisdiagnosed(t *testing.T) {
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "openclaw.cmd")

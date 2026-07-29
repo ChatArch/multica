@@ -54,12 +54,14 @@ const openclawCLITimeout = 5 * time.Second
 
 // OpenclawConfigPrep is the input to prepareOpenclawConfig. Only OpenclawBin
 // is meaningful in production — Timeout is here for tests that need a tight
-// cap to assert error paths.
+// deadline to assert error paths.
 type OpenclawConfigPrep struct {
 	// OpenclawBin is the openclaw CLI binary to invoke for config introspection.
 	// Empty means resolve "openclaw" from PATH at exec time.
 	OpenclawBin string
-	// Timeout caps each CLI invocation. Zero falls back to openclawCLITimeout.
+	// Timeout sets the context deadline for each CLI invocation — not a
+	// guaranteed cap on how long the call takes; see openclawCLITimeout. Zero
+	// falls back to openclawCLITimeout.
 	Timeout time.Duration
 	// McpConfig is the agent's saved `mcp_config` JSON (Claude-style
 	// `{"mcpServers": {"<name>": {...}}}`). When non-null the wrapper pins
