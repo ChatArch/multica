@@ -24,7 +24,10 @@ export type InboxItemType =
   // Quick create whose outcome could not be verified. Distinct from
   // quick_create_failed because it must NOT be rendered with failure framing:
   // the issue may actually have been created.
-  | "quick_create_unconfirmed";
+  | "quick_create_unconfirmed"
+  // One roll-up for a whole agent-built sub-tree finishing, delivered to
+  // delegated subscribers in place of one notification per child (MUL-5483).
+  | "subtree_settled";
 
 /**
  * One workspace's unread inbox count in the cross-workspace summary

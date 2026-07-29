@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -18,7 +19,6 @@ type mention struct {
 	Type string // "member", "agent", "issue", or "all"
 	ID   string // user_id, agent_id, issue_id, or "all"
 }
-
 
 // statusLabels maps DB status values to human-readable labels for notifications.
 var statusLabels = map[string]string{
@@ -85,37 +85,57 @@ var delegatedAlwaysNotifTypes = map[string]bool{
 	"agent_blocked": true,
 }
 
-// delegatedStatusNotify are the statuses whose ARRIVAL is worth an inbox item
-// for a delegated subscriber. A delegated human did not ask for this specific
-// issue — their agent decided to file it under a broader mandate — so routine
-// forward progress (todo → in_progress) is churn, while "needs your review",
-// "finished", and "stuck" are the states that actually want a human.
+// settledChildStatuses are the statuses that mean "this piece of work is
+// finished". Note in_review is included: in Multica's agent flow an agent parks
+// completed work in in_review, so it — not done — is the dominant completion
+// state, and the one that actually fans out across a tree.
 //
-// This is the same judgment the platform already made for child-done fan-out,
-// where firing on every child was the reported defect (#4320) and the fix was to
-// signal at the barrier instead (MUL-3508). Subscribing a human to a 30-child
-// agent-built tree without this filter would re-create that cascade, one inbox
-// row per child per transition.
-var delegatedStatusNotify = map[string]bool{
+// Deliberately NOT reusing handler.isTerminalChildStatus (done/cancelled): that
+// serves the child-done system comment, which is about closing a stage. This
+// set answers a different question — "did this child stop needing work" — and
+// conflating them would silently drop the in_review cascade, which is the
+// common case.
+var settledChildStatuses = map[string]bool{
 	"in_review": true,
 	"done":      true,
 	"cancelled": true,
-	"blocked":   true,
 }
 
 // deliverToSubscriber reports whether a subscriber row should receive this
 // notification type. Direct subscriptions (creator / assignee / commenter /
 // mentioned / manual / autopilot) are unchanged — they opted in to this issue,
 // explicitly or by acting on it. Only the delegated tier is narrowed.
-func deliverToSubscriber(reason, notifType, issueStatus string) bool {
+//
+// isChild says whether the issue has a parent, which is what separates "the
+// thing you delegated finished" from "one of N pieces finished":
+//
+//   - blocked always delivers. It stalls the work until a human looks, and it
+//     does not fan out across a healthy tree.
+//   - a settled status on a ROOT issue delivers — there is nothing above it to
+//     roll into.
+//   - a settled status on a CHILD is suppressed here and rolls up instead, via
+//     notifyDelegatedSubtreeSettled, into ONE notification when the last open
+//     sibling settles. This is the barrier the design promised; an allowlist
+//     alone still produced one inbox row per child, which is the same
+//     fire-on-every-child cascade #4320 reported and MUL-3508 fixed for the
+//     child-done fan-out.
+//   - everything else (routine progress, comment churn, field edits) is churn
+//     for someone who never asked for this specific issue.
+func deliverToSubscriber(reason, notifType, issueStatus string, isChild bool) bool {
 	if reason != "delegated" {
 		return true
 	}
 	if delegatedAlwaysNotifTypes[notifType] {
 		return true
 	}
-	if notifType == "status_changed" {
-		return delegatedStatusNotify[issueStatus]
+	if notifType != "status_changed" {
+		return false
+	}
+	if issueStatus == "blocked" {
+		return true
+	}
+	if settledChildStatuses[issueStatus] {
+		return !isChild
 	}
 	return false
 }
@@ -123,19 +143,23 @@ func deliverToSubscriber(reason, notifType, issueStatus string) bool {
 // notifTypeToGroup maps each InboxItemType to a user-configurable preference
 // group. Types not in this map are always delivered (not configurable).
 var notifTypeToGroup = map[string]string{
-	"issue_assigned":  "assignments",
-	"unassigned":      "assignments",
+	"issue_assigned":   "assignments",
+	"unassigned":       "assignments",
 	"assignee_changed": "assignments",
-	"status_changed":  "status_changes",
-	"new_comment":     "comments",
-	"mentioned":       "comments",
-	"priority_changed": "updates",
+	"status_changed":   "status_changes",
+	// The delegated tier's stand-in for per-child status_changed, so it belongs to
+	// the same preference group: muting status changes must mute the roll-up too,
+	// or the mute leaks.
+	"subtree_settled":    "status_changes",
+	"new_comment":        "comments",
+	"mentioned":          "comments",
+	"priority_changed":   "updates",
 	"start_date_changed": "updates",
-	"due_date_changed": "updates",
-	"task_completed":  "agent_activity",
-	"task_failed":     "agent_activity",
-	"agent_blocked":   "agent_activity",
-	"agent_completed": "agent_activity",
+	"due_date_changed":   "updates",
+	"task_completed":     "agent_activity",
+	"task_failed":        "agent_activity",
+	"agent_blocked":      "agent_activity",
+	"agent_completed":    "agent_activity",
 }
 
 // isNotifMuted returns true if the given notification type is muted for a user
@@ -275,23 +299,29 @@ func notifySubscribers(
 	body string,
 	details []byte,
 ) {
+	// The delegated tier treats a child differently from a root (see
+	// deliverToSubscriber), and the parent bubble needs the same row. Load it
+	// once, and only for the types that can actually use it — every other
+	// notification keeps its previous single-query cost.
+	var issue db.Issue
+	var haveIssue bool
+	if parentBubbleNotifTypes[notifType] {
+		loaded, err := queries.GetIssue(ctx, parseUUID(issueID))
+		if err != nil {
+			slog.Error("failed to get issue for parent notification",
+				"issue_id", issueID, "error", err)
+		} else {
+			issue, haveIssue = loaded, true
+		}
+	}
+	isChild := haveIssue && issue.ParentIssueID.Valid
+
 	notified, tierSuppressed := notifyIssueSubscribers(ctx, queries, bus,
 		issueID, issueID, issueStatus, workspaceID, e, exclude,
-		notifType, severity, title, body, details)
+		notifType, severity, title, body, details, isChild)
 
 	// Only a small allowlist of event types bubbles to parent subscribers.
-	if !parentBubbleNotifTypes[notifType] {
-		return
-	}
-
-	// Also notify parent issue subscribers if this is a sub-issue.
-	issue, err := queries.GetIssue(ctx, parseUUID(issueID))
-	if err != nil {
-		slog.Error("failed to get issue for parent notification",
-			"issue_id", issueID, "error", err)
-		return
-	}
-	if !issue.ParentIssueID.Valid {
+	if !parentBubbleNotifTypes[notifType] || !isChild {
 		return
 	}
 
@@ -319,7 +349,7 @@ func notifySubscribers(
 	parentID := util.UUIDToString(issue.ParentIssueID)
 	notifyIssueSubscribers(ctx, queries, bus,
 		parentID, issueID, issueStatus, workspaceID, e, parentExclude,
-		notifType, severity, title, body, details)
+		notifType, severity, title, body, details, isChild)
 }
 
 // notifyIssueSubscribers sends inbox notifications to subscribers of
@@ -346,6 +376,7 @@ func notifyIssueSubscribers(
 	title string,
 	body string,
 	details []byte,
+	isChild bool,
 ) (map[string]bool, map[string]bool) {
 	notified := map[string]bool{}
 	tierSuppressed := map[string]bool{}
@@ -391,14 +422,8 @@ func notifyIssueSubscribers(
 
 		// Delegated subscriptions deliver a narrower event set than direct
 		// ones — see deliverToSubscriber.
-		if !deliverToSubscriber(sub.Reason, notifType, issueStatus) {
+		if !deliverToSubscriber(sub.Reason, notifType, issueStatus, isChild) {
 			tierSuppressed[subID] = true
-			continue
-		}
-
-		// Delegated subscriptions deliver a narrower event set than direct
-		// ones — see deliverToSubscriber.
-		if !deliverToSubscriber(sub.Reason, notifType, issueStatus) {
 			continue
 		}
 
@@ -434,6 +459,122 @@ func notifyIssueSubscribers(
 	}
 
 	return notified, tierSuppressed
+}
+
+// notifyDelegatedSubtreeSettled emits ONE roll-up notification to a parent's
+// delegated subscribers when the last open child settles — the barrier that
+// makes the delegated tier's per-child suppression safe rather than lossy.
+//
+// Without it, suppressing per-child completion would simply lose the signal;
+// with it, a 30-child tree produces one "your agent finished this" instead of
+// thirty. It fires only on the transition that CLOSES the barrier, so a tree
+// that settles one child at a time still notifies exactly once.
+//
+// Scope is deliberately narrow: only reason='delegated' members of the PARENT.
+// Direct subscribers already receive per-child status changes through the
+// existing bubble, and changing that is a separate product decision.
+func notifyDelegatedSubtreeSettled(
+	ctx context.Context,
+	queries *db.Queries,
+	bus *events.Bus,
+	e events.Event,
+	workspaceID string,
+	child handler.IssueResponse,
+	prevStatus string,
+) {
+	if child.ParentIssueID == nil || *child.ParentIssueID == "" {
+		return
+	}
+	// Only the entering transition closes a barrier. A settled → settled edit
+	// (in_review → done) must not re-fire the roll-up.
+	if settledChildStatuses[prevStatus] || !settledChildStatuses[child.Status] {
+		return
+	}
+
+	parentID := parseUUID(*child.ParentIssueID)
+	siblings, err := queries.ListChildIssues(ctx, parentID)
+	if err != nil {
+		slog.Error("subtree roll-up: failed to list siblings",
+			"parent_id", *child.ParentIssueID, "error", err)
+		return
+	}
+	if len(siblings) == 0 {
+		return
+	}
+	for _, s := range siblings {
+		if !settledChildStatuses[s.Status] {
+			return // barrier still open
+		}
+	}
+
+	parent, err := queries.GetIssue(ctx, parentID)
+	if err != nil {
+		slog.Error("subtree roll-up: failed to load parent",
+			"parent_id", *child.ParentIssueID, "error", err)
+		return
+	}
+
+	subs, err := queries.ListIssueSubscribers(ctx, parentID)
+	if err != nil {
+		slog.Error("subtree roll-up: failed to list parent subscribers",
+			"parent_id", *child.ParentIssueID, "error", err)
+		return
+	}
+
+	var memberIDs []string
+	for _, sub := range subs {
+		if sub.UserType == "member" && sub.Reason == "delegated" {
+			memberIDs = append(memberIDs, util.UUIDToString(sub.UserID))
+		}
+	}
+	if len(memberIDs) == 0 {
+		return
+	}
+	userPrefs := loadUserPrefs(ctx, queries, workspaceID, memberIDs)
+
+	details, _ := json.Marshal(map[string]any{
+		"parent_issue_id": *child.ParentIssueID,
+		"child_count":     len(siblings),
+	})
+	body := fmt.Sprintf("All %d sub-issues have finished.", len(siblings))
+
+	for _, subID := range memberIDs {
+		if subID == e.ActorID {
+			continue
+		}
+		if prefs, ok := userPrefs[subID]; ok && isNotifMuted(prefs, "subtree_settled") {
+			continue
+		}
+		item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+			WorkspaceID:   parseUUID(workspaceID),
+			RecipientType: "member",
+			RecipientID:   parseUUID(subID),
+			Type:          "subtree_settled",
+			Severity:      "info",
+			// Point at the PARENT: the roll-up is about the tree, and the parent
+			// is where the user can see every child at once.
+			IssueID:   parentID,
+			Title:     parent.Title,
+			Body:      util.StrToText(body),
+			ActorType: util.StrToText(e.ActorType),
+			ActorID:   optionalUUID(e.ActorID),
+			Details:   details,
+		})
+		if err != nil {
+			slog.Error("subtree roll-up: inbox write failed",
+				"subscriber_id", subID, "error", err)
+			continue
+		}
+		resp := inboxItemToResponse(item)
+		resp["issue_status"] = parent.Status
+		bus.Publish(events.Event{
+			Type:        protocol.EventInboxNew,
+			WorkspaceID: workspaceID,
+			ActorType:   e.ActorType,
+			ActorID:     e.ActorID,
+			Payload:     map[string]any{"item": resp},
+		})
+	}
 }
 
 // notifyDirect creates an inbox item for a specific recipient. Skips if the
@@ -735,6 +876,11 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 				nil, "status_changed", "info",
 				issue.Title, "",
 				statusDetails)
+
+			// Per-child completion is suppressed for delegated subscribers; this
+			// is where it comes back as a single signal once the whole set is
+			// settled (MUL-5483 review follow-up).
+			notifyDelegatedSubtreeSettled(ctx, queries, bus, e, e.WorkspaceID, issue, prevStatus)
 
 			// When the issue progresses past the failure (in_review / done /
 			// cancelled), retire any stale task_failed inbox rows so the

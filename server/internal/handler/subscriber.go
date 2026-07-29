@@ -146,30 +146,41 @@ func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var err error
+	// Every issue this call actually left. The subtree variant reports the whole
+	// set so each one gets its own broadcast: a client with a CHILD issue open
+	// never sees the root's event, and would otherwise keep showing a
+	// subscription the server has already retired.
+	removed := []string{issueID}
 	if req.Subtree {
-		err = h.Queries.UnsubscribeFromIssueSubtree(r.Context(), db.UnsubscribeFromIssueSubtreeParams{
-			IssueID:  issue.ID,
+		ids, err := h.Queries.UnsubscribeFromIssueSubtree(r.Context(), db.UnsubscribeFromIssueSubtreeParams{
+			ID:       issue.ID,
 			UserType: targetUserType,
 			UserID:   parseUUID(targetUserID),
 		})
-	} else {
-		err = h.Queries.RemoveIssueSubscriber(r.Context(), db.RemoveIssueSubscriberParams{
-			IssueID:  issue.ID,
-			UserType: targetUserType,
-			UserID:   parseUUID(targetUserID),
-		})
-	}
-	if err != nil {
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to unsubscribe")
+			return
+		}
+		removed = removed[:0]
+		for _, id := range ids {
+			removed = append(removed, uuidToString(id))
+		}
+	} else if err := h.Queries.RemoveIssueSubscriber(r.Context(), db.RemoveIssueSubscriberParams{
+		IssueID:  issue.ID,
+		UserType: targetUserType,
+		UserID:   parseUUID(targetUserID),
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to unsubscribe")
 		return
 	}
 
-	h.publish(protocol.EventSubscriberRemoved, workspaceID, callerActorType, callerActorID, map[string]any{
-		"issue_id":  issueID,
-		"user_type": targetUserType,
-		"user_id":   targetUserID,
-	})
+	for _, id := range removed {
+		h.publish(protocol.EventSubscriberRemoved, workspaceID, callerActorType, callerActorID, map[string]any{
+			"issue_id":  id,
+			"user_type": targetUserType,
+			"user_id":   targetUserID,
+		})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
 }

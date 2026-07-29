@@ -42,13 +42,22 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
           issueKeys.subscribers(issueId),
           (old) => {
             if (!old) return old;
-            if (
-              old.some(
-                (s) =>
-                  s.user_id === p.user_id && s.user_type === p.user_type,
-              )
-            )
-              return old;
+            const existing = old.find(
+              (s) => s.user_id === p.user_id && s.user_type === p.user_type,
+            );
+            // The server re-broadcasts for an existing subscriber only when the
+            // reason changed — a delegate who got assigned, mentioned, or
+            // commented is upgraded out of the reduced tier. Patch it rather
+            // than bailing, or the "Watching via agent" badge keeps claiming a
+            // delegation that no longer applies (MUL-5483).
+            if (existing) {
+              if (existing.reason === p.reason) return old;
+              return old.map((s) =>
+                s.user_id === p.user_id && s.user_type === p.user_type
+                  ? { ...s, reason: p.reason as IssueSubscriber["reason"] }
+                  : s,
+              );
+            }
             return [
               ...old,
               {

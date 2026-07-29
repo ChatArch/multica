@@ -226,7 +226,7 @@ func extractIssueFields(v any) (handler.IssueResponse, bool) {
 // addSubscriber adds a user as an issue subscriber and publishes a
 // subscriber:added event for real-time frontend sync.
 func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, userType, userID, reason string) {
-	err := queries.AddIssueSubscriber(context.Background(), db.AddIssueSubscriberParams{
+	affected, err := queries.AddIssueSubscriber(context.Background(), db.AddIssueSubscriberParams{
 		IssueID:  parseUUID(issueID),
 		UserType: userType,
 		UserID:   parseUUID(userID),
@@ -240,6 +240,14 @@ func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, u
 			"reason", reason,
 			"error", err,
 		)
+		return
+	}
+	// Nothing changed — either an identical active row already existed, or the
+	// insert hit an opt-out tombstone and was correctly refused. Broadcasting
+	// subscriber:added anyway made every open client insert a subscriber the DB
+	// does not have: the UI claimed the user was watching while they stayed
+	// unsubscribed and kept receiving nothing.
+	if affected == 0 {
 		return
 	}
 

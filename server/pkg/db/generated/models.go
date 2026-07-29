@@ -698,6 +698,7 @@ type IssueSubscriber struct {
 	Reason         string             `json:"reason"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UnsubscribedAt pgtype.Timestamptz `json:"unsubscribed_at"`
+	OptOutScope    pgtype.Text        `json:"opt_out_scope"`
 }
 
 type IssueToLabel struct {
