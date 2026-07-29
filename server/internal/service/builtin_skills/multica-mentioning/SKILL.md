@@ -121,7 +121,10 @@ These are all silent no-ops — no error, no run:
 - **A hex-ish but wrong UUID.** A well-formed-looking UUID that no entity owns
   DOES parse, then no-ops at lookup: the workspace-scoped query finds no agent
   and the loop `continue`s. Same agent-visible result (nothing fires), but the
-  mechanism is the lookup miss, not a parse failure.
+  mechanism is the lookup miss, not a parse failure. An id that matches the
+  pattern but is NOT a valid UUID at all (`mention://agent/-`) is rejected by
+  the id parser itself and reported as a blocked mention with the same
+  enumeration-safe reason code — never an error response.
 - **An already-pending task.** Even a correct `@agent`/`@squad` is skipped when
   the target already has a pending task on this issue
   (`HasPendingTaskForIssueAndAgent` → `continue`). Edit preview is the only
