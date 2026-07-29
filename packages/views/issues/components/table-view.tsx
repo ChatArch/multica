@@ -675,7 +675,7 @@ export function InlineTitle({
 
   return (
     <div
-      className="flex min-w-0 items-center gap-1.5"
+      className="relative flex min-w-0 items-center gap-1.5"
       style={{ paddingLeft: row.depth * 18 }}
       // Record whether the gesture began while editing (mousedown fires before
       // the blur that commits), then swallow that click in the capture phase —
@@ -742,29 +742,43 @@ export function InlineTitle({
           >
             {row.issue.title}
           </button>
-          <button
-            type="button"
-            aria-label={createSubIssueLabel}
-            className="shrink-0 rounded p-1 text-muted-foreground/60 opacity-0 hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCreateSubIssue();
-            }}
-          >
-            <Plus className="size-3" />
-          </button>
-          <button
-            type="button"
-            aria-label={renameLabel}
-            className="shrink-0 rounded p-1 text-muted-foreground/60 opacity-0 hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-            onClick={(event) => {
-              event.stopPropagation();
-              setDraft(row.issue.title);
-              onEditingChange(true);
-            }}
-          >
-            <Pencil className="size-3" />
-          </button>
+          {/* Lifted out of the flex flow, the way SidebarMenuAction is. Laid
+            * out inline these two reserved ~40px of the title column for
+            * buttons that are invisible until hovered — and title is the
+            * column with the least room to spare. The gradient fades the text
+            * running underneath rather than letting the icons sit on top of
+            * it; the sidebar has no need for one because its labels are short,
+            * but a title runs to the cell's edge. focus-within keeps them
+            * reachable by keyboard, where hover never fires. */}
+          {/* The fade has to be whatever the cell is painted with at the
+            * moment the actions show, and a hovered row is not the resting
+            * background — pinned cells switch to the muted mix on hover, so
+            * the gradient follows. */}
+          <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 bg-gradient-to-l from-background from-70% to-transparent pr-1 pl-8 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:from-[color-mix(in_oklab,var(--muted)_50%,var(--background))] group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+            <button
+              type="button"
+              aria-label={createSubIssueLabel}
+              className="rounded p-1 text-muted-foreground/60 hover:bg-accent hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                onCreateSubIssue();
+              }}
+            >
+              <Plus className="size-3" />
+            </button>
+            <button
+              type="button"
+              aria-label={renameLabel}
+              className="rounded p-1 text-muted-foreground/60 hover:bg-accent hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                setDraft(row.issue.title);
+                onEditingChange(true);
+              }}
+            >
+              <Pencil className="size-3" />
+            </button>
+          </span>
         </>
       )}
     </div>
@@ -2338,6 +2352,14 @@ export function TableView({
         // pointer up out of its own strip — same constraint the desktop tab bar
         // puts on tab reordering.
         modifiers={[restrictToHorizontalAxis]}
+        // Modifiers constrain the drag's movement but not its auto-scrolling,
+        // which reads raw pointer coordinates: drifting a few pixels vertically
+        // while dragging a header sent the rows scrolling underneath it. Zero
+        // on y removes an axis the gesture cannot act on. On x it stays, since
+        // a table wider than its viewport needs it to reach a distant slot, but
+        // the default 0.2 arms it a fifth of the way in from either edge, which
+        // is most of a wide header.
+        autoScroll={{ threshold: { x: 0.05, y: 0 } }}
         onDragEnd={handleDragEnd}
       >
         <SortableContext
