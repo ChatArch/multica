@@ -72,7 +72,7 @@ export function FileViewer({
           ? t(($) => $.file_viewer.markdown_placeholder)
           : t(($) => $.file_viewer.raw_placeholder)
       }
-      className="h-full min-h-full resize-none rounded-none border-0 px-6 py-5 font-mono text-sm leading-relaxed read-only:cursor-default focus-visible:ring-0 sm:px-8"
+      className="h-full min-h-full resize-none rounded-none border-0 px-6 py-5 font-mono text-body leading-relaxed read-only:cursor-default focus-visible:ring-0 sm:px-8"
     />
   );
 }

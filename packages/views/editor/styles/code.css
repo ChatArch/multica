@@ -11,7 +11,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0;
-  font-size: 0.875rem;
+  font-size: var(--text-body);
   background: color-mix(in srgb, var(--foreground) 3%, transparent);
   border: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
   color: color-mix(in srgb, var(--foreground) 75%, transparent);
@@ -48,7 +48,7 @@ pre.rich-text-editor code {
   border: none;
   color: var(--foreground);
   padding: 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-label);
   line-height: 1.6;
 }
 

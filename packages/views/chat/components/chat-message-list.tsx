@@ -105,7 +105,7 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
   return (
     <div className={cn(CHAT_COLUMN, "pt-4")}>
       {context?.isFetchingOlderMessages && (
-        <div className="text-center text-xs text-muted-foreground">
+        <div className="text-center text-caption text-muted-foreground">
           {t(($) => $.message_list.loading_older)}
         </div>
       )}
@@ -341,7 +341,7 @@ const MessageBubble = memo(function MessageBubble({
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="rounded-2xl bg-muted px-3.5 py-2 text-sm max-w-[80%] break-words">
+        <div className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words">
           {/* User messages are authored as markdown in ContentEditor, so they
            * render through the SAME RichContent as assistant replies and as
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
@@ -499,7 +499,7 @@ function transformTimeline(
 function NoResponseNotice() {
   const { t } = useT("chat");
   return (
-    <div className="text-sm italic text-muted-foreground">
+    <div className="text-body italic text-muted-foreground">
       {t(($) => $.message_list.no_response)}
     </div>
   );
@@ -597,7 +597,7 @@ function ElapsedCaption({
         ? t(($) => $.message_list.finished_in, { elapsed })
         : t(($) => $.message_list.failed_after, { elapsed });
   return (
-    <div className={cn("text-xs text-muted-foreground/80", className)}>
+    <div className={cn("text-caption text-muted-foreground/80", className)}>
       {text}
     </div>
   );
@@ -669,13 +669,13 @@ function FailureBubble({
        *  failure is informational ("this didn't work"), not a system
        *  error. The icon + muted destructive text are signal enough,
        *  the rest stays in the normal reply rhythm. */}
-      <div className="flex items-start gap-1.5 text-sm">
+      <div className="flex items-start gap-1.5 text-body">
         <AlertTriangle className="size-3.5 shrink-0 text-destructive/80 mt-0.5" />
         <div className="flex-1 min-w-0">
           <div className="text-destructive/90">{label}</div>
           {rawError.trim() && (
             <Collapsible open={open} onOpenChange={setOpen}>
-              <CollapsibleTrigger className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+              <CollapsibleTrigger className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
                 {open ? (
                   <ChevronDown className="size-3" />
                 ) : (
@@ -684,7 +684,7 @@ function FailureBubble({
                 <span>{t(($) => $.message_list.show_details)}</span>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/40 p-2 text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/40 p-2 text-caption text-muted-foreground whitespace-pre-wrap break-all">
                   {rawError}
                 </pre>
               </CollapsibleContent>
@@ -786,7 +786,7 @@ function OuterProcessFold({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+      <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
         {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         <span>{t(($) => $.message_list.process_steps, { count: stepCount })}</span>
       </CollapsibleTrigger>
@@ -824,7 +824,7 @@ function MiddleTextRow({
   phase?: "streaming" | "settled";
 }) {
   return (
-    <div className="py-0.5 text-xs text-muted-foreground">
+    <div className="py-0.5 text-caption text-muted-foreground">
       <RichContent
         content={item.content ?? ""}
         attachments={attachments}
@@ -888,7 +888,7 @@ function ToolCallRow({ item }: { item: ChatTimelineItem }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-xs hover:bg-accent/30 transition-colors">
+      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
         <ChevronRight
           className={cn(
             "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
@@ -901,7 +901,7 @@ function ToolCallRow({ item }: { item: ChatTimelineItem }) {
       </CollapsibleTrigger>
       {hasInput && (
         <CollapsibleContent>
-          <pre className="ml-[18px] mt-0.5 max-h-32 overflow-auto rounded bg-muted/50 p-2 text-xs text-muted-foreground whitespace-pre-wrap break-all">
+          <pre className="ml-[18px] mt-0.5 max-h-32 overflow-auto rounded bg-muted/50 p-2 text-caption text-muted-foreground whitespace-pre-wrap break-all">
             {JSON.stringify(item.input, null, 2)}
           </pre>
         </CollapsibleContent>
@@ -923,7 +923,7 @@ function ToolResultRow({ item }: { item: ChatTimelineItem }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-start gap-1.5 rounded px-1 -mx-1 py-0.5 text-xs hover:bg-accent/30 transition-colors">
+      <CollapsibleTrigger className="flex w-full items-start gap-1.5 rounded px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
         <ChevronRight
           className={cn("h-3 w-3 shrink-0 text-muted-foreground transition-transform mt-0.5", open && "rotate-90")}
         />
@@ -932,7 +932,7 @@ function ToolResultRow({ item }: { item: ChatTimelineItem }) {
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <pre className="ml-[18px] mt-0.5 max-h-40 overflow-auto rounded bg-muted/50 p-2 text-xs text-muted-foreground whitespace-pre-wrap break-all">
+        <pre className="ml-[18px] mt-0.5 max-h-40 overflow-auto rounded bg-muted/50 p-2 text-caption text-muted-foreground whitespace-pre-wrap break-all">
           {output.length > 4000 ? output.slice(0, 4000) + "\n... (truncated)" : output}
         </pre>
       </CollapsibleContent>
@@ -949,12 +949,12 @@ function ThinkingRow({ item }: { item: ChatTimelineItem }) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-start gap-1.5 rounded px-1 -mx-1 py-0.5 text-xs hover:bg-accent/30 transition-colors">
+      <CollapsibleTrigger className="flex w-full items-start gap-1.5 rounded px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
         <Brain className="h-3 w-3 shrink-0 text-muted-foreground/60 mt-0.5" />
         <span className="text-muted-foreground italic truncate">{preview}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <pre className="ml-[18px] mt-0.5 max-h-40 overflow-auto rounded bg-muted/30 p-2 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+        <pre className="ml-[18px] mt-0.5 max-h-40 overflow-auto rounded bg-muted/30 p-2 text-caption text-muted-foreground whitespace-pre-wrap break-words">
           {text}
         </pre>
       </CollapsibleContent>
@@ -964,7 +964,7 @@ function ThinkingRow({ item }: { item: ChatTimelineItem }) {
 
 function ErrorRow({ item }: { item: ChatTimelineItem }) {
   return (
-    <div className="flex items-start gap-1.5 px-1 -mx-1 py-0.5 text-xs">
+    <div className="flex items-start gap-1.5 px-1 -mx-1 py-0.5 text-caption">
       <AlertCircle className="h-3 w-3 shrink-0 text-destructive mt-0.5" />
       <span className="text-destructive">{item.content}</span>
     </div>
