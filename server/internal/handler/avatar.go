@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -15,8 +16,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/storage"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // ---------------------------------------------------------------------------
@@ -53,20 +57,48 @@ import (
 // and it is strictly tighter than the LocalStorage backend's existing
 // posture, where /uploads/* serves objects by key with no auth at all.
 //
-// Two things bound what a signed avatar URL can reach:
+// Three things bound what a signed avatar URL can reach:
 //
 //   - the HMAC covers the storage key, so a caller cannot mint one for a key
 //     the server never published as an avatar;
-//   - only image extensions resolve at all (see avatarContentType), so an
-//     avatar_url pointed at a private document cannot launder it into a
-//     publicly fetchable URL.
+//   - only image extensions resolve at all (see avatarContentType);
+//   - and the object must be AVATAR-CLASS — a standalone image upload that is
+//     not attached to an issue, comment, chat session, chat message, or task
+//     (see avatarKeyIsPublishable).
+//
+// That last rule is the authorization boundary, and it is enforced on BOTH
+// sides. Being able to name a storage object is not permission to publish it:
+// without the check, any caller who had seen a private image attachment's raw
+// URL could submit it as their own avatar and the unauthenticated endpoint
+// would then keep re-signing it forever — and a user avatar propagates to
+// every workspace that user belongs to. The write side rejects such a value up
+// front; the read side re-checks per request, which is what makes the
+// guarantee hold for rows written before this check existed and revokes the
+// URL if an object is ever bound to a comment or chat afterwards.
+//
+// Uploader identity is deliberately NOT part of the rule. Duplicating an agent
+// legitimately reuses the source agent's avatar object, which a different
+// admin may have uploaded. The remaining theoretical case — publishing someone
+// else's *unbound* image — requires knowing that object's URL, and unbound
+// rows appear in no listing endpoint (ListAttachments is by issue,
+// groupAttachments by comment, chat attachments by message), so the only party
+// who ever sees one is its own uploader.
 
 const avatarURLPathPrefix = "/api/avatars/"
 
-// avatarRedirectMaxAge caps how long a client may reuse the 302 to a signed
-// storage URL. Well under attachmentDownloadURLTTL so a cached redirect can
-// never outlive the signature it points at.
-const avatarRedirectMaxAge = 60
+// workspaceUploadNamespace is the storage prefix under which workspace-scoped
+// content lives — issue/comment/chat attachments, avatars, and channel media
+// ingest alike (see UploadFile and lark's mediaObjectKey). It is the only
+// namespace where an object can belong to somebody other than whoever is
+// setting the avatar, so it is the only one that has to prove itself.
+const workspaceUploadNamespace = "workspaces/"
+
+// avatarRedirectMaxAgeCap caps how long a client may reuse the 302 to a signed
+// storage URL. The effective value is also clamped against
+// attachmentDownloadURLTTL by avatarRedirectMaxAge so a cached redirect can
+// never outlive the signature it points at, however short the operator sets
+// the TTL.
+const avatarRedirectMaxAgeCap = 60
 
 // avatarProxyMaxAge is the cache lifetime for a proxied avatar body. Avatars
 // are immutable per key (every upload mints a fresh UUIDv7 key), so this is
@@ -212,6 +244,90 @@ func (h *Handler) normalizeStoredAvatarURL(raw string) string {
 	return raw
 }
 
+// acceptAvatarURL validates a client-supplied avatar_url and returns the value
+// to persist. It writes the error response and returns ok=false when the
+// caller must abort — same shape as loadIssueForUser and friends.
+//
+// `current` is the entity's stored avatar_url. An unchanged re-send is
+// accepted without re-validation: clients round-trip whole objects, and a
+// value that is already persisted grants nothing new.
+func (h *Handler) acceptAvatarURL(w http.ResponseWriter, r *http.Request, raw, current string) (string, bool) {
+	value := h.normalizeStoredAvatarURL(strings.TrimSpace(raw))
+	if h.Storage == nil || value == strings.TrimSpace(current) {
+		return value, true
+	}
+	// Not one of our storage objects (emoji marker, data: URI, third-party
+	// profile URL) — nothing to authorize, and nothing this endpoint will
+	// ever sign.
+	key := h.ownedStorageKey(value)
+	if key == "" {
+		return value, true
+	}
+	if !h.avatarKeyIsPublishable(r.Context(), key) {
+		writeError(w, http.StatusForbidden, "avatar_url must reference a standalone image upload, not a file attached to an issue, comment, or chat")
+		return "", false
+	}
+	return value, true
+}
+
+// avatarKeyIsPublishable reports whether a storage object may be served
+// through the public avatar endpoint. See the file header for why this is the
+// authorization boundary rather than a mere sanity check.
+//
+// The key's basename is the attachment id: UploadFile mints one UUIDv7 and
+// uses it as both the row id and the object filename, so this resolves the
+// backing row without a lookup by URL (and without an index on it).
+func (h *Handler) avatarKeyIsPublishable(ctx context.Context, key string) bool {
+	if avatarContentType(key) == "" {
+		return false
+	}
+	if !strings.HasPrefix(key, workspaceUploadNamespace) {
+		// Outside the workspace namespace nothing can hold another user's
+		// content: UploadFile only ever writes `workspaces/…` or
+		// `users/<uploader>/…`, and the per-user branch creates no bindings.
+		// Any other prefix is an object the operator put in the bucket
+		// themselves, which they are entitled to point an avatar at.
+		return true
+	}
+	attID, ok := attachmentIDFromStorageKey(key)
+	if !ok {
+		// Inside the workspace namespace but not an upload row — channel
+		// media ingest writes `workspaces/<ws>/lark/…` keys here too. Fail
+		// closed.
+		return false
+	}
+	att, err := h.Queries.GetAttachmentByIDOnly(ctx, attID)
+	if err != nil {
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(att.ContentType), "image/") {
+		return false
+	}
+	return !attachmentIsBound(att)
+}
+
+// attachmentIsBound reports whether an upload is attached to workspace content.
+// A bound row is somebody's issue/comment/chat file — never an avatar.
+func attachmentIsBound(att db.Attachment) bool {
+	return att.IssueID.Valid ||
+		att.CommentID.Valid ||
+		att.ChatSessionID.Valid ||
+		att.ChatMessageID.Valid ||
+		att.TaskID.Valid
+}
+
+// attachmentIDFromStorageKey recovers the attachment id UploadFile embedded in
+// the object filename (`<prefix>/<uuid><ext>`).
+func attachmentIDFromStorageKey(key string) (pgtype.UUID, bool) {
+	base := path.Base(key)
+	stem := strings.TrimSuffix(base, path.Ext(base))
+	id, err := util.ParseUUID(stem)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return id, true
+}
+
 // ownedStorageKey returns the storage key for rawURL when — and only when —
 // this deployment's storage backend is what produced that URL.
 //
@@ -279,9 +395,15 @@ func (h *Handler) ServeAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType := avatarContentType(key)
-	// Deny shape is a flat 404 for a bad signature, an unknown key, and a
-	// non-image key alike, so the route is not an oracle for either.
-	if contentType == "" || !avatarKeySignatureValid(key, chi.URLParam(r, "sig")) {
+	// Deny shape is a flat 404 for a bad signature, an unknown key, a
+	// non-image key, and an object that is not avatar-class alike, so the
+	// route is not an oracle for any of them. The publishable check runs on
+	// every request rather than only at write time: it is what bounds rows
+	// written before the write-side gate existed, and it revokes the URL if
+	// the object is later bound to a comment or chat.
+	if contentType == "" ||
+		!avatarKeySignatureValid(key, chi.URLParam(r, "sig")) ||
+		!h.avatarKeyIsPublishable(r.Context(), key) {
 		http.NotFound(w, r)
 		return
 	}
@@ -295,7 +417,7 @@ func (h *Handler) ServeAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "cloudfront avatar downloads are not configured")
 			return
 		}
-		setAvatarCacheControl(w, avatarRedirectMaxAge)
+		setAvatarCacheControl(w, h.avatarRedirectMaxAge())
 		http.Redirect(w, r, h.CFSigner.SignedURL(objectURL, time.Now().Add(h.attachmentDownloadURLTTL())), http.StatusFound)
 	case attachmentDownloadModePresign:
 		presigner, ok := h.Storage.(storage.DownloadPresigner)
@@ -312,7 +434,7 @@ func (h *Handler) ServeAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "failed to create avatar URL")
 			return
 		}
-		setAvatarCacheControl(w, avatarRedirectMaxAge)
+		setAvatarCacheControl(w, h.avatarRedirectMaxAge())
 		http.Redirect(w, r, signedURL, http.StatusFound)
 	case attachmentDownloadModeProxy:
 		h.proxyAvatar(w, r, key, contentType)
@@ -344,9 +466,32 @@ func (h *Handler) proxyAvatar(w http.ResponseWriter, r *http.Request, key, conte
 	}
 }
 
+// avatarRedirectMaxAge is how long a client may reuse the 302, clamped to half
+// the signed URL's own lifetime. ATTACHMENT_DOWNLOAD_URL_TTL accepts any
+// positive duration, so a fixed 60s would let a browser or proxy keep replaying
+// a redirect to an already-expired storage URL on a deployment that configures
+// a shorter TTL. Returns 0 (no caching at all) when the TTL is too short for
+// any margin to be safe.
+func (h *Handler) avatarRedirectMaxAge() int {
+	ttlSeconds := int(h.attachmentDownloadURLTTL() / time.Second)
+	maxAge := ttlSeconds / 2
+	if maxAge > avatarRedirectMaxAgeCap {
+		return avatarRedirectMaxAgeCap
+	}
+	if maxAge < 0 {
+		return 0
+	}
+	return maxAge
+}
+
 // setAvatarCacheControl marks the response private: the URL is unguessable
 // but it is still a per-deployment identity image, and a shared proxy has no
-// business holding a copy.
+// business holding a copy. A zero max-age means "do not store at all" rather
+// than "store for zero seconds", which some intermediaries round up.
 func setAvatarCacheControl(w http.ResponseWriter, maxAge int) {
+	if maxAge <= 0 {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
 	w.Header().Set("Cache-Control", "private, max-age="+strconv.Itoa(maxAge))
 }

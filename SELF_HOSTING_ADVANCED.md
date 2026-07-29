@@ -114,7 +114,12 @@ Block Public Access, R2, MinIO), the API instead serves avatars from
 redirect, or a proxied body. The signature in the path is what authorizes the
 read: an auth-gated URL cannot be used as an `<img src>` from the Desktop app
 or a split-origin frontend, because the session cookie is `SameSite=Strict`.
-Only image objects resolve through this route.
+
+Only image objects resolve through this route, and only ones that are
+*avatar-class*: a standalone upload not attached to an issue, comment, chat, or
+task. Pointing an `avatar_url` at a file someone attached to an issue is
+rejected when it is set and 404s if it was already stored, so a private image
+cannot be turned into a public link by way of the avatar field.
 
 No configuration is required, and avatars uploaded before this behavior
 existed are fixed without a backfill.

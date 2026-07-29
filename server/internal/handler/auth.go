@@ -676,7 +676,11 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		Name: name,
 	}
 	if req.AvatarURL != nil {
-		params.AvatarUrl = pgtype.Text{String: h.normalizeStoredAvatarURL(strings.TrimSpace(*req.AvatarURL)), Valid: true}
+		avatarURL, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, currentUser.AvatarUrl.String)
+		if !ok {
+			return
+		}
+		params.AvatarUrl = pgtype.Text{String: avatarURL, Valid: true}
 	}
 	if req.Language != nil {
 		lang := strings.TrimSpace(*req.Language)

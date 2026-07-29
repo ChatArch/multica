@@ -278,7 +278,11 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 
 	avatarURL := pgtype.Text{}
 	if req.AvatarURL != nil {
-		avatarURL = pgtype.Text{String: h.normalizeStoredAvatarURL(*req.AvatarURL), Valid: true}
+		accepted, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, "")
+		if !ok {
+			return
+		}
+		avatarURL = pgtype.Text{String: accepted, Valid: true}
 	}
 
 	squad, err := h.Queries.CreateSquad(r.Context(), db.CreateSquadParams{
@@ -373,7 +377,11 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		params.Instructions = pgtype.Text{String: *req.Instructions, Valid: true}
 	}
 	if req.AvatarURL != nil {
-		params.AvatarUrl = pgtype.Text{String: h.normalizeStoredAvatarURL(*req.AvatarURL), Valid: true}
+		accepted, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, squad.AvatarUrl.String)
+		if !ok {
+			return
+		}
+		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 	if req.LeaderID != nil {
 		lid, ok := parseUUIDOrBadRequest(w, *req.LeaderID, "leader_id")

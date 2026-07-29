@@ -341,7 +341,18 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.AvatarURL != nil {
-		params.AvatarUrl = pgtype.Text{String: h.normalizeStoredAvatarURL(*req.AvatarURL), Valid: true}
+		// Read the stored value so an unchanged re-send skips revalidation —
+		// this handler is the one avatar writer that doesn't already have the
+		// row in hand.
+		var current string
+		if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
+			current = existing.AvatarUrl.String
+		}
+		accepted, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, current)
+		if !ok {
+			return
+		}
+		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
 	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
