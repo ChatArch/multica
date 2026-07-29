@@ -39,7 +39,10 @@
     --secondary: oklch(0.967 0.001 286.375);
     --secondary-foreground: oklch(0.21 0.006 285.885);
     --muted: oklch(0.967 0.001 286.375);
-    --muted-foreground: oklch(0.552 0.016 285.938);
+    /* Mirrors the AA-corrected light value in @multica/ui/styles/tokens.css.
+       Keep the two in step — this block exists to re-declare the light palette,
+       not to hold a second opinion about it. */
+    --muted-foreground: oklch(0.505 0.016 285.938);
     --accent: oklch(0.967 0.001 286.375);
     --accent-foreground: oklch(0.21 0.006 285.885);
     --destructive: oklch(0.577 0.245 27.325);
@@ -54,4 +57,50 @@
     --scrollbar-thumb: oklch(0 0 0 / 10%);
     --scrollbar-thumb-hover: oklch(0 0 0 / 18%);
     --scrollbar-track: transparent;
+
+    /* Landing editorial serif. Instrument Serif is Latin-only — it has zero CJK
+       coverage — so a zh/ja/ko headline drops out of the family entirely and gets
+       whatever the UA picks for the script, sitting next to Latin glyphs from a
+       different typeface. Compose the CJK tail here rather than in next/font's
+       `fallback`, matching how globals.css builds --font-sans: it must be
+       overridable per <html lang>, and a hashed next/font family can only be
+       referenced from CSS through its variable.
+       These are system Song / Mincho / Myeongjo faces — real serif companions to
+       Instrument Serif at zero download. Chinese stays ahead of Korean for the
+       same reason as --font-sans: Han ideographs share one Unicode block, while
+       Hangul is separate, so ko readers still get a Korean face for Hangul. */
+    --font-serif: var(--font-instrument-serif), "Songti SC", "STSong", SimSun,
+        "Source Han Serif SC", "Noto Serif CJK SC", "AppleMyungjo",
+        "Nanum Myeongjo", "Noto Serif CJK KR", ui-serif, serif;
+}
+
+/* Japanese Kanji share the Han block with Chinese and CSS font-fallback order is
+   NOT affected by <html lang>, so the Chinese-first chain above would hand
+   Japanese readers Chinese glyph shapes. Promote Mincho faces for Japanese only.
+   Mirrors the [lang|="ja"] override for --font-sans in app/globals.css. */
+html[lang|="ja"] .landing-light {
+    --font-serif: var(--font-instrument-serif), "Hiragino Mincho ProN",
+        "Hiragino Mincho Pro", "Yu Mincho", YuMincho, "MS Mincho",
+        "Noto Serif CJK JP", "Source Han Serif JP", ui-serif, serif;
+}
+
+/* Landing display headings (hero, section titles). Owns the family so call sites
+   don't each repeat `font-[family-name:var(--font-serif)]`, and — more to the
+   point — gives the CJK reset below a single hook to attach to. */
+.landing-display {
+    font-family: var(--font-serif);
+}
+
+/* The per-site tracking and leading on these headings are tuned for Latin display
+   type: negative letter-spacing and a sub-1 line-height. Han and Kana glyphs
+   already fill their em box, so negative tracking crowds them, and a sub-1
+   line-height collides consecutive lines — landing-hero.tsx renders two
+   <br />-separated lines at up to 6.4rem. Reset both for CJK only; Latin keeps
+   the tuned values. custom.css is unlayered, so these win over Tailwind's
+   `tracking-[…]` / `leading-[…]` utilities without !important. */
+html[lang|="zh"] .landing-display,
+html[lang|="ja"] .landing-display,
+html[lang|="ko"] .landing-display {
+    letter-spacing: normal;
+    line-height: 1.25;
 }

@@ -136,7 +136,10 @@ export function LandingFooter() {
               className="size-[clamp(4rem,12vw,10rem)] shrink-0 text-white"
               noSpin
             />
-            <span className="font-[family-name:var(--font-serif)] text-[clamp(6rem,22vw,16rem)] font-normal leading-[0.82] tracking-[-0.04em] text-white lowercase">
+            {/* Plain `font-serif`, not `landing-display`: this is the Latin
+                wordmark and is never localized, so it must keep its tuned
+                leading/tracking instead of picking up the CJK reset. */}
+            <span className="font-serif text-[clamp(6rem,22vw,16rem)] font-normal leading-[0.82] tracking-[-0.04em] text-white lowercase">
               multica
             </span>
           </div>

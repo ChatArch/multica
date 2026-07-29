@@ -1,17 +1,15 @@
-import { Instrument_Serif, Noto_Serif_SC } from "next/font/google";
+import { Instrument_Serif } from "next/font/google";
 import { LocaleProvider } from "@/features/landing/i18n";
 import { getRequestLocale } from "@/lib/request-locale";
 
+// Latin-only display serif for landing headlines. It exposes its own variable
+// rather than `--font-serif` directly: Instrument Serif has no CJK coverage, so
+// the landing `--font-serif` is composed in app/custom.css as this family plus a
+// system Song/Mincho/Myeongjo tail, the same way globals.css builds `--font-sans`.
 const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
   weight: "400",
-  variable: "--font-serif",
-});
-
-const notoSerifSC = Noto_Serif_SC({
-  subsets: ["latin"],
-  weight: "400",
-  variable: "--font-serif-zh",
+  variable: "--font-instrument-serif",
 });
 
 const jsonLd = {
@@ -52,7 +50,7 @@ export default async function LandingLayout({
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-      <div className={`${instrumentSerif.variable} ${notoSerifSC.variable} landing-light h-full overflow-x-hidden overflow-y-auto bg-white`}>
+      <div className={`${instrumentSerif.variable} landing-light h-full overflow-x-hidden overflow-y-auto bg-white`}>
         <LocaleProvider initialLocale={initialLocale}>{children}</LocaleProvider>
       </div>
     </>
