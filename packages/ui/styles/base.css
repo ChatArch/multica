@@ -299,9 +299,10 @@ html[data-sidebar-resizing="true"] * {
     text-autospace: ideograph-alpha ideograph-numeric;
     /* `style` keyword = allow style synthesis, forbid weight synthesis.
      *
-     * Weight OFF: every face we load has real weights — Inter and Source Serif 4
-     * are variable (100-900), Geist Mono ships discrete cuts. Synthesis can only
-     * make those worse, and on the CJK tail of `--font-sans` it is actively
+     * Weight OFF: every face we load has real weights — Inter, Source Serif 4
+     * and Geist Mono are all variable (100-900) on both platforms, and landing's
+     * 400-only Instrument Serif is never set to another weight. Synthesis can
+     * only make those worse, and on the CJK tail of `--font-sans` it is actively
      * harmful: `font-bold` against PingFang SC (which stops at Semibold) makes
      * Chromium smear a fake 700, and the added stroke weight closes up the
      * counters of dense Han glyphs. Forbidding it picks real Semibold instead.
