@@ -44,9 +44,17 @@ export function runtimeModelsOptions(runtimeId: string | null | undefined) {
       : runtimeModelsKeys.all(),
     queryFn: () => resolveRuntimeModels(runtimeId as string),
     enabled: Boolean(runtimeId),
-    // Models rarely change; cache for 60s to match the server-side
-    // cache in agent.ListModels.
-    staleTime: 60_000,
+    // A model catalog only changes when the user upgrades a CLI, switches
+    // accounts, or edits a provider config — but discovering it costs a full
+    // daemon round trip (heartbeat pickup + local CLI enumeration). So cache
+    // generously and let the server's own stale-while-revalidate window
+    // (modelCatalogServeWindow) keep the answer honest: staleTime avoids a
+    // refetch while the user fills in one form, and the long gcTime means
+    // switching back to a runtime already visited this session renders its
+    // catalog instantly from cache while revalidating in the background
+    // instead of showing the "discovering models" spinner again (MUL-5444).
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
     retry: false,
   });
 }

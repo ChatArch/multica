@@ -74,7 +74,21 @@ const (
 	// intentionally independent from AgentTimeout, which only governs the
 	// provider process after the task reaches running.
 	defaultTaskPrepareTimeout = 5 * time.Minute
+	// pendingWorkHeartbeatTimeout bounds the out-of-band heartbeat a
+	// server-pushed daemon:pending_work hint triggers (MUL-5444). Short on
+	// purpose: the hint is only a latency optimisation, and the scheduled
+	// heartbeat still picks the request up if this attempt fails.
+	pendingWorkHeartbeatTimeout = 15 * time.Second
+	// pendingWorkHintBookkeepingTTL is how long a runtime's last-hint timestamp
+	// is retained before it is swept — purely to keep the map bounded.
+	pendingWorkHintBookkeepingTTL = 10 * time.Minute
 )
+
+// pendingWorkHintMinInterval is the floor between two hint-driven heartbeats
+// for the same runtime. Keeps an interactive first open instant while stopping a
+// caller-triggered hint from becoming a heartbeat amplifier. A var so tests can
+// shrink it, same as the other timing knobs in this package.
+var pendingWorkHintMinInterval = time.Second
 
 func repoCheckoutModeFor(provider, goos string) string {
 	if provider == "codex" && goos == "linux" {
@@ -309,6 +323,16 @@ type Daemon struct {
 	reregisterNextAttempt     map[string]time.Time // workspace_id -> earliest time the next re-register attempt may run
 	reregisterLastCompletedAt map[string]time.Time // workspace_id -> wall-clock at which the last SUCCESSFUL re-register call returned (failures intentionally not stamped — see recordRegisterCompletion)
 
+	// pendingWorkMu guards pendingWorkInflight and pendingWorkLastRun, which
+	// coalesce and rate-limit server-pushed "heartbeat now" hints (MUL-5444).
+	// Several UI surfaces can request the same runtime's model list within
+	// milliseconds; without the guard each hint would fire its own out-of-band
+	// heartbeat, and an authenticated caller looping the list-models endpoint
+	// could turn that into a heartbeat amplifier.
+	pendingWorkMu       sync.Mutex
+	pendingWorkInflight map[string]struct{}  // runtime_id -> hint-driven heartbeat in flight
+	pendingWorkLastRun  map[string]time.Time // runtime_id -> when the last hint-driven heartbeat started
+
 	cancelFunc    context.CancelFunc // set by Run(); called by triggerRestart
 	rootCtx       context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	restartBinary string             // non-empty after a successful update; path to the new binary
@@ -404,6 +428,8 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		deletingCodexStores:       make(map[string]bool),
 		localPathLocks:            NewLocalPathLocker(),
 		runtimeGoneInflight:       make(map[string]struct{}),
+		pendingWorkInflight:       make(map[string]struct{}),
+		pendingWorkLastRun:        make(map[string]time.Time),
 		reregisterNextAttempt:     make(map[string]time.Time),
 		reregisterLastCompletedAt: make(map[string]time.Time),
 		cancelPollInterval:        5 * time.Second,
@@ -2600,6 +2626,98 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			go d.handleLocalSkillImport(ctx, *rt, *resp.PendingLocalSkillImport)
 		}
 	}
+}
+
+// handlePendingWorkHint reacts to a server-pushed daemon:pending_work frame by
+// sending ONE immediate heartbeat for the runtime, then dispatching whatever
+// that heartbeat claimed (MUL-5444).
+//
+// Why a heartbeat and not the work itself: the hint deliberately carries no
+// request payload, so the server never has to un-claim anything when delivery
+// fails, and a duplicated or replayed hint cannot duplicate work — the claim
+// stays atomic inside the store's PopPending. A hint that never arrives (daemon
+// offline, WS gap, relay drop) costs nothing but the pre-existing wait for the
+// next scheduled heartbeat.
+//
+// The HTTP heartbeat is used on purpose rather than queueing a WS frame: the
+// hint arrives on the read pump, the WS write path may be backed up or tearing
+// down, and this is a human-interactive, low-frequency path (a user opened a
+// model picker) where one extra request is cheaper than a missed wakeup. Note it
+// intentionally bypasses the wsHeartbeatRecentlyAcked suppression that the
+// scheduled HTTP tick honours — that suppression exists to avoid duplicate
+// periodic writes, not to block an explicitly requested pull.
+func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
+	if runtimeID == "" {
+		return
+	}
+	if d.findRuntime(runtimeID) == nil {
+		// Not one of ours (stale relay fanout, or the runtime was just pruned).
+		return
+	}
+
+	d.pendingWorkMu.Lock()
+	if d.pendingWorkInflight == nil {
+		d.pendingWorkInflight = make(map[string]struct{})
+	}
+	if d.pendingWorkLastRun == nil {
+		d.pendingWorkLastRun = make(map[string]time.Time)
+	}
+	// Drop long-idle bookkeeping so the map can't grow with every runtime this
+	// process has ever seen.
+	for id, at := range d.pendingWorkLastRun {
+		if time.Since(at) > pendingWorkHintBookkeepingTTL {
+			delete(d.pendingWorkLastRun, id)
+		}
+	}
+	if _, inflight := d.pendingWorkInflight[runtimeID]; inflight {
+		d.pendingWorkMu.Unlock()
+		return
+	}
+	// Rate limit per runtime. The hint is caller-triggered (any workspace member
+	// hitting the list-models endpoint), so without a floor a request loop would
+	// become a heartbeat amplifier. A suppressed hint costs nothing but the
+	// pre-existing wait for the scheduled heartbeat.
+	if last, ok := d.pendingWorkLastRun[runtimeID]; ok && time.Since(last) < pendingWorkHintMinInterval {
+		d.pendingWorkMu.Unlock()
+		d.logger.Debug("pending work hint throttled", "runtime_id", runtimeID, "kind", kind)
+		return
+	}
+	d.pendingWorkInflight[runtimeID] = struct{}{}
+	d.pendingWorkLastRun[runtimeID] = time.Now()
+	d.pendingWorkMu.Unlock()
+	defer func() {
+		d.pendingWorkMu.Lock()
+		delete(d.pendingWorkInflight, runtimeID)
+		d.pendingWorkMu.Unlock()
+	}()
+
+	// Root context: handleHeartbeatActions hands this ctx to the actual work
+	// (model discovery shells out to a CLI for up to ~15s), so it must outlive
+	// this function. Only the heartbeat request itself is time-bounded.
+	ctx := d.recoveryContext()
+	if ctx.Err() != nil {
+		return
+	}
+	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	cancel()
+	if err != nil {
+		if isRuntimeNotFoundError(err) {
+			go d.handleRuntimeGone(runtimeID)
+			return
+		}
+		d.logger.Debug("pending work hint heartbeat failed", "runtime_id", runtimeID, "kind", kind, "error", err)
+		return
+	}
+	if resp == nil {
+		return
+	}
+	if resp.RuntimeGone {
+		go d.handleRuntimeGone(runtimeID)
+		return
+	}
+	d.logger.Debug("pending work hint served", "runtime_id", runtimeID, "kind", kind)
+	d.handleHeartbeatActions(ctx, runtimeID, resp)
 }
 
 // handleModelList resolves the provider's supported models (via static
