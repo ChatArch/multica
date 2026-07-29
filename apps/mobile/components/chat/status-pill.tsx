@@ -145,7 +145,9 @@ export function StatusPill({
       {stage.static ? null : <BreathingDots />}
       <Text className="text-xs text-muted-foreground" numberOfLines={1}>
         {stage.label}
-        <Text className="text-xs text-muted-foreground/70">
+        {/* useTick re-renders this every second; proportional figures would
+            change the pill's width on each tick (9s -> 10s). */}
+        <Text className="text-xs text-muted-foreground/70 tabular-nums">
           {" · "}
           {formatElapsedSecs(elapsedSec)}
         </Text>

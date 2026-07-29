@@ -747,7 +747,10 @@ export function AgentTranscriptDialog({
             )}
             {duration && (
               <>
-                <span>{t(($) => $.transcript.fact_took, { duration })}</span>
+                {/* Live tasks re-render this every second, and the fact row is a
+                    flex line — proportional figures would shift FactDot and every
+                    fact after it on each tick. */}
+                <span className="tabular-nums">{t(($) => $.transcript.fact_took, { duration })}</span>
                 <FactDot />
               </>
             )}

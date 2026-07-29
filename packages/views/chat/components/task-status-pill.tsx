@@ -174,7 +174,9 @@ export function TaskStatusPill({
         <span className={cn(!stage.static && "animate-chat-text-shimmer")}>
           {stage.label}
         </span>
-        <span className="opacity-70"> · {formatElapsedSecs(elapsedSecs)}</span>
+        {/* Ticks every second; proportional figures would re-measure the pill on
+            every change (9s -> 10s) and shove the neighbouring controls sideways. */}
+        <span className="opacity-70 tabular-nums"> · {formatElapsedSecs(elapsedSecs)}</span>
       </span>
     </div>
   );
