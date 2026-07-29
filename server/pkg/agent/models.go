@@ -266,10 +266,10 @@ func modelHasKnownPrefix(model string) bool {
 		isOpenAIReasoningSeriesID(model)
 }
 
-// cachedDiscovery invokes fn and caches the result for modelCacheTTL.
-// The cache is keyed on providerType only; callers that need to
-// distinguish discovery by host/user should include that in the key
-// if we ever introduce such a mode.
+// cachedDiscovery invokes fn and caches the result for modelCacheTTL under key.
+// Every dynamic-discovery caller builds that key with discoveryCacheKey, so the
+// cache is scoped to (providerType, executable path) — never providerType alone.
+// See discoveryCacheKey for why the path belongs in the key.
 func cachedDiscovery(key string, fn func() ([]Model, error)) ([]Model, error) {
 	modelCacheMu.Lock()
 	if entry, ok := modelCache[key]; ok && time.Now().Before(entry.expiresAt) {
