@@ -36,6 +36,23 @@
   overflow-wrap: break-word;
 }
 
+/* Measure cap. The issue-detail column is max-w-4xl minus px-8 = 832px, which at
+   the 14px body size is ~120 characters per line — the eye loses its return path
+   well before that. 64ch lands near 72 Latin characters (and ~36 Han characters,
+   since `ch` resolves against Inter's digit width either way), inside the 45-75
+   range that reads comfortably.
+   Scoped to text-bearing blocks only: `pre`, `table`, images, `.math-node` and
+   node views keep the full column width, because a code block or a diagram
+   squeezed to reading width is worse than a long line. Table cells are excluded
+   by the direct-child selector — a `p` inside a `td` must follow the cell.
+   Applies to the editable and readonly renders alike; prose.css already treats
+   a wrap difference between the two as a bug (see the overflow-wrap note above).
+   The cap only binds on wide viewports; narrower columns were already inside it. */
+.rich-text-editor > :is(p, h1, h2, h3, blockquote),
+.rich-text-editor > :is(ul, ol) li {
+  max-width: 64ch;
+}
+
 /* Headings — compact but with clear visual hierarchy */
 .rich-text-editor h1 {
   font-size: 1.375rem;
