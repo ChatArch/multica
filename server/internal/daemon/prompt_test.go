@@ -606,12 +606,12 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 	})
 }
 
-// TestBuildPromptDefaultMentionsRecent pins that the catch-all fallback
+// TestBuildPromptDefaultScansRootsFirst pins that the catch-all fallback
 // prompt (no trigger comment, no chat, no autopilot, no quick-create)
 // starts assignment-triggered comment catch-up with a bounded roots scan and
 // only then offers the full-thread read, while still keeping older history
 // available through pagination.
-func TestBuildPromptDefaultMentionsRecent(t *testing.T) {
+func TestBuildPromptDefaultScansRootsFirst(t *testing.T) {
 	out := BuildPrompt(Task{IssueID: "issue-default-1"}, "claude")
 	for _, s := range []string{
 		"multica issue comment list issue-default-1 --roots-only --summary --output json",

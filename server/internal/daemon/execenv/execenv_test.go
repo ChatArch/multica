@@ -4800,11 +4800,11 @@ func TestInjectRuntimeConfigBriefOmitsResumedThreadAnchor(t *testing.T) {
 	}
 }
 
-// TestInjectRuntimeConfigAssignmentTriggerMentionsRecent pins that the
+// TestInjectRuntimeConfigAssignmentTriggerScansRootsFirst pins that the
 // assignment-triggered Workflow keeps comment catch-up mandatory while bounding
-// the mandatory first read to the recent active-thread window. Older context
-// stays reachable through explicit pagination.
-func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
+// the mandatory first read to a roots scan. Older context stays reachable
+// through explicit pagination.
+func TestInjectRuntimeConfigAssignmentTriggerScansRootsFirst(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -4861,7 +4861,7 @@ func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
 	}
 }
 
-// TestInjectRuntimeConfigCatchUpScansRootsBeforeBulkRead locks in MUL-5372: the
+// TestInjectRuntimeConfigCatchUpScansRootsFirst locks in MUL-5372: the
 // mandatory step-3 catch-up leads with a bounded `--roots-only --summary` scan
 // and an explicit per-thread drill-down, instead of making `--recent 10` the
 // required first read. `--recent N` caps threads, not comments — it returns every
@@ -4872,7 +4872,7 @@ func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
 // It also pins the placement rule: the workflow step names only the reads it
 // mandates, while flag semantics (including the saturation trap) live once in
 // `## Available Commands`. Restating them per step is what bloated the step.
-func TestInjectRuntimeConfigCatchUpScansRootsBeforeBulkRead(t *testing.T) {
+func TestInjectRuntimeConfigCatchUpScansRootsFirst(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
