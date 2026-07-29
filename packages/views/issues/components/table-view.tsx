@@ -845,7 +845,11 @@ function LazyLabelCell({
   );
 }
 
-type IssueTableGroupRowProps = {
+// Extends the <tr> props so the virtualizer's measuring ref and data-index,
+// which DataTable clones onto whatever renderRow returns, reach the element
+// instead of being absorbed here. A group header is shorter than a data row,
+// so it is exactly the kind of row the measurement exists for.
+type IssueTableGroupRowProps = React.ComponentProps<"tr"> & {
   group: Extract<IssueTableDisplayRow, { kind: "group" }>;
   colSpan: number;
   onToggle: () => void;
@@ -855,9 +859,11 @@ export function IssueTableGroupRow({
   group,
   colSpan,
   onToggle,
+  ...rowProps
 }: IssueTableGroupRowProps) {
   return (
     <TableRow
+      {...rowProps}
       className="bg-muted/40 hover:bg-muted/60"
       onClick={onToggle}
     >
@@ -1930,7 +1936,6 @@ export function TableView({
     fetchingNextServerGroupPage,
     refetchServerGroups,
     fetchNextServerGroupPage,
-    t,
     tableHierarchy,
     usesServerGrouping,
   ]);

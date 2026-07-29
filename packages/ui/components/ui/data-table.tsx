@@ -299,6 +299,10 @@ export function DataTable<TData>({
       vars[columnSizeVar(column.id)] = `${column.getSize()}px`;
     }
     return vars;
+    // column.getSize() reads columnSizing, which the rule cannot see through
+    // the call. getVisibleLeafColumns is memoised on visibility and order, so
+    // without it the widths would freeze at whatever they were on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getSize() reads columnSizing
   }, [columnSizing, leafColumns]);
 
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -329,7 +333,10 @@ export function DataTable<TData>({
     sync();
     element.addEventListener("scroll", sync, { passive: true });
     return () => element.removeEventListener("scroll", sync);
-  }, []);
+    // Re-measured on column sizing too, not scrolling alone: resizing a frozen
+    // column while the surface is scrolled moves the boundary the shadow is
+    // pinned to, and no scroll event follows to correct it.
+  }, [columnSizing]);
 
   const rows = table.getRowModel().rows;
   const getVirtualRowKey = React.useCallback(
