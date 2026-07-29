@@ -2360,6 +2360,29 @@ export class ApiClient {
     };
   }
 
+  // Fetches the raw bytes of an attachment through the unified download
+  // endpoint.
+  //
+  // This is the last-resort inline-media path for deployments where the
+  // server has no natively-loadable URL to offer. `GET /api/attachments/{id}`
+  // only upgrades `download_url` to a signed storage URL under CloudFront
+  // signing or presign mode; in **proxy** mode (self-hosted MinIO or any
+  // storage endpoint on an internal host, which the default `auto` mode
+  // classifies as proxy) it returns the auth-gated API path again. Clients
+  // that cannot ride the session cookie on a native `<img>` resource fetch —
+  // Desktop's file:// renderer, the mobile webview, split-origin web — get
+  // the bytes here and render them from an object URL instead.
+  //
+  // Routes through `fetchRaw` so it inherits the standard auth headers,
+  // 401 → handleUnauthorized recovery, request-id logging and ApiError shape.
+  // Callers must only reach for this once the metadata refresh has shown
+  // there is no signed URL: in the other modes the endpoint 302s to storage,
+  // where CORS is not configured for a JS fetch.
+  async getAttachmentBlob(id: string): Promise<Blob> {
+    const res = await this.fetchRaw(`/api/attachments/${id}/download`);
+    return res.blob();
+  }
+
   // Projects
   async listProjects(params?: { status?: string }): Promise<ListProjectsResponse> {
     const search = new URLSearchParams();
