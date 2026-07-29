@@ -515,6 +515,7 @@
     "due_next_week": "下周",
     "due_clear": "清除日期",
     "unassigned": "未分配",
+    "open_in_new_tab": "在新标签页打开",
     "pin_to_sidebar": "固定到侧边栏",
     "unpin_from_sidebar": "从侧边栏取消固定",
     "copy_link": "复制链接",
