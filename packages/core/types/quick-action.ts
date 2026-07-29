@@ -32,12 +32,8 @@ export interface QuickAction {
   description: string;
   assignee_type: QuickActionAssigneeType | string;
   assignee_id: string;
+  /** Sent verbatim — there is no interpolation step. */
   prompt: string;
-  /** When true the prompt contains `{{input}}` and clicking opens one field. */
-  input_enabled: boolean;
-  input_label: string;
-  input_placeholder: string;
-  input_required: boolean;
   visibility: QuickActionVisibility | string;
   status: QuickActionStatus | string;
   last_used_at: string | null;
@@ -63,10 +59,6 @@ export interface CreateQuickActionRequest {
   assignee_type: QuickActionAssigneeType;
   assignee_id: string;
   prompt: string;
-  input_enabled?: boolean;
-  input_label?: string;
-  input_placeholder?: string;
-  input_required?: boolean;
   visibility?: QuickActionVisibility;
 }
 
@@ -76,10 +68,6 @@ export interface UpdateQuickActionRequest {
   assignee_type?: QuickActionAssigneeType;
   assignee_id?: string;
   prompt?: string;
-  input_enabled?: boolean;
-  input_label?: string;
-  input_placeholder?: string;
-  input_required?: boolean;
   visibility?: QuickActionVisibility;
   status?: QuickActionStatus;
 }
@@ -96,46 +84,16 @@ export interface ListQuickActionsResponse {
 export const QUICK_ACTION_SIDEBAR_LIMIT = 5;
 
 /**
- * The closed set of prompt variables. Flat substitution only — no
- * conditionals, loops, or filters, by design: the agent already reads the
- * whole issue, so natural language is the control flow (MUL-5465 D5).
+ * Matches any `{{...}}`, mirroring the server's write-time rejection.
+ *
+ * Templating is not supported: every variable considered named something the
+ * agent already had from the issue context. The check survives the feature so
+ * a habitual token cannot land literally in an agent's instructions — the form
+ * shows it inline instead of waiting for a 400.
  */
-export const QUICK_ACTION_VARIABLES = [
-  "issue.title",
-  "issue.identifier",
-  "issue.url",
-  "user.name",
-  "date",
-  "input",
-] as const;
+export const QUICK_ACTION_TEMPLATE_TOKEN_RE = /\{\{[^}]*\}\}/;
 
-export type QuickActionVariable = (typeof QUICK_ACTION_VARIABLES)[number];
-
-/** The variable that carries the runtime input. */
-export const QUICK_ACTION_INPUT_VARIABLE = "input";
-
-/** Matches `{{token}}`, tolerating inner whitespace, mirroring the server. */
-export const QUICK_ACTION_VARIABLE_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
-
-/**
- * Client-side mirror of the server's prompt validation so the settings form
- * can show the error inline instead of waiting for a 400. The server remains
- * the authority — this is an affordance, not a gate.
- */
-export function findUnknownQuickActionVariables(prompt: string): string[] {
-  const known = new Set<string>(QUICK_ACTION_VARIABLES);
-  const unknown: string[] = [];
-  for (const match of prompt.matchAll(QUICK_ACTION_VARIABLE_RE)) {
-    const name = match[1];
-    if (name && !known.has(name) && !unknown.includes(name)) unknown.push(name);
-  }
-  return unknown;
-}
-
-/** Whether a prompt references `{{input}}`. */
-export function promptUsesQuickActionInput(prompt: string): boolean {
-  for (const match of prompt.matchAll(QUICK_ACTION_VARIABLE_RE)) {
-    if (match[1] === QUICK_ACTION_INPUT_VARIABLE) return true;
-  }
-  return false;
+/** The first template token in a prompt, or null when there is none. */
+export function findQuickActionTemplateToken(prompt: string): string | null {
+  return prompt.match(QUICK_ACTION_TEMPLATE_TOKEN_RE)?.[0] ?? null;
 }

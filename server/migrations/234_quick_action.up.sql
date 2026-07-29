@@ -25,6 +25,9 @@
 --   - `position`: ordering is use_count DESC everywhere. A manual order plus a
 --     usage order meant one list with two different sorts, which is its own
 --     source of confusion.
+--   - `input_*`: the `/` slash command already inserts a rendered action into
+--     the composer for editing, which covers "same action, one detail
+--     different" more flexibly than a single fixed field could.
 --
 -- Actions archive (status='archived') instead of deleting so historical
 -- `quick_action` comments stay resolvable to a name.
@@ -37,17 +40,14 @@ CREATE TABLE quick_action (
     -- 'squad' -> squad(id), resolved to squad.leader_id at run time.
     assignee_type TEXT NOT NULL CHECK (assignee_type IN ('agent', 'squad')),
     assignee_id UUID NOT NULL,
-    -- Flat {{...}} substitution only. Whitelist-validated at write time; no
-    -- conditionals, loops, or filters, now or later (MUL-5465 D5) -- the agent
-    -- already reads the whole issue, so natural language is the control flow.
+    -- Stored and sent VERBATIM. No interpolation of any kind: every variable
+    -- we considered ({{issue.title}}, {{issue.identifier}}, {{issue.url}},
+    -- {{user.name}}, {{date}}) names something the agent already has from the
+    -- issue context and from the comment's own author, so none of them changed
+    -- what the agent ATTENDS TO -- only what it was told twice. The handler
+    -- still REJECTS any `{{...}}` at write time so a habitual template token
+    -- cannot land literally in an agent's instructions.
     prompt TEXT NOT NULL,
-    -- The single optional runtime input. When enabled the prompt MUST contain
-    -- {{input}} and vice versa; the handler enforces both directions so an
-    -- action can never silently drop what the user typed.
-    input_enabled BOOLEAN NOT NULL DEFAULT false,
-    input_label TEXT NOT NULL DEFAULT '',
-    input_placeholder TEXT NOT NULL DEFAULT '',
-    input_required BOOLEAN NOT NULL DEFAULT false,
     visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('private', 'public')),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
     last_used_at TIMESTAMPTZ,

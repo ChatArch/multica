@@ -2,15 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, CornerDownLeft, Loader2, Zap } from "lucide-react";
+import { ChevronRight, Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { dispatchReasonCode } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { quickActionListOptions, useRunQuickAction } from "@multica/core/quick-actions";
 import type { Comment, CommentTriggerOutcome, QuickAction } from "@multica/core/types";
 import { QUICK_ACTION_SIDEBAR_LIMIT } from "@multica/core/types";
-import { Button } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,11 +18,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@multica/ui/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -38,9 +31,10 @@ import { useT } from "../../i18n";
 // than a button that tells you why it refused. Permission is answered once, by
 // the run endpoint; a refusal opens a dialog.
 //
-// Two interaction tiers:
-//   1. no runtime input  -> click runs it
-//   2. runtime input     -> click opens ONE field, Enter runs it
+// One interaction: click runs it. There is no per-action input field — the `/`
+// slash command already drops a rendered action into the composer for editing,
+// which covers "same action, one detail different" more flexibly than a single
+// fixed field could, so a second UI for it was removed.
 //
 // The result toast is deliberately outcome-specific rather than a generic
 // "done". A second click against an agent that already has a pending task on
@@ -175,31 +169,23 @@ function QuickActionRow({
   onBlocked: () => void;
 }) {
   const { t } = useT("issues");
-  const [inputOpen, setInputOpen] = useState(false);
-  const [inputValue, setInputValue] = useState("");
   const runMutation = useRunQuickAction(issueId);
   const running = runMutation.isPending;
 
   const targetName = action.target_name || t(($) => $.detail.quick_action_target_fallback);
 
-  const handleRun = async (input?: string) => {
+  const handleRun = async () => {
     try {
-      const comment: Comment = await runMutation.mutateAsync({
-        quickActionId: action.id,
-        input,
-      });
+      const comment: Comment = await runMutation.mutateAsync({ quickActionId: action.id });
       const { message, kind } = outcomeMessage(comment.trigger_outcomes?.[0], targetName, t);
       if (kind === "success") toast.success(message);
       else if (kind === "error") toast.error(message);
       else toast.info(message);
-      setInputOpen(false);
-      setInputValue("");
     } catch (error) {
       // A permission refusal is a structured 403 the user needs explained, not
       // a transient failure they should retry — it gets the dialog. Everything
       // else stays a toast.
       if (dispatchReasonCode(error) === "invocation_not_allowed") {
-        setInputOpen(false);
         onBlocked();
         return;
       }
@@ -207,20 +193,12 @@ function QuickActionRow({
     }
   };
 
-  const handleClick = () => {
-    if (action.input_enabled) {
-      setInputOpen(true);
-      return;
-    }
-    void handleRun();
-  };
-
   const row = (
     <div>
       <button
         type="button"
         disabled={running}
-        onClick={handleClick}
+        onClick={() => void handleRun()}
         className={cn(
           "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
           "hover:bg-accent/70 disabled:cursor-default disabled:opacity-60",
@@ -245,67 +223,18 @@ function QuickActionRow({
     </div>
   );
 
-  const tooltipBody = (
-    <div className="space-y-0.5">
-      <div className="font-medium">{action.name}</div>
-      {action.description ? <div>{action.description}</div> : null}
-      <div className="text-muted-foreground">
-        {t(($) => $.detail.quick_action_runs_as, { name: targetName })}
-      </div>
-    </div>
-  );
-
-  if (!action.input_enabled) {
-    return (
-      <Tooltip>
-        <TooltipTrigger render={row} />
-        <TooltipContent side="left">{tooltipBody}</TooltipContent>
-      </Tooltip>
-    );
-  }
-
   return (
-    <Popover open={inputOpen} onOpenChange={setInputOpen}>
-      <PopoverTrigger render={row} />
-      <PopoverContent align="start" side="left" className="w-72 p-3">
-        <div className="space-y-2">
-          <label htmlFor={`qa-input-${action.id}`} className="text-xs font-medium">
-            {action.input_label || t(($) => $.detail.quick_action_input_fallback_label)}
-          </label>
-          <Input
-            id={`qa-input-${action.id}`}
-            autoFocus
-            value={inputValue}
-            placeholder={action.input_placeholder}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                // A required input blocks submit; an optional one runs blank.
-                if (action.input_required && inputValue.trim() === "") return;
-                void handleRun(inputValue);
-              }
-            }}
-          />
-          <div className="flex items-center justify-between">
-            {/* The placeholder already sits in the field; this line carries the
-                one thing the field cannot — whether blank is allowed. */}
-            <span className="text-[11px] text-muted-foreground">
-              {action.input_required
-                ? t(($) => $.detail.quick_action_input_required_hint)
-                : t(($) => $.detail.quick_action_input_optional_hint)}
-            </span>
-            <Button
-              size="sm"
-              disabled={running || (action.input_required && inputValue.trim() === "")}
-              onClick={() => void handleRun(inputValue)}
-            >
-              <CornerDownLeft className="size-3" />
-              {t(($) => $.detail.quick_action_run)}
-            </Button>
+    <Tooltip>
+      <TooltipTrigger render={row} />
+      <TooltipContent side="left">
+        <div className="space-y-0.5">
+          <div className="font-medium">{action.name}</div>
+          {action.description ? <div>{action.description}</div> : null}
+          <div className="text-muted-foreground">
+            {t(($) => $.detail.quick_action_runs_as, { name: targetName })}
           </div>
         </div>
-      </PopoverContent>
-    </Popover>
+      </TooltipContent>
+    </Tooltip>
   );
 }

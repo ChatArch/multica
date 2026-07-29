@@ -24,7 +24,6 @@ WHERE workspace_id = $1 AND status = 'active';
 -- name: CreateQuickAction :one
 INSERT INTO quick_action (
     workspace_id, name, description, assignee_type, assignee_id, prompt,
-    input_enabled, input_label, input_placeholder, input_required,
     visibility, created_by_type, created_by_id
 ) VALUES (
     sqlc.arg('workspace_id')::uuid,
@@ -33,10 +32,6 @@ INSERT INTO quick_action (
     sqlc.arg('assignee_type')::text,
     sqlc.arg('assignee_id')::uuid,
     sqlc.arg('prompt')::text,
-    sqlc.arg('input_enabled')::bool,
-    sqlc.arg('input_label')::text,
-    sqlc.arg('input_placeholder')::text,
-    sqlc.arg('input_required')::bool,
     sqlc.arg('visibility')::text,
     sqlc.arg('created_by_type')::text,
     sqlc.arg('created_by_id')::uuid
@@ -53,10 +48,6 @@ UPDATE quick_action SET
     assignee_type = COALESCE(sqlc.narg('assignee_type'), assignee_type),
     assignee_id = COALESCE(sqlc.narg('assignee_id'), assignee_id),
     prompt = COALESCE(sqlc.narg('prompt'), prompt),
-    input_enabled = COALESCE(sqlc.narg('input_enabled'), input_enabled),
-    input_label = COALESCE(sqlc.narg('input_label'), input_label),
-    input_placeholder = COALESCE(sqlc.narg('input_placeholder'), input_placeholder),
-    input_required = COALESCE(sqlc.narg('input_required'), input_required),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     status = COALESCE(sqlc.narg('status'), status),
     updated_at = now()

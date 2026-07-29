@@ -26,7 +26,6 @@ func (q *Queries) CountActiveQuickActions(ctx context.Context, workspaceID pgtyp
 const createQuickAction = `-- name: CreateQuickAction :one
 INSERT INTO quick_action (
     workspace_id, name, description, assignee_type, assignee_id, prompt,
-    input_enabled, input_label, input_placeholder, input_required,
     visibility, created_by_type, created_by_id
 ) VALUES (
     $1::uuid,
@@ -35,31 +34,23 @@ INSERT INTO quick_action (
     $4::text,
     $5::uuid,
     $6::text,
-    $7::bool,
+    $7::text,
     $8::text,
-    $9::text,
-    $10::bool,
-    $11::text,
-    $12::text,
-    $13::uuid
+    $9::uuid
 )
-RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
 `
 
 type CreateQuickActionParams struct {
-	WorkspaceID      pgtype.UUID `json:"workspace_id"`
-	Name             string      `json:"name"`
-	Description      string      `json:"description"`
-	AssigneeType     string      `json:"assignee_type"`
-	AssigneeID       pgtype.UUID `json:"assignee_id"`
-	Prompt           string      `json:"prompt"`
-	InputEnabled     bool        `json:"input_enabled"`
-	InputLabel       string      `json:"input_label"`
-	InputPlaceholder string      `json:"input_placeholder"`
-	InputRequired    bool        `json:"input_required"`
-	Visibility       string      `json:"visibility"`
-	CreatedByType    string      `json:"created_by_type"`
-	CreatedByID      pgtype.UUID `json:"created_by_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	Name          string      `json:"name"`
+	Description   string      `json:"description"`
+	AssigneeType  string      `json:"assignee_type"`
+	AssigneeID    pgtype.UUID `json:"assignee_id"`
+	Prompt        string      `json:"prompt"`
+	Visibility    string      `json:"visibility"`
+	CreatedByType string      `json:"created_by_type"`
+	CreatedByID   pgtype.UUID `json:"created_by_id"`
 }
 
 func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionParams) (QuickAction, error) {
@@ -70,10 +61,6 @@ func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionPa
 		arg.AssigneeType,
 		arg.AssigneeID,
 		arg.Prompt,
-		arg.InputEnabled,
-		arg.InputLabel,
-		arg.InputPlaceholder,
-		arg.InputRequired,
 		arg.Visibility,
 		arg.CreatedByType,
 		arg.CreatedByID,
@@ -87,10 +74,6 @@ func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionPa
 		&i.AssigneeType,
 		&i.AssigneeID,
 		&i.Prompt,
-		&i.InputEnabled,
-		&i.InputLabel,
-		&i.InputPlaceholder,
-		&i.InputRequired,
 		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,
@@ -119,7 +102,7 @@ func (q *Queries) DeleteQuickAction(ctx context.Context, arg DeleteQuickActionPa
 }
 
 const getQuickAction = `-- name: GetQuickAction :one
-SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
+SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -139,10 +122,6 @@ func (q *Queries) GetQuickAction(ctx context.Context, arg GetQuickActionParams) 
 		&i.AssigneeType,
 		&i.AssigneeID,
 		&i.Prompt,
-		&i.InputEnabled,
-		&i.InputLabel,
-		&i.InputPlaceholder,
-		&i.InputRequired,
 		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,
@@ -156,7 +135,7 @@ func (q *Queries) GetQuickAction(ctx context.Context, arg GetQuickActionParams) 
 }
 
 const listQuickActions = `-- name: ListQuickActions :many
-SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
+SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
 WHERE workspace_id = $1::uuid
   AND ($2::bool OR status = 'active')
   AND (visibility = 'public' OR created_by_id = $3::uuid)
@@ -194,10 +173,6 @@ func (q *Queries) ListQuickActions(ctx context.Context, arg ListQuickActionsPara
 			&i.AssigneeType,
 			&i.AssigneeID,
 			&i.Prompt,
-			&i.InputEnabled,
-			&i.InputLabel,
-			&i.InputPlaceholder,
-			&i.InputRequired,
 			&i.Visibility,
 			&i.Status,
 			&i.LastUsedAt,
@@ -244,31 +219,23 @@ UPDATE quick_action SET
     assignee_type = COALESCE($5, assignee_type),
     assignee_id = COALESCE($6, assignee_id),
     prompt = COALESCE($7, prompt),
-    input_enabled = COALESCE($8, input_enabled),
-    input_label = COALESCE($9, input_label),
-    input_placeholder = COALESCE($10, input_placeholder),
-    input_required = COALESCE($11, input_required),
-    visibility = COALESCE($12, visibility),
-    status = COALESCE($13, status),
+    visibility = COALESCE($8, visibility),
+    status = COALESCE($9, status),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
 `
 
 type UpdateQuickActionParams struct {
-	ID               pgtype.UUID `json:"id"`
-	WorkspaceID      pgtype.UUID `json:"workspace_id"`
-	Name             pgtype.Text `json:"name"`
-	Description      pgtype.Text `json:"description"`
-	AssigneeType     pgtype.Text `json:"assignee_type"`
-	AssigneeID       pgtype.UUID `json:"assignee_id"`
-	Prompt           pgtype.Text `json:"prompt"`
-	InputEnabled     pgtype.Bool `json:"input_enabled"`
-	InputLabel       pgtype.Text `json:"input_label"`
-	InputPlaceholder pgtype.Text `json:"input_placeholder"`
-	InputRequired    pgtype.Bool `json:"input_required"`
-	Visibility       pgtype.Text `json:"visibility"`
-	Status           pgtype.Text `json:"status"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	Name         pgtype.Text `json:"name"`
+	Description  pgtype.Text `json:"description"`
+	AssigneeType pgtype.Text `json:"assignee_type"`
+	AssigneeID   pgtype.UUID `json:"assignee_id"`
+	Prompt       pgtype.Text `json:"prompt"`
+	Visibility   pgtype.Text `json:"visibility"`
+	Status       pgtype.Text `json:"status"`
 }
 
 // COALESCE-on-narg partial update: an omitted field keeps its stored value.
@@ -283,10 +250,6 @@ func (q *Queries) UpdateQuickAction(ctx context.Context, arg UpdateQuickActionPa
 		arg.AssigneeType,
 		arg.AssigneeID,
 		arg.Prompt,
-		arg.InputEnabled,
-		arg.InputLabel,
-		arg.InputPlaceholder,
-		arg.InputRequired,
 		arg.Visibility,
 		arg.Status,
 	)
@@ -299,10 +262,6 @@ func (q *Queries) UpdateQuickAction(ctx context.Context, arg UpdateQuickActionPa
 		&i.AssigneeType,
 		&i.AssigneeID,
 		&i.Prompt,
-		&i.InputEnabled,
-		&i.InputLabel,
-		&i.InputPlaceholder,
-		&i.InputRequired,
 		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,

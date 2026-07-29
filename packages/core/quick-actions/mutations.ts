@@ -65,9 +65,8 @@ export function useDeleteQuickAction() {
 export function useRunQuickAction(issueId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
-  return useMutation<Comment, Error, { quickActionId: string; input?: string }>({
-    mutationFn: ({ quickActionId, input }) =>
-      api.runQuickAction(issueId, quickActionId, input),
+  return useMutation<Comment, Error, { quickActionId: string }>({
+    mutationFn: ({ quickActionId }) => api.runQuickAction(issueId, quickActionId),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
       qc.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -39,60 +38,50 @@ import (
 //     so it is runnable by construction; the run-time gate still has the final
 //     say, so a target that goes private later fails loudly at click time
 //     rather than silently granting anything.
-//   - Prompt templating is flat substitution over a fixed whitelist. No
-//     conditionals, loops, or filters — the agent already reads the whole
-//     issue, so natural language is the control flow.
+//   - The prompt is sent VERBATIM. There is no interpolation and no runtime
+//     input: every variable considered ({{issue.title}}, {{issue.identifier}},
+//     {{issue.url}}, {{user.name}}, {{date}}) named something the agent
+//     already has from the issue context and the comment's own author, and the
+//     `/` slash command covers "same action, one detail different" by dropping
+//     the rendered body into the composer to edit. Write-time validation still
+//     REJECTS any `{{...}}` so a habitual template token cannot land literally
+//     in an agent's instructions.
 const (
 	maxActiveQuickActionsPerWorkspace = 30
 	maxQuickActionNameLen             = 32
 	maxQuickActionDescriptionLen      = 200
 	maxQuickActionPromptLen           = 4000
-	maxQuickActionInputLabelLen       = 60
-	maxQuickActionInputValueLen       = 2000
 )
 
-// quickActionVariableRe finds every {{token}} in a prompt. Whitespace inside
-// the braces is tolerated on parse so "{{ input }}" is recognized (and then
-// validated / substituted) rather than silently surviving as literal text.
-var quickActionVariableRe = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}`)
-
-// quickActionVariables is the closed whitelist. Keep it small on purpose: the
-// agent can already read the issue, so a variable earns its place only when it
-// changes what the agent ATTENDS TO, not what it knows.
-var quickActionVariables = map[string]struct{}{
-	"issue.title":      {},
-	"issue.identifier": {},
-	"issue.url":        {},
-	"user.name":        {},
-	"date":             {},
-	"input":            {},
-}
-
-const quickActionInputVariable = "input"
+// quickActionTemplateTokenRe catches any `{{...}}` in a prompt.
+//
+// Templating is deliberately unsupported, but silence is not the same as
+// safety: someone carrying the habit over from autopilot's issue-title
+// template would otherwise have `{{issue.title}}` rendered literally into an
+// agent's instructions and never notice. Rejecting at write time is a fraction
+// of the cost of the interpolation engine it replaces, and it keeps the door
+// open to enabling variables later without touching stored data.
+var quickActionTemplateTokenRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type QuickActionResponse struct {
-	ID               string  `json:"id"`
-	WorkspaceID      string  `json:"workspace_id"`
-	Name             string  `json:"name"`
-	Description      string  `json:"description"`
-	AssigneeType     string  `json:"assignee_type"`
-	AssigneeID       string  `json:"assignee_id"`
-	Prompt           string  `json:"prompt"`
-	InputEnabled     bool    `json:"input_enabled"`
-	InputLabel       string  `json:"input_label"`
-	InputPlaceholder string  `json:"input_placeholder"`
-	InputRequired    bool    `json:"input_required"`
-	Visibility       string  `json:"visibility"`
-	Status           string  `json:"status"`
-	LastUsedAt       *string `json:"last_used_at"`
-	UseCount         int64   `json:"use_count"`
-	CreatedByID      string  `json:"created_by_id"`
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	ID           string  `json:"id"`
+	WorkspaceID  string  `json:"workspace_id"`
+	Name         string  `json:"name"`
+	Description  string  `json:"description"`
+	AssigneeType string  `json:"assignee_type"`
+	AssigneeID   string  `json:"assignee_id"`
+	Prompt       string  `json:"prompt"`
+	Visibility   string  `json:"visibility"`
+	Status       string  `json:"status"`
+	LastUsedAt   *string `json:"last_used_at"`
+	UseCount     int64   `json:"use_count"`
+	CreatedByID  string  `json:"created_by_id"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
 
 	// Target identity, for display. Always populated when the target resolves:
 	// a `public` action binds a publicly-invocable agent whose name everyone
@@ -109,34 +98,22 @@ type QuickActionResponse struct {
 }
 
 type CreateQuickActionRequest struct {
-	Name             string `json:"name"`
-	Description      string `json:"description"`
-	AssigneeType     string `json:"assignee_type"`
-	AssigneeID       string `json:"assignee_id"`
-	Prompt           string `json:"prompt"`
-	InputEnabled     bool   `json:"input_enabled"`
-	InputLabel       string `json:"input_label"`
-	InputPlaceholder string `json:"input_placeholder"`
-	InputRequired    bool   `json:"input_required"`
-	Visibility       string `json:"visibility"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	AssigneeType string `json:"assignee_type"`
+	AssigneeID   string `json:"assignee_id"`
+	Prompt       string `json:"prompt"`
+	Visibility   string `json:"visibility"`
 }
 
 type UpdateQuickActionRequest struct {
-	Name             *string `json:"name"`
-	Description      *string `json:"description"`
-	AssigneeType     *string `json:"assignee_type"`
-	AssigneeID       *string `json:"assignee_id"`
-	Prompt           *string `json:"prompt"`
-	InputEnabled     *bool   `json:"input_enabled"`
-	InputLabel       *string `json:"input_label"`
-	InputPlaceholder *string `json:"input_placeholder"`
-	InputRequired    *bool   `json:"input_required"`
-	Visibility       *string `json:"visibility"`
-	Status           *string `json:"status"`
-}
-
-type RunQuickActionRequest struct {
-	Input string `json:"input"`
+	Name         *string `json:"name"`
+	Description  *string `json:"description"`
+	AssigneeType *string `json:"assignee_type"`
+	AssigneeID   *string `json:"assignee_id"`
+	Prompt       *string `json:"prompt"`
+	Visibility   *string `json:"visibility"`
+	Status       *string `json:"status"`
 }
 
 type ListQuickActionsResponse struct {
@@ -158,15 +135,9 @@ func validateQuickActionName(raw string) (string, error) {
 	return name, nil
 }
 
-// validateQuickActionPrompt enforces the closed variable whitelist and the
-// two-way {{input}} agreement.
-//
-// Both directions matter. An enabled input whose prompt never references
-// {{input}} would silently discard whatever the user typed; a prompt
-// referencing {{input}} with the input disabled would render the literal
-// braces into the agent's instructions. Rejecting at write time follows the
-// autopilot issue-title-template rule: a typo must never land silently.
-func validateQuickActionPrompt(raw string, inputEnabled bool) (string, error) {
+// validateQuickActionPrompt trims, bounds, and refuses template syntax. See
+// quickActionTemplateTokenRe for why the rejection outlives the feature.
+func validateQuickActionPrompt(raw string) (string, error) {
 	prompt := strings.TrimSpace(raw)
 	if prompt == "" {
 		return "", fmt.Errorf("prompt is required")
@@ -174,38 +145,10 @@ func validateQuickActionPrompt(raw string, inputEnabled bool) (string, error) {
 	if utf8.RuneCountInString(prompt) > maxQuickActionPromptLen {
 		return "", fmt.Errorf("prompt must be at most %d characters", maxQuickActionPromptLen)
 	}
-	usesInput := false
-	for _, m := range quickActionVariableRe.FindAllStringSubmatch(prompt, -1) {
-		name := m[1]
-		if _, ok := quickActionVariables[name]; !ok {
-			return "", fmt.Errorf("unknown variable {{%s}}; supported: %s", name, strings.Join(quickActionVariableNames(), ", "))
-		}
-		if name == quickActionInputVariable {
-			usesInput = true
-		}
-	}
-	if inputEnabled && !usesInput {
-		return "", fmt.Errorf("runtime input is enabled but the prompt does not reference {{input}}")
-	}
-	if !inputEnabled && usesInput {
-		return "", fmt.Errorf("the prompt references {{input}} but runtime input is not enabled")
+	if token := quickActionTemplateTokenRe.FindString(prompt); token != "" {
+		return "", fmt.Errorf("template variables are not supported yet; remove %s — the agent already reads this issue", token)
 	}
 	return prompt, nil
-}
-
-func quickActionVariableNames() []string {
-	names := make([]string, 0, len(quickActionVariables))
-	for n := range quickActionVariables {
-		names = append(names, "{{"+n+"}}")
-	}
-	for i := 0; i < len(names); i++ {
-		for j := i + 1; j < len(names); j++ {
-			if names[j] < names[i] {
-				names[i], names[j] = names[j], names[i]
-			}
-		}
-	}
-	return names
 }
 
 func validateQuickActionAssignee(assigneeType, assigneeID string) error {
@@ -325,71 +268,27 @@ func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction) 
 	target := h.resolveQuickActionTarget(ctx, qa)
 
 	resp := QuickActionResponse{
-		ID:               uuidToString(qa.ID),
-		WorkspaceID:      uuidToString(qa.WorkspaceID),
-		Name:             qa.Name,
-		Description:      qa.Description,
-		AssigneeType:     qa.AssigneeType,
-		AssigneeID:       uuidToString(qa.AssigneeID),
-		Prompt:           qa.Prompt,
-		InputEnabled:     qa.InputEnabled,
-		InputLabel:       qa.InputLabel,
-		InputPlaceholder: qa.InputPlaceholder,
-		InputRequired:    qa.InputRequired,
-		Visibility:       qa.Visibility,
-		Status:           qa.Status,
-		LastUsedAt:       timestampToPtr(qa.LastUsedAt),
-		UseCount:         qa.UseCount,
-		CreatedByID:      uuidToString(qa.CreatedByID),
-		CreatedAt:        timestampToString(qa.CreatedAt),
-		UpdatedAt:        timestampToString(qa.UpdatedAt),
-		TargetMissing:    !target.Found,
+		ID:            uuidToString(qa.ID),
+		WorkspaceID:   uuidToString(qa.WorkspaceID),
+		Name:          qa.Name,
+		Description:   qa.Description,
+		AssigneeType:  qa.AssigneeType,
+		AssigneeID:    uuidToString(qa.AssigneeID),
+		Prompt:        qa.Prompt,
+		Visibility:    qa.Visibility,
+		Status:        qa.Status,
+		LastUsedAt:    timestampToPtr(qa.LastUsedAt),
+		UseCount:      qa.UseCount,
+		CreatedByID:   uuidToString(qa.CreatedByID),
+		CreatedAt:     timestampToString(qa.CreatedAt),
+		UpdatedAt:     timestampToString(qa.UpdatedAt),
+		TargetMissing: !target.Found,
 	}
 	if target.Found {
 		resp.TargetName = target.Name
 		resp.TargetPublic = h.agentInvocableByEveryone(ctx, target.Agent)
 	}
 	return resp
-}
-
-// ---------------------------------------------------------------------------
-// Prompt rendering
-// ---------------------------------------------------------------------------
-
-// renderQuickActionPrompt performs the flat substitution. Rendering lives on
-// the server for three reasons: three clients would otherwise each grow their
-// own interpolation and drift; a client-assembled body would let anyone submit
-// arbitrary text under a trusted action's name, destroying the audit value; and
-// only the server can stamp quick_action_id for usage analytics.
-func renderQuickActionPrompt(prompt string, issue db.Issue, identifier, userName, publicURL, input string) string {
-	values := map[string]string{
-		"issue.title":            issue.Title,
-		"issue.identifier":       identifier,
-		"issue.url":              quickActionIssueURL(publicURL, uuidToString(issue.ID)),
-		"user.name":              userName,
-		"date":                   time.Now().UTC().Format("2006-01-02"),
-		quickActionInputVariable: input,
-	}
-	return quickActionVariableRe.ReplaceAllStringFunc(prompt, func(match string) string {
-		groups := quickActionVariableRe.FindStringSubmatch(match)
-		if len(groups) < 2 {
-			return match
-		}
-		if v, ok := values[groups[1]]; ok {
-			return v
-		}
-		// Unreachable for stored prompts (write-time validation rejects
-		// unknown variables); leave the token untouched rather than blanking
-		// text if an older row ever predates the whitelist.
-		return match
-	})
-}
-
-func quickActionIssueURL(publicURL, issueID string) string {
-	if publicURL == "" {
-		return ""
-	}
-	return strings.TrimRight(publicURL, "/") + "/issues/" + issueID
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +403,7 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	prompt, err := validateQuickActionPrompt(req.Prompt, req.InputEnabled)
+	prompt, err := validateQuickActionPrompt(req.Prompt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -513,15 +412,6 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	inputLabel, ok := trimmedWithinLimit(w, req.InputLabel, maxQuickActionInputLabelLen, "input_label")
-	if !ok {
-		return
-	}
-	inputPlaceholder, ok := trimmedWithinLimit(w, req.InputPlaceholder, maxQuickActionInputLabelLen, "input_placeholder")
-	if !ok {
-		return
-	}
-
 	if !h.validateQuickActionBinding(w, r, req.AssigneeType, assigneeUUID, wsUUID, visibility) {
 		return
 	}
@@ -533,19 +423,15 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	qa, err := h.Queries.CreateQuickAction(r.Context(), db.CreateQuickActionParams{
-		WorkspaceID:      wsUUID,
-		Name:             name,
-		Description:      description,
-		AssigneeType:     req.AssigneeType,
-		AssigneeID:       assigneeUUID,
-		Prompt:           prompt,
-		InputEnabled:     req.InputEnabled,
-		InputLabel:       inputLabel,
-		InputPlaceholder: inputPlaceholder,
-		InputRequired:    req.InputRequired && req.InputEnabled,
-		Visibility:       visibility,
-		CreatedByType:    "member",
-		CreatedByID:      parseUUID(userID),
+		WorkspaceID:   wsUUID,
+		Name:          name,
+		Description:   description,
+		AssigneeType:  req.AssigneeType,
+		AssigneeID:    assigneeUUID,
+		Prompt:        prompt,
+		Visibility:    visibility,
+		CreatedByType: "member",
+		CreatedByID:   parseUUID(userID),
 	})
 	if err != nil {
 		slog.Warn("create quick action failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -644,47 +530,13 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The prompt and the input toggle are validated as a pair even when only
-	// one of them is being patched — otherwise a lone `input_enabled: true`
-	// could land against a prompt with no {{input}}.
-	if req.Prompt != nil || req.InputEnabled != nil {
-		newPrompt := existing.Prompt
-		if req.Prompt != nil {
-			newPrompt = *req.Prompt
-		}
-		newEnabled := existing.InputEnabled
-		if req.InputEnabled != nil {
-			newEnabled = *req.InputEnabled
-		}
-		prompt, err := validateQuickActionPrompt(newPrompt, newEnabled)
+	if req.Prompt != nil {
+		prompt, err := validateQuickActionPrompt(*req.Prompt)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		params.Prompt = pgtype.Text{String: prompt, Valid: true}
-		params.InputEnabled = pgtype.Bool{Bool: newEnabled, Valid: true}
-		if !newEnabled {
-			// Disabling the input clears its required flag so a later re-enable
-			// starts from a clean, non-blocking state.
-			params.InputRequired = pgtype.Bool{Bool: false, Valid: true}
-		}
-	}
-	if req.InputLabel != nil {
-		label, ok := trimmedWithinLimit(w, *req.InputLabel, maxQuickActionInputLabelLen, "input_label")
-		if !ok {
-			return
-		}
-		params.InputLabel = pgtype.Text{String: label, Valid: true}
-	}
-	if req.InputPlaceholder != nil {
-		placeholder, ok := trimmedWithinLimit(w, *req.InputPlaceholder, maxQuickActionInputLabelLen, "input_placeholder")
-		if !ok {
-			return
-		}
-		params.InputPlaceholder = pgtype.Text{String: placeholder, Valid: true}
-	}
-	if req.InputRequired != nil {
-		params.InputRequired = pgtype.Bool{Bool: *req.InputRequired, Valid: true}
 	}
 	if req.Status != nil {
 		if *req.Status != "active" && *req.Status != "archived" {
@@ -805,18 +657,6 @@ func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req RunQuickActionRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-	}
-	input := strings.TrimSpace(req.Input)
-	if !qa.InputEnabled {
-		input = ""
-	}
-
 	target := h.resolveQuickActionTarget(r.Context(), qa)
 	if !target.Found {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTargetUnavailable)
@@ -831,25 +671,17 @@ func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"content": h.buildQuickActionBody(r, qa, issue, target, userID, input),
+		"content": buildQuickActionBody(qa, target),
 	})
 }
 
-// buildQuickActionBody renders the prompt and prepends the mention line that
-// actually triggers the run. It is parsed by the same ParseMentions the
-// composer's output goes through, so a quick action is indistinguishable from
-// a hand-typed @mention downstream.
-func (h *Handler) buildQuickActionBody(r *http.Request, qa db.QuickAction, issue db.Issue, target quickActionTarget, userID, input string) string {
-	identifier := ""
-	if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil {
-		identifier = fmt.Sprintf("%s-%d", ws.IssuePrefix, issue.Number)
-	}
-	userName := ""
-	if u, err := h.Queries.GetUser(r.Context(), parseUUID(userID)); err == nil {
-		userName = u.Name
-	}
-	rendered := renderQuickActionPrompt(qa.Prompt, issue, identifier, userName, h.cfg.PublicURL, input)
-	return fmt.Sprintf("[@%s](mention://%s/%s)\n\n%s", target.Name, target.MentionType, target.MentionID, rendered)
+// buildQuickActionBody prepends the mention line that actually triggers the
+// run. It is parsed by the same ParseMentions the composer's output goes
+// through, so a quick action is indistinguishable from a hand-typed @mention
+// downstream. The prompt itself is passed through untouched — see the file
+// header for why there is no interpolation step.
+func buildQuickActionBody(qa db.QuickAction, target quickActionTarget) string {
+	return fmt.Sprintf("[@%s](mention://%s/%s)\n\n%s", target.Name, target.MentionType, target.MentionID, qa.Prompt)
 }
 
 // RunQuickAction renders the action and posts it as a quick_action comment,
@@ -893,29 +725,6 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req RunQuickActionRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-	}
-	input := sanitizeNullBytes(strings.TrimSpace(req.Input))
-	if !qa.InputEnabled {
-		// Ignore a stray input on an action that declares none rather than
-		// erroring: the rendered prompt has no {{input}} slot to put it in, so
-		// accepting it silently would be the real bug.
-		input = ""
-	}
-	if qa.InputEnabled && qa.InputRequired && input == "" {
-		writeError(w, http.StatusBadRequest, "this quick action requires an input")
-		return
-	}
-	if utf8.RuneCountInString(input) > maxQuickActionInputValueLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("input must be at most %d characters", maxQuickActionInputValueLen))
-		return
-	}
-
 	target := h.resolveQuickActionTarget(r.Context(), qa)
 	if !target.Found {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonTargetUnavailable)
@@ -931,7 +740,7 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := sanitizeNullBytes(h.buildQuickActionBody(r, qa, issue, target, userID, input))
+	body := sanitizeNullBytes(buildQuickActionBody(qa, target))
 
 	comment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
 		IssueID:       issue.ID,

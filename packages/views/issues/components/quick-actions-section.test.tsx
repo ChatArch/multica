@@ -59,10 +59,6 @@ function action(overrides: Partial<QuickAction> = {}): QuickAction {
     assignee_type: "agent",
     assignee_id: "agent-1",
     prompt: "review it",
-    input_enabled: false,
-    input_label: "",
-    input_placeholder: "",
-    input_required: false,
     visibility: "public",
     status: "active",
     last_used_at: null,
@@ -113,7 +109,7 @@ describe("QuickActionsSection", () => {
     fireEvent.click(screen.getByText("Code Review"));
 
     await waitFor(() =>
-      expect(runMock).toHaveBeenCalledWith({ quickActionId: "qa-1", input: undefined }),
+      expect(runMock).toHaveBeenCalledWith({ quickActionId: "qa-1" }),
     );
     await waitFor(() => expect(toastCalls[0]?.kind).toBe("success"));
     expect(toastCalls[0]?.message).toContain("Lambda");
@@ -178,14 +174,17 @@ describe("QuickActionsSection", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("opens an input field instead of running when the action asks for input", () => {
-    listData = [action({ input_enabled: true, input_label: "What should it focus on?" })];
+  it("runs on a single click — there is no per-action input step", () => {
+    // The `/` slash command covers "same action, one detail different" by
+    // dropping the rendered body into the composer, so the sidebar row stays a
+    // plain button with no second interaction tier.
+    runMock.mockResolvedValue(outcome("queued"));
     renderWithI18n(<QuickActionsSection issueId="i-1" />);
 
     fireEvent.click(screen.getByText("Code Review"));
 
-    expect(screen.getByText("What should it focus on?")).toBeInTheDocument();
-    expect(runMock).not.toHaveBeenCalled();
+    expect(runMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
   it("collapses everything past the sidebar limit behind More", () => {

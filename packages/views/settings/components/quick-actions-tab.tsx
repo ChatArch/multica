@@ -27,17 +27,12 @@ import type {
   QuickActionAssigneeType,
   QuickActionVisibility,
 } from "@multica/core/types";
-import {
-  QUICK_ACTION_VARIABLES,
-  findUnknownQuickActionVariables,
-  promptUsesQuickActionInput,
-} from "@multica/core/types";
+import { findQuickActionTemplateToken } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Label as FieldLabel } from "@multica/ui/components/ui/label";
-import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -146,10 +141,6 @@ interface FormState {
   assigneeType: QuickActionAssigneeType;
   assigneeId: string;
   prompt: string;
-  inputEnabled: boolean;
-  inputLabel: string;
-  inputPlaceholder: string;
-  inputRequired: boolean;
   visibility: QuickActionVisibility;
 }
 
@@ -159,10 +150,6 @@ const EMPTY_FORM: FormState = {
   assigneeType: "agent",
   assigneeId: "",
   prompt: "",
-  inputEnabled: false,
-  inputLabel: "",
-  inputPlaceholder: "",
-  inputRequired: false,
   visibility: "public",
 };
 
@@ -173,10 +160,6 @@ function toFormState(action: QuickAction): FormState {
     assigneeType: action.assignee_type === "squad" ? "squad" : "agent",
     assigneeId: action.assignee_id,
     prompt: action.prompt,
-    inputEnabled: action.input_enabled,
-    inputLabel: action.input_label,
-    inputPlaceholder: action.input_placeholder,
-    inputRequired: action.input_required,
     visibility: action.visibility === "private" ? "private" : "public",
   };
 }
@@ -285,12 +268,6 @@ export function QuickActionsTab() {
                           ? t(($) => $.quick_actions.never_used)
                           : t(($) => $.quick_actions.used_count, { count: action.use_count })}
                       </span>
-                      {action.input_enabled ? (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span className="shrink-0">{t(($) => $.quick_actions.has_input)}</span>
-                        </>
-                      ) : null}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -358,10 +335,6 @@ export function QuickActionsTab() {
               assignee_type: form.assigneeType,
               assignee_id: form.assigneeId,
               prompt: form.prompt,
-              input_enabled: form.inputEnabled,
-              input_label: form.inputLabel,
-              input_placeholder: form.inputPlaceholder,
-              input_required: form.inputRequired,
               visibility: form.visibility,
             });
           } else {
@@ -371,10 +344,6 @@ export function QuickActionsTab() {
               assignee_type: form.assigneeType,
               assignee_id: form.assigneeId,
               prompt: form.prompt,
-              input_enabled: form.inputEnabled,
-              input_label: form.inputLabel,
-              input_placeholder: form.inputPlaceholder,
-              input_required: form.inputRequired,
               visibility: form.visibility,
             });
           }
@@ -421,21 +390,16 @@ function QuickActionDialog({
     setForm(action ? toFormState(action) : EMPTY_FORM);
   }, [open, action]);
 
-  const unknownVars = useMemo(() => findUnknownQuickActionVariables(form.prompt), [form.prompt]);
-  const usesInput = useMemo(() => promptUsesQuickActionInput(form.prompt), [form.prompt]);
-
-  // Mirror the server's two-way {{input}} contract inline so the author sees
-  // the problem while typing instead of on submit. The server stays the
-  // authority; this is an affordance.
-  const inputMismatch =
-    (form.inputEnabled && !usesInput) || (!form.inputEnabled && usesInput);
+  // Mirror the server's rejection inline so the author sees it while typing
+  // instead of on submit. The server stays the authority; this is an
+  // affordance.
+  const templateToken = useMemo(() => findQuickActionTemplateToken(form.prompt), [form.prompt]);
 
   const canSave =
     form.name.trim().length > 0 &&
     form.prompt.trim().length > 0 &&
     form.assigneeId.length > 0 &&
-    unknownVars.length === 0 &&
-    !inputMismatch;
+    templateToken === null;
 
   const handleSubmit = async () => {
     if (!canSave) return;
@@ -448,10 +412,6 @@ function QuickActionDialog({
     } finally {
       setSaving(false);
     }
-  };
-
-  const insertVariable = (variable: string) => {
-    setForm((f) => ({ ...f, prompt: `${f.prompt}{{${variable}}}` }));
   };
 
   return (
@@ -543,106 +503,16 @@ function QuickActionDialog({
               placeholder={t(($) => $.quick_actions.field_prompt_placeholder)}
               onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
             />
-            <div className="flex flex-wrap items-center gap-1">
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            {templateToken !== null ? (
+              <p className="text-xs text-destructive">
+                {t(($) => $.quick_actions.template_not_supported, { token: templateToken })}
+              </p>
+            ) : (
+              <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <Info className="size-3" />
-                {t(($) => $.quick_actions.variables_hint)}
-              </span>
-              {QUICK_ACTION_VARIABLES.filter((v) => v !== "input").map((variable) => (
-                <button
-                  key={variable}
-                  type="button"
-                  className="rounded border border-surface-border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  onClick={() => insertVariable(variable)}
-                >
-                  {`{{${variable}}}`}
-                </button>
-              ))}
-            </div>
-            {unknownVars.length > 0 ? (
-              <p className="text-xs text-destructive">
-                {t(($) => $.quick_actions.unknown_variables, { vars: unknownVars.join(", ") })}
+                {t(($) => $.quick_actions.prompt_hint)}
               </p>
-            ) : null}
-          </div>
-
-          <div className="space-y-3 rounded-lg border border-surface-border p-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <FieldLabel htmlFor="qa-input-enabled">
-                  {t(($) => $.quick_actions.field_input_enabled)}
-                </FieldLabel>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {t(($) => $.quick_actions.field_input_hint)}
-                </p>
-              </div>
-              <Switch
-                id="qa-input-enabled"
-                checked={form.inputEnabled}
-                onCheckedChange={(checked) =>
-                  setForm((f) => ({
-                    ...f,
-                    inputEnabled: checked,
-                    // Adding the token for the author is the difference between
-                    // "toggle works" and "toggle produces an invalid pair they
-                    // must debug". Removing it on disable is the same courtesy.
-                    prompt: checked
-                      ? promptUsesQuickActionInput(f.prompt)
-                        ? f.prompt
-                        : `${f.prompt}${f.prompt.endsWith("\n") || f.prompt === "" ? "" : "\n"}{{input}}`
-                      : f.prompt.replace(/\{\{\s*input\s*\}\}/g, "").trimEnd(),
-                    inputRequired: checked ? f.inputRequired : false,
-                  }))
-                }
-              />
-            </div>
-
-            {form.inputEnabled ? (
-              <div className="space-y-3 border-t border-surface-border pt-3">
-                <div className="space-y-1.5">
-                  <FieldLabel htmlFor="qa-input-label">
-                    {t(($) => $.quick_actions.field_input_label)}
-                  </FieldLabel>
-                  <Input
-                    id="qa-input-label"
-                    value={form.inputLabel}
-                    maxLength={60}
-                    placeholder={t(($) => $.quick_actions.field_input_label_placeholder)}
-                    onChange={(e) => setForm((f) => ({ ...f, inputLabel: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <FieldLabel htmlFor="qa-input-placeholder">
-                    {t(($) => $.quick_actions.field_input_placeholder)}
-                  </FieldLabel>
-                  <Input
-                    id="qa-input-placeholder"
-                    value={form.inputPlaceholder}
-                    maxLength={60}
-                    placeholder={t(($) => $.quick_actions.field_input_placeholder_placeholder)}
-                    onChange={(e) => setForm((f) => ({ ...f, inputPlaceholder: e.target.value }))}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                  <FieldLabel htmlFor="qa-input-required">
-                    {t(($) => $.quick_actions.field_input_required)}
-                  </FieldLabel>
-                  <Switch
-                    id="qa-input-required"
-                    checked={form.inputRequired}
-                    onCheckedChange={(checked) => setForm((f) => ({ ...f, inputRequired: checked }))}
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            {inputMismatch ? (
-              <p className="text-xs text-destructive">
-                {form.inputEnabled
-                  ? t(($) => $.quick_actions.input_missing_token)
-                  : t(($) => $.quick_actions.input_orphan_token)}
-              </p>
-            ) : null}
+            )}
           </div>
         </div>
 

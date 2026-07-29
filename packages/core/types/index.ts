@@ -89,18 +89,14 @@ export type {
   QuickActionVisibility,
   QuickActionAssigneeType,
   QuickActionStatus,
-  QuickActionVariable,
   CreateQuickActionRequest,
   UpdateQuickActionRequest,
   ListQuickActionsResponse,
 } from "./quick-action";
 export {
   QUICK_ACTION_SIDEBAR_LIMIT,
-  QUICK_ACTION_VARIABLES,
-  QUICK_ACTION_INPUT_VARIABLE,
-  QUICK_ACTION_VARIABLE_RE,
-  findUnknownQuickActionVariables,
-  promptUsesQuickActionInput,
+  QUICK_ACTION_TEMPLATE_TOKEN_RE,
+  findQuickActionTemplateToken,
 } from "./quick-action";
 export type {
   TimelineEntry,

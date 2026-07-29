@@ -2556,10 +2556,9 @@ export class ApiClient {
    * reuse one result handler and inherit `queued` / `coalesced` / `deferred` /
    * `blocked` instead of a parallel vocabulary that would drift.
    */
-  async runQuickAction(issueId: string, quickActionId: string, input?: string): Promise<Comment> {
+  async runQuickAction(issueId: string, quickActionId: string): Promise<Comment> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/run`, {
       method: "POST",
-      body: JSON.stringify({ input: input ?? "" }),
     });
     return parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, {
       endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/run",
@@ -2572,10 +2571,9 @@ export class ApiClient {
    * Returns "" when the response cannot be read — callers must treat an empty
    * string as "insert nothing" rather than clearing the composer.
    */
-  async renderQuickAction(issueId: string, quickActionId: string, input?: string): Promise<string> {
+  async renderQuickAction(issueId: string, quickActionId: string): Promise<string> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/render`, {
       method: "POST",
-      body: JSON.stringify({ input: input ?? "" }),
     });
     const parsed = parseWithFallback(raw, QuickActionRenderSchema, { content: "" }, {
       endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/render",
