@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { render, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { setApiInstance } from "@multica/core/api";
+import type { ApiClient } from "@multica/core/api/client";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
-import { useCanonicalIssueUrl } from "./issue-detail-route";
+import { IssueDetailRoute, useCanonicalIssueUrl } from "./issue-detail-route";
+
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws-1",
+}));
 
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>(
@@ -11,6 +18,7 @@ vi.mock("@multica/core/paths", async () => {
   );
   return {
     ...actual,
+    useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme" }),
     useWorkspacePaths: () => actual.paths.workspace("acme"),
   };
 });
@@ -75,5 +83,67 @@ describe("useCanonicalIssueUrl", () => {
   it("normalizes a differently-cased identifier segment", () => {
     renderHook(() => useCanonicalIssueUrl("trs-134", "TRS-134"), { wrapper });
     expect(replace).toHaveBeenCalledWith("/acme/issues/TRS-134");
+  });
+});
+
+describe("IssueDetailRoute with an identifier that names no issue", () => {
+  // Regression: the route used to fall through to IssueDetail with the raw
+  // identifier. IssueDetail mounted a second observer on the query that had
+  // just failed, `retryOnMount` refetched it, the route flipped back to its
+  // skeleton and unmounted IssueDetail, then remounted it when the refetch
+  // failed — an unbounded request loop that never reached "not found".
+  // Retry is off so any count above 1 can only be a remount refetch.
+  it("settles on not-found without looping requests", async () => {
+    replace.mockClear();
+    push.mockClear();
+    const getIssue = vi.fn().mockRejectedValue(new Error("issue not found"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    const qc = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/ZZZ-134",
+            searchParams: new URLSearchParams(),
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="ZZZ-134" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(getIssue).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/ZZZ-134",
+            searchParams: new URLSearchParams(),
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="ZZZ-134" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    // A failed resolve must never rewrite the URL.
+    expect(replace).not.toHaveBeenCalled();
+    qc.clear();
   });
 });

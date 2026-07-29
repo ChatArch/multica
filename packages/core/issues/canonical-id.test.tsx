@@ -3,8 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import type { QueryClient } from "@tanstack/react-query";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
@@ -119,7 +118,7 @@ describe("useCanonicalIssue", () => {
     expect(qc.getQueryData(issueKeys.detail("ws-1", ISSUE_UUID))).toEqual(patched);
   });
 
-  it("stops resolving when the identifier does not exist", async () => {
+  it("reports a nonexistent identifier as terminally not-found", async () => {
     getIssue.mockRejectedValue(new Error("issue not found"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
@@ -128,11 +127,41 @@ describe("useCanonicalIssue", () => {
 
     // Generous timeout on purpose: the app's client retries once, so a
     // genuinely unresolvable identifier takes a retry round-trip to settle.
-    await waitFor(() => expect(result.current.isResolving).toBe(false), {
-      timeout: 5000,
-    });
+    await waitFor(() => expect(result.current.notFound).toBe(true), { timeout: 5000 });
     expect(result.current.canonicalId).toBeNull();
     expect(result.current.issue).toBeUndefined();
+    // Must NOT read as still-resolving: a caller that keeps showing a loading
+    // frame here re-enters the remount loop this state exists to prevent.
+    expect(result.current.isResolving).toBe(false);
+  });
+
+  // Regression: a failed resolution used to present as "not resolving, no id",
+  // so the route handed the raw identifier to IssueDetail, whose observer
+  // refetched the failed query, flipped this hook back to resolving, unmounted
+  // IssueDetail, and remounted it on the next failure — tens of thousands of
+  // requests in under a second, with the UI stuck on the skeleton.
+  it("settles a failed resolution without looping requests", async () => {
+    const noRetry = new QueryClient({
+      // Retry off isolates the loop from the app's `retry: 1`, so a count above
+      // 1 can only mean a remount refetched.
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+    getIssue.mockRejectedValue(new Error("issue not found"));
+
+    const { result, rerender } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
+      wrapper: createWrapper(noRetry),
+    });
+
+    await waitFor(() => expect(result.current.notFound).toBe(true));
+    const settled = getIssue.mock.calls.length;
+    expect(settled).toBe(1);
+
+    rerender();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(getIssue).toHaveBeenCalledTimes(settled);
+    expect(result.current.notFound).toBe(true);
+
+    noRetry.clear();
   });
 
   it("stays idle without a workspace id", () => {

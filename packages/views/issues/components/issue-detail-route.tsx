@@ -5,7 +5,7 @@ import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
-import { IssueDetail, IssueDetailSkeleton } from "./issue-detail";
+import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
 
 interface IssueDetailRouteProps {
   /**
@@ -54,13 +54,17 @@ export function useCanonicalIssueUrl(routeId: string, identifier: string | undef
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
 
   useCanonicalIssueUrl(routeId, issue?.identifier);
 
   if (isResolving) return <IssueDetailSkeleton />;
 
-  // An identifier that resolved to nothing falls through with the raw segment
-  // so `IssueDetail` renders its own "issue not found" state.
-  return <IssueDetail issueId={canonicalId ?? routeId} onDelete={onDelete} />;
+  // Render not-found here rather than handing the unresolved segment down.
+  // `IssueDetail` would mount a second observer on the query that just failed,
+  // refetch it, and restart this component's resolve/remount cycle — an
+  // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
+  if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
+
+  return <IssueDetail issueId={canonicalId} onDelete={onDelete} />;
 }

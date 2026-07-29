@@ -18,6 +18,17 @@ export interface CanonicalIssue {
   /** The issue itself, read from the UUID-keyed entry. */
   issue: Issue | undefined;
   isResolving: boolean;
+  /**
+   * Terminal: this identifier does not name an issue in this workspace.
+   *
+   * Callers MUST branch on this and render a not-found state rather than
+   * handing the unresolved segment to a view that will query it again. A
+   * second observer mounting on the failed query refetches it
+   * (`retryOnMount`), which flips this hook back to resolving, unmounts that
+   * view, and remounts it when the refetch fails — an unbounded request loop
+   * that never settles on "not found".
+   */
+  notFound: boolean;
 }
 
 /**
@@ -58,9 +69,16 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
     initialData: isUuid ? undefined : resolve.data,
   });
 
+  // Read the resolution query's own settled state rather than "pending and no
+  // data": a failed resolution must present as terminally not-found, never as
+  // still-resolving, or the caller flips back to a loading frame and the
+  // remount loop described on `notFound` starts.
+  const failed = resolveEnabled && resolve.isError;
+
   return {
     canonicalId,
     issue: detail.data,
-    isResolving: resolveEnabled && resolve.isPending,
+    isResolving: resolveEnabled && !failed && resolve.data === undefined,
+    notFound: failed,
   };
 }

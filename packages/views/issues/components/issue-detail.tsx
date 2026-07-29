@@ -897,6 +897,34 @@ interface IssueDetailProps {
 }
 
 // ---------------------------------------------------------------------------
+// Not found
+// ---------------------------------------------------------------------------
+
+/**
+ * Exported so `IssueDetailRoute` can render it for an identifier that names no
+ * issue. The route must NOT fall through to `IssueDetail` in that case: doing
+ * so mounts a second observer on the already-failed query, which refetches it
+ * and restarts the resolve/remount cycle indefinitely.
+ */
+export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean }) {
+  const { t } = useT("issues");
+  const router = useNavigation();
+  const paths = useWorkspacePaths();
+
+  return (
+    <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+      <p>{t(($) => $.detail.not_found)}</p>
+      {showBackLink && (
+        <Button variant="outline" size="sm" onClick={() => router.push(paths.issues())}>
+          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+          {t(($) => $.detail.back_to_issues)}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Loading skeleton
 // ---------------------------------------------------------------------------
 
@@ -965,7 +993,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const id = issueId;
-  const router = useNavigation();
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
 
@@ -1763,17 +1790,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }
 
   if (!issue) {
-    return (
-      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
-        {!onDelete && (
-          <Button variant="outline" size="sm" onClick={() => router.push(paths.issues())}>
-            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-            {t(($) => $.detail.back_to_issues)}
-          </Button>
-        )}
-      </div>
-    );
+    return <IssueNotFound showBackLink={!onDelete} />;
   }
 
   const sidebarContent = (
