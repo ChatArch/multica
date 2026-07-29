@@ -101,7 +101,7 @@ function TreeNodeItem({
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-center gap-1.5 py-1 text-left text-caption hover:bg-accent/50 rounded-sm"
+          className="flex w-full items-center gap-1.5 py-1 text-left text-xs hover:bg-accent/50 rounded-sm"
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
         >
           <ChevronIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -132,7 +132,7 @@ function TreeNodeItem({
       type="button"
       onClick={() => onSelect(node.path)}
       className={cn(
-        "flex w-full items-center gap-1.5 py-1 text-left text-caption rounded-sm",
+        "flex w-full items-center gap-1.5 py-1 text-left text-xs rounded-sm",
         isSelected
           ? "bg-accent text-accent-foreground"
           : "hover:bg-accent/50",
@@ -165,7 +165,7 @@ export function FileTree({
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
         <FolderOpen className="h-5 w-5 text-muted-foreground/40" />
-        <p className="mt-2 text-caption">{t(($) => $.file_tree.no_files)}</p>
+        <p className="mt-2 text-xs">{t(($) => $.file_tree.no_files)}</p>
       </div>
     );
   }

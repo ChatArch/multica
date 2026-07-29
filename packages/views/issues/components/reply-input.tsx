@@ -257,7 +257,7 @@ function ReplyInput({
             role="button"
             tabIndex={0}
             aria-label={placeholderText}
-            className="flex-1 min-h-0 cursor-text rich-text-editor text-body"
+            className="flex-1 min-h-0 cursor-text rich-text-editor text-sm"
             onClick={() => lazy.activate()}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {

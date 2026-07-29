@@ -125,7 +125,7 @@ export function AttributionBadge({
           render={
             <span
               className={cn(
-                "inline-flex min-w-0 items-center gap-1.5 text-caption",
+                "inline-flex min-w-0 items-center gap-1.5 text-xs",
                 uncertain ? "text-warning" : "text-foreground/80",
                 className
               )}
@@ -182,7 +182,7 @@ export function AttributionBadge({
             </span>
             <span
               className={cn(
-                "text-micro",
+                "text-[11px]",
                 uncertain ? "text-warning" : "text-muted-foreground"
               )}
             >

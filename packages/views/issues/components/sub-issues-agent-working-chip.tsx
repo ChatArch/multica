@@ -58,7 +58,7 @@ export const SubIssuesAgentWorkingChip = memo(
           }
         >
           <AgentAvatarStack agentIds={agentIds} size="xs" max={3} />
-          <span className="animate-chat-text-shimmer text-micro font-medium leading-none tabular-nums">
+          <span className="animate-chat-text-shimmer text-[11px] font-medium leading-none tabular-nums">
             {t(($) => $.agent_activity.chip_agents_working, {
               count: agentIds.length,
             })}
