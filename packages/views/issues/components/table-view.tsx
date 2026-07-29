@@ -25,7 +25,6 @@ import {
   sortableKeyboardCoordinates,
   useSortable,
 } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import {
   getCoreRowModel,
   useReactTable,
@@ -44,6 +43,7 @@ import {
   ChevronRight,
   Download,
   EyeOff,
+  GripVertical,
   Loader2,
   Pencil,
   Plus,
@@ -400,31 +400,44 @@ function SortableColumnHeader({
         nodeRef.current = node;
         setNodeRef(node);
       }}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      // The whole header is the drag handle, so the wrapper spans the cell's
-      // own box — the negative margins undo the <th>'s padding and put it back
-      // inside. It renders exactly as before, but what travels is a
-      // header-sized block rather than the line of text in it, which is what
-      // lets going translucent be the entire drag state, as it is for a tab.
-      // The cursor carries the affordance: nothing else marks the header as
-      // draggable, and a grip that only appears on hover never did.
+      // Horizontal travel only. dnd-kit's layout animation also hands back
+      // scaleX/scaleY — old rect over new rect — to tween an item into the
+      // shape of the slot it landed in. Between two tabs of equal width that
+      // ratio is 1 and never shows; between two columns it is not, so a 174px
+      // column swapping with a 96px one gets stretched to 1.8x on the way.
+      // Reordering columns changes no column's width, so there is nothing for
+      // a shape tween to say here. The move and the settle stay animated
+      // through `transition`.
+      style={{
+        transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
+        transition,
+      }}
+      // The wrapper spans the cell's own box — the negative margins undo the
+      // <th>'s padding and put it back inside — so it renders exactly as at
+      // rest while being what travels: a header-sized block rather than the
+      // line of text in it. Height is derived rather than fixed at h-8: the
+      // strip is taller than the cell's nominal height once row borders are in.
       className={cn(
-        "group/header -mx-4 -my-2 flex h-8 min-w-0 items-center px-4",
-        sortable && (isDragging ? "cursor-grabbing" : "cursor-grab"),
+        "group/header -mx-4 -my-2 flex h-[calc(100%+1rem)] min-w-0 items-center px-4",
         isDragging && "opacity-60",
       )}
-      aria-label={sortable ? reorderLabel : undefined}
-      {...(sortable ? attributes : {})}
-      {...(sortable ? listeners : {})}
     >
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          // Kept out of the drag: a press here is only ever the sort/hide menu.
-          // The pointer sensor's 4px activation already lets a click through,
-          // but without this a drag begun on the label would move the column.
-          onPointerDown={(event) => event.stopPropagation()}
-          className="flex min-w-0 cursor-pointer items-center gap-1 rounded px-1.5 py-1 hover:bg-accent"
+      {sortable && (
+        <button
+          type="button"
+          aria-label={reorderLabel}
+          className={cn(
+            "-ml-2 mr-0.5 rounded p-0.5 text-muted-foreground/50 opacity-0 hover:bg-accent hover:text-muted-foreground group-hover/header:opacity-100 focus-visible:opacity-100",
+            isDragging ? "cursor-grabbing opacity-100" : "cursor-grab",
+          )}
+          {...attributes}
+          {...listeners}
         >
+          <GripVertical className="size-3" />
+        </button>
+      )}
+      <DropdownMenu>
+        <DropdownMenuTrigger className="flex min-w-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-accent">
           <span className="truncate">{label}</span>
           {active &&
             (sortDirection === "asc" ? (
