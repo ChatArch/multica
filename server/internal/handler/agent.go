@@ -1289,9 +1289,10 @@ type UpdateAgentRequest struct {
 	RuntimeID     *string `json:"runtime_id"`
 	RuntimeConfig any     `json:"runtime_config"`
 	// custom_env is intentionally NOT updatable through this endpoint.
-	// Use `PUT /api/agents/{id}/env` for env changes — that path is
-	// owner/admin-only, denies agent actors, and writes a persisted
-	// audit log entry. A `PUT /api/agents/{id}` body that carries
+	// Use `PUT /api/agents/{id}/env` for env changes — that path admits
+	// the agent owner or a workspace owner/admin, denies agent actors,
+	// and writes a persisted audit log entry. A `PUT /api/agents/{id}`
+	// body that carries
 	// `custom_env` is rejected with 400 in the handler below so a
 	// caller never believes they rotated a secret when the value is
 	// actually unchanged, and so a client that round-tripped a

@@ -2590,7 +2590,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// process instead of its own credential, so any API call the agent
 	// makes — even one that strips X-Agent-ID / X-Task-ID headers — is
 	// recognized server-side as actor=agent, closing the lateral-movement
-	// path on owner-only endpoints (e.g. `/api/agents/{id}/env`). Runtime
+	// path on human-only endpoints (e.g. `/api/agents/{id}/env`). Runtime
 	// owner is required because task tokens are still bound to an owning user;
 	// without one, fail the claim explicitly instead of letting the daemon
 	// fall back to a member/owner credential. MUL-3292.

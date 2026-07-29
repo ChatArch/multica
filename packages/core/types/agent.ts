@@ -384,7 +384,7 @@ export interface Agent {
    * Coarse metadata signalling whether the agent has any custom env
    * vars configured, without exposing the keys or values. Reads of
    * the real map go through the dedicated `GET /api/agents/{id}/env`
-   * endpoint (owner/admin only, audited). MUL-2600.
+   * endpoint (agent owner or workspace owner/admin, audited). MUL-2600.
    *
    * Optional in the type so older backends (pre-MUL-2600) that omit
    * the field don't crash the renderer; downstream code should treat
