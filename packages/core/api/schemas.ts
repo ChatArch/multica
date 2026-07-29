@@ -15,6 +15,7 @@ import type {
   BillingTransactionsPage,
   CancelTaskResponse,
   ChatDraftRestoresResponse,
+  Comment,
   CreateAgentFromTemplateResponse,
   CreateBillingCheckoutSessionResponse,
   CreateBillingPortalSessionResponse,
@@ -27,6 +28,8 @@ import type {
   Label,
   IssueProperty,
   ListPropertiesResponse,
+  QuickAction,
+  ListQuickActionsResponse,
   IssuePropertiesResponse,
   IssueTableGroupDescriptor,
   IssueTableFacetsResponse,
@@ -233,6 +236,71 @@ export const EMPTY_ISSUE_PROPERTY: IssueProperty = {
   created_at: "",
   updated_at: "",
 };
+
+// Quick actions (MUL-5465). `visibility` and `status` stay z.string() rather
+// than z.enum: they are server-driven, and a newer server adding a value must
+// degrade to the UI's default branch, not blank the whole list.
+export const QuickActionSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  description: z.string().optional().default(""),
+  assignee_type: z.string(),
+  assignee_id: z.string(),
+  prompt: z.string().optional().default(""),
+  input_enabled: z.boolean().optional().default(false),
+  input_label: z.string().optional().default(""),
+  input_placeholder: z.string().optional().default(""),
+  input_required: z.boolean().optional().default(false),
+  position: z.number().optional().default(0),
+  status: z.string().optional().default("active"),
+  last_used_at: z.string().nullable().optional().default(null),
+  use_count: z.number().optional().default(0),
+  created_at: z.string(),
+  updated_at: z.string(),
+  visibility: z.string().optional().default("unavailable"),
+  // Defaults to false: an older server that omits the field must not have its
+  // silence read as "everyone may run this".
+  can_run: z.boolean().optional().default(false),
+  target_name: z.string().optional(),
+  target_avatar_url: z.string().optional(),
+}).loose();
+
+export const EMPTY_QUICK_ACTION: QuickAction = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  description: "",
+  assignee_type: "agent",
+  assignee_id: "",
+  prompt: "",
+  input_enabled: false,
+  input_label: "",
+  input_placeholder: "",
+  input_required: false,
+  position: 0,
+  status: "active",
+  last_used_at: null,
+  use_count: 0,
+  created_at: "",
+  updated_at: "",
+  visibility: "unavailable",
+  can_run: false,
+};
+
+export const ListQuickActionsResponseSchema = z.object({
+  quick_actions: z.array(QuickActionSchema).default([]),
+  sidebar_limit: z.number().optional().default(5),
+}).loose();
+
+export const EMPTY_LIST_QUICK_ACTIONS_RESPONSE: ListQuickActionsResponse = {
+  quick_actions: [],
+  sidebar_limit: 5,
+};
+
+export const QuickActionRenderSchema = z.object({
+  content: z.string().default(""),
+}).loose();
 
 export const ListPropertiesResponseSchema = z.object({
   properties: z.array(IssuePropertySchema).default([]),
@@ -495,9 +563,31 @@ export const CommentSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   source_task_id: z.string().nullable().optional(),
+  // Set only on type === "quick_action" rows (MUL-5465).
+  quick_action_id: z.string().nullable().optional(),
 }).loose();
 
 export const CommentsListSchema = z.array(CommentSchema);
+
+// Degraded placeholder for a comment response that failed schema validation.
+// The empty id is the caller's signal that nothing usable came back — the run
+// UI treats it as "could not read the result" rather than a successful run.
+export const EMPTY_COMMENT: Comment = {
+  id: "",
+  issue_id: "",
+  author_type: "member",
+  author_id: "",
+  content: "",
+  type: "comment",
+  parent_id: null,
+  reactions: [],
+  attachments: [],
+  created_at: "",
+  updated_at: "",
+  resolved_at: null,
+  resolved_by_type: null,
+  resolved_by_id: null,
+};
 
 const CommentTriggerPreviewAgentSchema = z.object({
   id: z.string(),

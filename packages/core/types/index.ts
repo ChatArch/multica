@@ -85,6 +85,23 @@ export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, 
 export type { IssueProperty, IssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse } from "./property";
 export { ISSUE_PROPERTY_TYPES, isKnownPropertyType } from "./property";
 export type {
+  QuickAction,
+  QuickActionVisibility,
+  QuickActionAssigneeType,
+  QuickActionStatus,
+  QuickActionVariable,
+  CreateQuickActionRequest,
+  UpdateQuickActionRequest,
+  ListQuickActionsResponse,
+} from "./quick-action";
+export {
+  QUICK_ACTION_VARIABLES,
+  QUICK_ACTION_INPUT_VARIABLE,
+  QUICK_ACTION_VARIABLE_RE,
+  findUnknownQuickActionVariables,
+  promptUsesQuickActionInput,
+} from "./quick-action";
+export type {
   TimelineEntry,
   AssigneeFrequencyEntry,
 } from "./activity";

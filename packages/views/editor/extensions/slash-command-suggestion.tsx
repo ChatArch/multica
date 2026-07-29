@@ -260,18 +260,56 @@ export const BUILTIN_COMMANDS: SlashCommandItem[] = [
   { id: "note", label: "note", descriptionKey: "note" },
 ];
 
+/** Marks a menu entry as a configured quick action rather than a built-in. */
+export const QUICK_ACTION_ITEM_PREFIX = "quick-action:";
+
+export function isQuickActionItem(item: SlashCommandItem): boolean {
+  return item.id.startsWith(QUICK_ACTION_ITEM_PREFIX);
+}
+
+export function quickActionIdFromItem(item: SlashCommandItem): string {
+  return item.id.slice(QUICK_ACTION_ITEM_PREFIX.length);
+}
+
 // Match on the command label as a prefix only — the description is for display,
 // not search. With a single command this keeps the menu predictable (typing
 // `/no` surfaces `note`; an unrelated `/deploy` shows nothing).
-export function buildBuiltinCommandItems(query: string): SlashCommandItem[] {
+export function buildBuiltinCommandItems(
+  query: string,
+  quickActions: { id: string; name: string; description?: string }[] = [],
+): SlashCommandItem[] {
   const q = query.toLowerCase();
-  return BUILTIN_COMMANDS.filter((c) => c.label.toLowerCase().startsWith(q));
+  // Quick actions lead: on an issue they are the reason a user reaches for
+  // `/`, and `/note` is a rarely-used escape hatch.
+  const actionItems: SlashCommandItem[] = quickActions.map((a) => ({
+    id: `${QUICK_ACTION_ITEM_PREFIX}${a.id}`,
+    label: a.name,
+    description: a.description || undefined,
+  }));
+  return [...actionItems, ...BUILTIN_COMMANDS]
+    .filter((c) => c.label.toLowerCase().startsWith(q))
+    .slice(0, MAX_ITEMS);
 }
 
-export function createBuiltinCommandSuggestion(): Omit<
-  SuggestionOptions<SlashCommandItem>,
-  "editor"
-> {
+export interface BuiltinCommandSuggestionOptions {
+  /**
+   * Configured quick actions offered alongside the built-ins. Read lazily on
+   * every keystroke so a newly created action shows up without remounting the
+   * editor.
+   */
+  getQuickActions?: () => { id: string; name: string; description?: string }[];
+  /**
+   * Resolves a quick action to the text it would post. Server-rendered, so the
+   * inserted body is byte-identical to what clicking the sidebar button sends.
+   * Returning "" (or throwing) must leave the composer untouched rather than
+   * inserting a half-rendered prompt.
+   */
+  renderQuickAction?: (quickActionId: string) => Promise<string>;
+}
+
+export function createBuiltinCommandSuggestion(
+  options: BuiltinCommandSuggestionOptions = {},
+): Omit<SuggestionOptions<SlashCommandItem>, "editor"> {
   const pluginKey = new PluginKey("builtinCommandSuggestion");
 
   return {
@@ -280,8 +318,28 @@ export function createBuiltinCommandSuggestion(): Omit<
     // Only open over a `/` the user actually typed, so a pasted path
     // (`/usr/local/bin`) never opens the command menu (MUL-5429).
     shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
-    items: ({ query }) => buildBuiltinCommandItems(query),
+    items: ({ query }) => buildBuiltinCommandItems(query, options.getQuickActions?.() ?? []),
     command: ({ editor, range, props }) => {
+      if (isQuickActionItem(props)) {
+        const render = options.renderQuickAction;
+        if (!render) return;
+        // Drop the "/query" text first so the composer never shows the raw
+        // command while the render is in flight.
+        editor.chain().focus().deleteRange(range).run();
+        const id = quickActionIdFromItem(props);
+        void render(id)
+          .then((content) => {
+            if (!content) return;
+            editor.chain().focus().insertContent(content).run();
+            window.getSelection()?.collapseToEnd();
+          })
+          .catch(() => {
+            // Swallow: the composer already has the command text removed and
+            // the user can retype. Surfacing a toast from inside a ProseMirror
+            // command would fire outside React's tree.
+          });
+        return;
+      }
       // Insert the plain-text prefix (e.g. "/note ") rather than a rich node,
       // so a menu selection and a hand-typed command are byte-identical and the
       // backend can detect the marker with a simple prefix match. The trailing

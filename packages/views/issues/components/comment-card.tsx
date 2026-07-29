@@ -753,6 +753,52 @@ function CommentRow({
 // CommentCard — One Card per thread (parent + all replies flat inside)
 // ---------------------------------------------------------------------------
 
+/**
+ * Collapsed body for a `quick_action` comment (MUL-5465).
+ *
+ * A quick action posts a real comment so the trigger stays auditable and rides
+ * the normal mention path — but rendering the full prompt inline would bury
+ * the discussion: eight Code Review clicks means eight copies of the same
+ * paragraph. So the prompt collapses to one line and expands on demand.
+ *
+ * The mention line is dropped from the preview (it is the machinery, not the
+ * message) but preserved in the expanded view so the reader can still see
+ * exactly what was sent.
+ */
+function QuickActionCommentBody({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // The server writes "<mention line>\n\n<rendered prompt>"; split on the
+  // first blank line and fall back to the whole body if that shape ever
+  // changes, so an older/newer server never renders an empty card.
+  const separator = content.indexOf("\n\n");
+  const prompt = separator === -1 ? content : content.slice(separator + 2);
+  const preview = prompt.trim().split("\n")[0] ?? "";
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-start gap-1.5 rounded-md text-left transition-colors hover:bg-accent/40"
+      >
+        <ChevronRight
+          className={cn(
+            "mt-0.5 !size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{preview}</span>
+      </button>
+      {expanded ? (
+        <div className="mt-1.5 pl-[18px]">
+          <ReadonlyContent content={content} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CommentCardImpl({
   issueId,
   entry,
@@ -1035,7 +1081,11 @@ function CommentCardImpl({
             ) : (
               <>
                 <div className="pl-10 text-sm leading-relaxed text-foreground/85">
-                  <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                  {entry.comment_type === "quick_action" ? (
+                    <QuickActionCommentBody content={entry.content ?? ""} />
+                  ) : (
+                    <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                  )}
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-10" />
                 {retryableAgentFailureComment(entry) && (
