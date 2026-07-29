@@ -680,7 +680,7 @@ export function InlineTitle({
 
   return (
     <div
-      className="relative flex min-w-0 items-center gap-1.5"
+      className="group/title relative flex min-w-0 items-center gap-1.5"
       style={{ paddingLeft: row.depth * 18 }}
       // Record whether the gesture began while editing (mousedown fires before
       // the blur that commits), then swallow that click in the capture phase —
@@ -759,7 +759,12 @@ export function InlineTitle({
             * moment the actions show, and a hovered row is not the resting
             * background — pinned cells switch to the muted mix on hover, so
             * the gradient follows. */}
-          <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 bg-gradient-to-l from-background from-70% to-transparent pr-1 pl-8 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:from-[color-mix(in_oklab,var(--muted)_50%,var(--background))] group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+          {/* Keyed to the title cell, not the row: these act on the title,
+            * and offering them from anywhere along a row puts them under the
+            * pointer while it is somewhere else entirely. The fade still
+            * follows the row's hover colour, since that is what the cell is
+            * painted with when they appear. */}
+          <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 bg-gradient-to-l from-background from-70% to-transparent pr-1 pl-8 opacity-0 transition-opacity group-hover:from-[color-mix(in_oklab,var(--muted)_50%,var(--background))] group-hover/title:pointer-events-auto group-hover/title:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
             <button
               type="button"
               aria-label={createSubIssueLabel}
