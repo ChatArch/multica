@@ -120,13 +120,16 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
 
   const copyLink = useCallback(async () => {
     if (!issueId) return;
-    const url = navigation.getShareableUrl(paths.issueDetail(issueId));
+    // Share the identifier form (`/{ws}/issues/MUL-123`): a pasted link should
+    // say which issue it points at. The UUID form stays valid, so links copied
+    // before this still resolve.
+    const url = navigation.getShareableUrl(paths.issueDetail(issueIdentifier || issueId));
     if (await copyText(url)) {
       toast.success(t(($) => $.detail.link_copied));
     } else {
       toast.error(t(($) => $.detail.link_copy_failed));
     }
-  }, [paths, issueId, navigation, t]);
+  }, [paths, issueId, issueIdentifier, navigation, t]);
 
   const openCreateSubIssue = useCallback(() => {
     if (!issueId) return;
