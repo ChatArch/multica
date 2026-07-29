@@ -28,9 +28,11 @@ const openclawConfigFile = "openclaw-config.json"
 // at 0o600 next to the wrapper.
 const openclawUserSnapshotFile = "openclaw-user-snapshot.json"
 
-// openclawCLITimeout caps each `openclaw config ...` invocation during task
-// setup. The CLI is fast (<200ms normal); 5s leaves headroom for a cold
-// node start without letting a hung CLI stall task dispatch indefinitely.
+// openclawCLITimeout is the context deadline set on each `openclaw config ...`
+// invocation during task setup. The CLI is fast (<200ms normal); 5s leaves
+// headroom for a cold node start.
+//
+// It is a deadline, not a guaranteed cap — see the gap below.
 //
 // Known gap (deliberately not fixed here): this deadline does not actually
 // bound the call when the CLI leaves a descendant holding stdout.
@@ -46,7 +48,7 @@ const openclawUserSnapshotFile = "openclaw-user-snapshot.json"
 // preparationProcessController.finish() is a no-op there. Closing this properly
 // needs process-tree ownership (Unix process group, Windows Job Object) so the
 // deadline can terminate the whole tree, which is its own change with its own
-// risk surface. Tracked separately; this file intentionally keeps the existing
+// risk surface. Tracked in MUL-5467; this file intentionally keeps the existing
 // behaviour rather than shipping half of it.
 const openclawCLITimeout = 5 * time.Second
 

@@ -322,9 +322,11 @@ func TestExecOpenclawCLIAnnotatesSilentShimFailure(t *testing.T) {
 //
 // The shim sleeps only briefly on purpose. execOpenclawCLI sets no WaitDelay
 // (see openclawCLITimeout's note on why that is left alone), so cmd.Output()
-// stays parked until the descendant closes stdout — a long sleep here would
-// make the test hostage to it AND leave a live process behind. A short sleep
-// keeps the assertion about attribution, which is what this test is for.
+// stays parked until the descendant closes stdout — meaning the call returns
+// only once that descendant has exited, and a long sleep would just make this
+// test hostage to it. The descendant is NOT still running at the return point;
+// its exit is what produced the EOF that let Wait finish. A short sleep keeps
+// the assertion about attribution, which is what this test is for.
 func TestExecOpenclawCLITimeoutIsNotMisdiagnosedAsMissingInterpreter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("covered by TestWindowsOpenclawShimTimeoutIsNotMisdiagnosed with a real cmd.exe host")
