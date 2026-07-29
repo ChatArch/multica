@@ -185,29 +185,58 @@ describe("DataTable column resize", () => {
     ).toBe("300px");
   });
 
-  it("shows the pinned column's edge shadow only once scrolled sideways", () => {
+  it("casts a shadow past the frozen columns only once scrolled sideways", () => {
     render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
 
-    const pinnedHeader = document.querySelector<HTMLElement>(
-      'th[data-column-id="status"]',
-    )!;
     const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
+    const shadow = () =>
+      document.querySelector<HTMLElement>(
+        '[data-slot="data-table-pinned-shadow"]',
+      );
 
-    // At rest nothing passes under the frozen column, so the shadow would only
-    // read as a rule the other columns don't have.
-    expect(pinnedHeader.style.boxShadow).toBe("");
+    // The border between frozen and scrolling columns is permanent and says
+    // where the boundary is. The shadow says something is passing underneath
+    // right now, so at rest there is nothing for it to report.
+    expect(shadow()).toBeNull();
 
     scroller.scrollLeft = 120;
     act(() => {
       scroller.dispatchEvent(new Event("scroll"));
     });
-    expect(pinnedHeader.style.boxShadow).toContain("inset");
+    expect(shadow()).not.toBeNull();
 
     scroller.scrollLeft = 0;
     act(() => {
       scroller.dispatchEvent(new Event("scroll"));
     });
-    expect(pinnedHeader.style.boxShadow).toBe("");
+    expect(shadow()).toBeNull();
+  });
+
+  it("places the shadow at the frozen block's measured edge", () => {
+    render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
+
+    const scroller = document.querySelector<HTMLElement>(".overflow-auto")!;
+    // Rendered widths diverge from configured ones under fixed table-layout,
+    // so the boundary is read off the DOM rather than summed from column
+    // sizes — summing put the shadow in the middle of visible content.
+    const edge = document.querySelector<HTMLElement>(
+      "thead th[data-pinned-edge]",
+    )!;
+    edge.getBoundingClientRect = () =>
+      ({ right: 240, left: 0, width: 240 }) as DOMRect;
+    scroller.getBoundingClientRect = () =>
+      ({ left: 40, right: 900, width: 860 }) as DOMRect;
+
+    scroller.scrollLeft = 120;
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(
+      document.querySelector<HTMLElement>(
+        '[data-slot="data-table-pinned-shadow"]',
+      )!.style.left,
+    ).toBe("200px");
   });
 
   it("covers the viewport with a cursor layer only while dragging", () => {

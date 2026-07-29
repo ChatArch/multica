@@ -256,10 +256,23 @@ export function DataTable<TData>({
   // instead of once per scroll event, and React bails out on the repeats.
   const [isScrolledHorizontally, setIsScrolledHorizontally] =
     React.useState(false);
+
+  // Where the frozen block ends, in the scroll container's own coordinates.
+  const [pinnedEdge, setPinnedEdge] = React.useState<number | null>(null);
+
   React.useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const sync = () => setIsScrolledHorizontally(element.scrollLeft > 0);
+    const sync = () => {
+      setIsScrolledHorizontally(element.scrollLeft > 0);
+      const edge = element.querySelector("thead th[data-pinned-edge]");
+      setPinnedEdge(
+        edge
+          ? edge.getBoundingClientRect().right -
+              element.getBoundingClientRect().left
+          : null,
+      );
+    };
     sync();
     element.addEventListener("scroll", sync, { passive: true });
     return () => element.removeEventListener("scroll", sync);
@@ -292,7 +305,6 @@ export function DataTable<TData>({
     onRowClick,
     renderRow,
     hasExplicitSize,
-    isScrolledHorizontally,
     virtualizeRows,
     virtualItems,
     virtualPaddingTop,
@@ -304,6 +316,7 @@ export function DataTable<TData>({
       className={cn("flex min-h-0 flex-1 flex-col", className)}
       {...props}
     >
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         className="flex min-h-0 flex-1 flex-col overflow-auto bg-background"
@@ -334,6 +347,16 @@ export function DataTable<TData>({
                       // Lets a drag measure every column by id instead of
                       // pairing <th> elements with columns positionally.
                       data-column-id={header.column.id}
+                      // Marks the frozen block's trailing edge for the scroll
+                      // shadow to measure against. Rendered widths differ from
+                      // configured ones under fixed table-layout, so the
+                      // boundary has to be read off the DOM, not summed.
+                      data-pinned-edge={
+                        isPinned === "left" &&
+                        header.column.getIsLastColumn("left")
+                          ? ""
+                          : undefined
+                      }
                       // Header typography overrides for a "spreadsheet
                       // header" look: smaller, all-caps, wider letter
                       // spacing, muted colour. shadcn's <TableHead>
@@ -352,10 +375,9 @@ export function DataTable<TData>({
                       className={cn(
                         "relative h-8 overflow-hidden border-r px-4 py-2 text-xs uppercase tracking-wider text-muted-foreground last:border-r-0",
                         isPinned &&
-                          "transition-shadow bg-[color-mix(in_oklab,var(--muted)_30%,var(--background))]",
+                          "bg-[color-mix(in_oklab,var(--muted)_30%,var(--background))]",
                       )}
                       style={getCellStyle(header.column, {
-                        showPinnedEdge: isScrolledHorizontally,
                         hasExplicitSize: columnHasExplicitSize,
                       })}
                     >
@@ -425,6 +447,25 @@ export function DataTable<TData>({
           {footer}
         </table>
       </div>
+      {/* Cast past the frozen block rather than drawn inside it. The border
+        * between the frozen columns and the rest is permanent and says where
+        * the boundary is; this says something is currently passing underneath,
+        * so it appears only while scrolled. An inset box-shadow on the pinned
+        * cell could only darken that cell's own edge — the depth belongs on
+        * the content sliding beneath it. */}
+      {isScrolledHorizontally && pinnedEdge !== null && (
+        <div
+          aria-hidden
+          data-slot="data-table-pinned-shadow"
+          className="pointer-events-none absolute inset-y-0 w-3"
+          style={{
+            left: `${pinnedEdge}px`,
+            background:
+              "linear-gradient(to right, color-mix(in oklab, var(--foreground) 7%, transparent), transparent)",
+          }}
+        />
+      )}
+      </div>
       {/* A viewport-wide layer that only exists for the duration of a column
         * drag. It owns the cursor so descendants that declare their own
         * (rows are `cursor-pointer`, cells hold text) cannot override it, and
@@ -458,7 +499,6 @@ interface DataTableBodyProps<TData> {
   onRowClick?: (row: Row<TData>) => void;
   renderRow?: (row: Row<TData>) => React.ReactNode;
   hasExplicitSize: (columnId: string) => boolean;
-  isScrolledHorizontally: boolean;
   virtualizeRows: boolean;
   virtualItems: VirtualItem[];
   virtualPaddingTop: number;
@@ -472,7 +512,6 @@ function DataTableBody<TData>({
   onRowClick,
   renderRow,
   hasExplicitSize,
-  isScrolledHorizontally,
   virtualizeRows,
   virtualItems,
   virtualPaddingTop,
@@ -507,10 +546,9 @@ function DataTableBody<TData>({
               className={cn(
                 "overflow-hidden border-r px-4 py-2 last:border-r-0",
                 isPinned &&
-                  "transition-shadow bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]",
+                  "bg-background group-hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))]",
               )}
               style={getCellStyle(cell.column, {
-                showPinnedEdge: isScrolledHorizontally,
                 hasExplicitSize: columnHasExplicitSize,
               })}
             >

@@ -37,7 +37,7 @@ export function columnSizeVar(columnId: string) {
 // `group-hover:`.
 export function getCellStyle<TData>(
   column: Column<TData>,
-  options?: { showPinnedEdge?: boolean; hasExplicitSize?: boolean },
+  options?: { hasExplicitSize?: boolean },
 ): React.CSSProperties {
   const grow = column.columnDef.meta?.grow;
   const width =
@@ -50,28 +50,35 @@ export function getCellStyle<TData>(
     return width !== undefined ? { width } : {};
   }
 
-  // The shadow marks where the frozen columns end and scrolled content passes
-  // underneath. With nothing scrolled under them there is nothing to mark, and
-  // it reads as a stray rule the other columns don't have — so callers turn it
-  // on only once the surface is actually scrolled sideways.
-  const showPinnedEdge = options?.showPinnedEdge ?? false;
-  const isLastLeftPinned =
-    isPinned === "left" && column.getIsLastColumn("left");
-  const isFirstRightPinned =
-    isPinned === "right" && column.getIsFirstColumn("right");
-
+  // No edge marker here. Where the frozen columns end is drawn by the scroll
+  // container's mask instead — a shadow inside the pinned cell can only darken
+  // the frozen column's own edge, while the mask fades the content that is
+  // actually sliding underneath, which is the thing being described.
   return {
     width,
     position: "sticky",
     left: isPinned === "left" ? `${column.getStart("left")}px` : undefined,
     right: isPinned === "right" ? `${column.getAfter("right")}px` : undefined,
     zIndex: 1,
-    boxShadow: showPinnedEdge
-      ? isLastLeftPinned
-        ? "-4px 0 4px -4px var(--border) inset"
-        : isFirstRightPinned
-          ? "4px 0 4px -4px var(--border) inset"
-          : undefined
-      : undefined,
   };
+}
+
+// Mask for the scroll container: content emerging from under the frozen
+// columns fades in over `fade` px instead of appearing at a hard edge.
+//
+// The stops are anchored to the frozen block's width, never to the scroll
+// offset — a mask on a scroll container is positioned against its padding box,
+// which does not scroll, so the fade stays welded to the boundary. Anchoring
+// is also what keeps the frozen columns themselves at full opacity: the
+// generic "fade both ends of a scroller" treatment would dissolve exactly the
+// columns that have to stay solid.
+export function pinnedScrollMask(
+  pinnedWidth: number,
+  fade = 24,
+): React.CSSProperties | undefined {
+  if (pinnedWidth <= 0) return undefined;
+  const gradient =
+    `linear-gradient(to right, black 0, black ${pinnedWidth}px, ` +
+    `transparent ${pinnedWidth}px, black ${pinnedWidth + fade}px, black 100%)`;
+  return { maskImage: gradient, WebkitMaskImage: gradient };
 }
