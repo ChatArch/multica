@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,10 +13,12 @@ import {
   KeyboardSensor,
   PointerSensor,
   closestCenter,
+  useDndContext,
   useSensor,
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
+import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import {
   SortableContext,
   horizontalListSortingStrategy,
@@ -41,7 +44,6 @@ import {
   ChevronRight,
   Download,
   EyeOff,
-  GripVertical,
   Loader2,
   Pencil,
   Plus,
@@ -366,30 +368,62 @@ function SortableColumnHeader({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: columnKey, disabled: !sortable });
   const active = sortField === sortBy;
+  // Any column in flight, not only this one: the neighbours shift to open a
+  // gap, and each is clipped by its own cell just the same.
+  const isReordering = useDndContext().active != null;
+  const nodeRef = useRef<HTMLDivElement | null>(null);
+
+  // The cell clips its own content, which is what made a dragged column look
+  // like it vanished rather than travelled. The clip only earns its keep at
+  // rest, capping a label wider than its column, so it is lifted for the length
+  // of a reorder and the column in hand is raised over its neighbours.
+  //
+  // Only overflow and stacking are touched. Transforming the <th> itself would
+  // carry the header's full height along, but `transform` on a table cell is a
+  // corner of the spec browsers take liberties with — Chromium lifts the cell
+  // out of the table's box model and its geometry stops matching the row. The
+  // wrapper below is padded out to the cell's size instead.
+  useLayoutEffect(() => {
+    const cell = nodeRef.current?.closest("th");
+    if (!cell || !isReordering) return;
+    cell.style.overflow = "visible";
+    if (isDragging) cell.style.zIndex = "20";
+    return () => {
+      cell.style.removeProperty("overflow");
+      cell.style.removeProperty("z-index");
+    };
+  }, [isDragging, isReordering]);
 
   return (
     <div
-      ref={setNodeRef}
+      ref={(node) => {
+        nodeRef.current = node;
+        setNodeRef(node);
+      }}
       style={{ transform: CSS.Transform.toString(transform), transition }}
+      // The whole header is the drag handle, so the wrapper spans the cell's
+      // own box — the negative margins undo the <th>'s padding and put it back
+      // inside. It renders exactly as before, but what travels is a
+      // header-sized block rather than the line of text in it, which is what
+      // lets going translucent be the entire drag state, as it is for a tab.
+      // The cursor carries the affordance: nothing else marks the header as
+      // draggable, and a grip that only appears on hover never did.
       className={cn(
-        "group/header flex min-w-0 items-center",
-        isDragging && "opacity-40",
+        "group/header -mx-4 -my-2 flex h-8 min-w-0 items-center px-4",
+        sortable && (isDragging ? "cursor-grabbing" : "cursor-grab"),
+        isDragging && "opacity-60",
       )}
+      aria-label={sortable ? reorderLabel : undefined}
+      {...(sortable ? attributes : {})}
+      {...(sortable ? listeners : {})}
     >
-      {sortable && (
-        <button
-          type="button"
-          aria-label={reorderLabel}
-          className="-ml-2 mr-0.5 rounded p-0.5 text-muted-foreground/50 opacity-0 hover:bg-accent hover:text-muted-foreground group-hover/header:opacity-100 focus-visible:opacity-100"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="size-3" />
-        </button>
-      )}
       <DropdownMenu>
         <DropdownMenuTrigger
-          className="flex min-w-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-accent"
+          // Kept out of the drag: a press here is only ever the sort/hide menu.
+          // The pointer sensor's 4px activation already lets a click through,
+          // but without this a drag begun on the label would move the column.
+          onPointerDown={(event) => event.stopPropagation()}
+          className="flex min-w-0 cursor-pointer items-center gap-1 rounded px-1.5 py-1 hover:bg-accent"
         >
           <span className="truncate">{label}</span>
           {active &&
@@ -2287,6 +2321,10 @@ export function TableView({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        // Columns only ever swap sideways, so the header should not follow the
+        // pointer up out of its own strip — same constraint the desktop tab bar
+        // puts on tab reordering.
+        modifiers={[restrictToHorizontalAxis]}
         onDragEnd={handleDragEnd}
       >
         <SortableContext
