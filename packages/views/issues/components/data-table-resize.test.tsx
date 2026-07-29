@@ -185,6 +185,47 @@ describe("DataTable column resize", () => {
     ).toBe("300px");
   });
 
+  it("sizes a column to its widest rendered cell on double-click", () => {
+    const { onSizingChange, handle } = setup();
+
+    // Fixed table-layout ignores content and the cells truncate their own
+    // text, so the measurement lifts both constraints before reading. Stand in
+    // for the layout jsdom will not perform.
+    for (const cell of document.querySelectorAll<HTMLElement>(
+      '[data-column-id="status"]',
+    )) {
+      cell.getBoundingClientRect = () =>
+        ({ width: cell.tagName === "TH" ? 96 : 268 }) as DOMRect;
+    }
+
+    act(() => {
+      handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    // The widest cell wins, not the header and not the current width.
+    expect(onSizingChange).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 268 }),
+    );
+  });
+
+  it("leaves the column alone when double-clicked with nothing rendered", () => {
+    const { onSizingChange, handle } = setup();
+
+    for (const cell of document.querySelectorAll<HTMLElement>(
+      '[data-column-id="status"]',
+    )) {
+      cell.getBoundingClientRect = () => ({ width: 0 }) as DOMRect;
+    }
+
+    act(() => {
+      handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    // A zero measurement means the column was never laid out; committing it
+    // would collapse the column to its minimum for no reason.
+    expect(onSizingChange).not.toHaveBeenCalled();
+  });
+
   it("casts a shadow past the frozen columns only once scrolled sideways", () => {
     render(<ResizableTable onSizingChange={vi.fn()} pinFirstColumn />);
 

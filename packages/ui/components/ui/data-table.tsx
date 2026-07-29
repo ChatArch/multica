@@ -144,6 +144,59 @@ export function DataTable<TData>({
     [clampColumnWidth],
   );
 
+  // Double-click on the resize handle sizes the column to its content, the
+  // convention every spreadsheet and grid shares. It replaces column.resetSize,
+  // which cleared the stored width and let TanStack fall back to its generic
+  // 150 — a number unrelated to any of this table's designed widths, so
+  // "reset" widened some columns and collapsed others.
+  //
+  // Fixed table-layout ignores content, and cells truncate their own text, so
+  // nothing on screen reports the width the content actually wants. The
+  // measurement lifts both constraints on the column's cells, reads them, and
+  // puts everything back within the same task — the browser paints once, after
+  // the restore, so the intermediate layout is never seen.
+  const autoFitColumn = React.useCallback(
+    (header: TanstackHeader<TData, unknown>) => {
+      const container = scrollRef.current;
+      const tableElement = container?.querySelector("table");
+      if (!container || !tableElement) return;
+      const cells = container.querySelectorAll<HTMLElement>(
+        `[data-column-id="${CSS.escape(header.column.id)}"]`,
+      );
+      if (!cells.length) return;
+
+      const previousLayout = tableElement.style.tableLayout;
+      const previous = Array.from(cells, (cell) => ({
+        cell,
+        width: cell.style.width,
+        maxWidth: cell.style.maxWidth,
+        overflow: cell.style.overflow,
+      }));
+
+      tableElement.style.tableLayout = "auto";
+      for (const cell of cells) {
+        cell.style.width = "max-content";
+        cell.style.maxWidth = "none";
+        cell.style.overflow = "visible";
+      }
+
+      let widest = 0;
+      for (const cell of cells) {
+        widest = Math.max(widest, cell.getBoundingClientRect().width);
+      }
+
+      for (const entry of previous) {
+        entry.cell.style.width = entry.width;
+        entry.cell.style.maxWidth = entry.maxWidth;
+        entry.cell.style.overflow = entry.overflow;
+      }
+      tableElement.style.tableLayout = previousLayout;
+
+      if (widest > 0) setColumnWidth(header, widest);
+    },
+    [setColumnWidth],
+  );
+
   const beginColumnResize = React.useCallback(
     (
       header: TanstackHeader<TData, unknown>,
@@ -423,7 +476,7 @@ export function DataTable<TData>({
                             onDoubleClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
-                              header.column.resetSize();
+                              autoFitColumn(header);
                             }}
                             onKeyDown={(event) =>
                               handleResizeKeyDown(header, event)
@@ -538,6 +591,7 @@ function DataTableBody<TData>({
           return (
             <TableCell
               key={cell.id}
+              data-column-id={cell.column.id}
               // px-4 across the board so cell content aligns with the
               // surrounding toolbar's px-4. Narrow trailing columns
               // (chevron / actions) declare enough width for icon + padding.
