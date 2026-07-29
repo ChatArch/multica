@@ -172,7 +172,7 @@ function CreateRunHint({
       <div className="overflow-hidden">
         <div
           aria-live="polite"
-          className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-[0.6875rem] text-muted-foreground"
+          className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground"
         >
           {avatarId && (
             <ActorAvatar
