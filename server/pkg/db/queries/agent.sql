@@ -1342,23 +1342,31 @@ GROUP BY atq.agent_id, bucket
 ORDER BY atq.agent_id, bucket;
 
 -- name: ListWorkspaceAgentTaskSnapshot :many
--- Returns the tasks needed to derive each agent's current presence:
---   - All active tasks (queued / dispatched / running) — for working signal + counts
---   - Each agent's most recent OUTCOME task (completed / failed) — for sticky
---     failed signal
--- The front-end picks "active wins, else latest outcome" — see derive-presence.ts.
+-- Returns the tasks the front-end reads off one workspace-wide snapshot:
+--   - All active tasks (queued / dispatched / running / waiting_local_directory)
+--     — the current workload: working signal + counts (see derive-presence.ts).
+--   - Each agent's most recent OUTCOME task (completed / failed) — NOT part of
+--     presence since #1823; it is the "last activity" line the Squad hover card
+--     renders (agent-live-peek-card.tsx). Kept in this response because shipped
+--     desktop builds read it from here; see MUL-5436 for the plan to move it to
+--     a dedicated lazy endpoint.
 --
 -- Cancelled tasks are excluded from the outcome half on purpose: cancel is a
 -- procedural signal ("attempt aborted"), not an outcome. It tells us nothing
 -- about whether the agent works, so it must NOT be allowed to mask a prior
 -- failure. Concretely: if an agent fails and then the user cancels the queued
--- retry (or the parent issue closes and cascades cancels), the failed signal
--- has to stay red. Only a real success (completed) or a fresh attempt (active)
--- clears it.
+-- retry (or the parent issue closes and cascades cancels), the failure stays
+-- the agent's last real outcome.
 --
--- No UI windows in SQL: stickiness is decided by "is the latest outcome a
--- failure?", not a 2-minute clock. JOINs agent because agent_task_queue has
--- no workspace_id column.
+-- The outcome half is a per-agent LATERAL Top-1 rather than a workspace-wide
+-- DISTINCT ON: with idx_agent_task_queue_agent_terminal_latest (migration 233)
+-- each agent costs one ordered index scan + LIMIT 1, so the cost no longer
+-- grows with how much terminal history the workspace has accumulated. The
+-- (created_at, id) tie-break makes the pick deterministic when completed_at
+-- ties or is NULL — plain completed_at DESC returned an arbitrary row there.
+-- Row shape and row set are unchanged.
+--
+-- Both halves JOIN / scan agent because agent_task_queue has no workspace_id.
 SELECT atq.* FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 WHERE a.workspace_id = $1
@@ -1366,14 +1374,16 @@ WHERE a.workspace_id = $1
 
 UNION ALL
 
-SELECT t.* FROM (
-  SELECT DISTINCT ON (atq.agent_id) atq.*
+SELECT latest.* FROM agent a
+JOIN LATERAL (
+  SELECT atq.*
   FROM agent_task_queue atq
-  JOIN agent a ON a.id = atq.agent_id
-  WHERE a.workspace_id = $1
+  WHERE atq.agent_id = a.id
     AND atq.status IN ('completed', 'failed')
-  ORDER BY atq.agent_id, atq.completed_at DESC NULLS LAST
-) t;
+  ORDER BY atq.completed_at DESC NULLS LAST, atq.created_at DESC, atq.id DESC
+  LIMIT 1
+) latest ON TRUE
+WHERE a.workspace_id = $1;
 
 -- name: ListWorkspaceWorkingAgents :many
 -- Workspace-level source for consumers that show currently working agents.

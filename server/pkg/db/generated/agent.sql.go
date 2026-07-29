@@ -4095,34 +4095,43 @@ WHERE a.workspace_id = $1
 
 UNION ALL
 
-SELECT t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing FROM (
-  SELECT DISTINCT ON (atq.agent_id) atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing
+SELECT latest.id, latest.agent_id, latest.issue_id, latest.status, latest.priority, latest.dispatched_at, latest.started_at, latest.completed_at, latest.result, latest.error, latest.created_at, latest.context, latest.runtime_id, latest.session_id, latest.work_dir, latest.trigger_comment_id, latest.chat_session_id, latest.autopilot_run_id, latest.attempt, latest.max_attempts, latest.parent_task_id, latest.failure_reason, latest.trigger_summary, latest.force_fresh_session, latest.is_leader_task, latest.wait_reason, latest.initiator_user_id, latest.handoff_note, latest.prepare_lease_expires_at, latest.squad_id, latest.runtime_mcp_overlay, latest.escalation_for_task_id, latest.fire_at, latest.originator_user_id, latest.runtime_connected_apps, latest.coalesced_comment_ids, latest.delivered_comment_ids, latest.chat_input_task_id, latest.chat_finalize_deferred_at, latest.originator_source, latest.delegated_from_task_id, latest.retry_of_task_id, latest.rerun_of_task_id, latest.rule_version_id, latest.trigger_evidence_kind, latest.trigger_evidence_ref_id, latest.accountable_user_id, latest.session_rollout_missing FROM agent a
+JOIN LATERAL (
+  SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing
   FROM agent_task_queue atq
-  JOIN agent a ON a.id = atq.agent_id
-  WHERE a.workspace_id = $1
+  WHERE atq.agent_id = a.id
     AND atq.status IN ('completed', 'failed')
-  ORDER BY atq.agent_id, atq.completed_at DESC NULLS LAST
-) t
+  ORDER BY atq.completed_at DESC NULLS LAST, atq.created_at DESC, atq.id DESC
+  LIMIT 1
+) latest ON TRUE
+WHERE a.workspace_id = $1
 `
 
-// Returns the tasks needed to derive each agent's current presence:
-//   - All active tasks (queued / dispatched / running) — for working signal + counts
-//   - Each agent's most recent OUTCOME task (completed / failed) — for sticky
-//     failed signal
-//
-// The front-end picks "active wins, else latest outcome" — see derive-presence.ts.
+// Returns the tasks the front-end reads off one workspace-wide snapshot:
+//   - All active tasks (queued / dispatched / running / waiting_local_directory)
+//     — the current workload: working signal + counts (see derive-presence.ts).
+//   - Each agent's most recent OUTCOME task (completed / failed) — NOT part of
+//     presence since #1823; it is the "last activity" line the Squad hover card
+//     renders (agent-live-peek-card.tsx). Kept in this response because shipped
+//     desktop builds read it from here; see MUL-5436 for the plan to move it to
+//     a dedicated lazy endpoint.
 //
 // Cancelled tasks are excluded from the outcome half on purpose: cancel is a
 // procedural signal ("attempt aborted"), not an outcome. It tells us nothing
 // about whether the agent works, so it must NOT be allowed to mask a prior
 // failure. Concretely: if an agent fails and then the user cancels the queued
-// retry (or the parent issue closes and cascades cancels), the failed signal
-// has to stay red. Only a real success (completed) or a fresh attempt (active)
-// clears it.
+// retry (or the parent issue closes and cascades cancels), the failure stays
+// the agent's last real outcome.
 //
-// No UI windows in SQL: stickiness is decided by "is the latest outcome a
-// failure?", not a 2-minute clock. JOINs agent because agent_task_queue has
-// no workspace_id column.
+// The outcome half is a per-agent LATERAL Top-1 rather than a workspace-wide
+// DISTINCT ON: with idx_agent_task_queue_agent_terminal_latest (migration 233)
+// each agent costs one ordered index scan + LIMIT 1, so the cost no longer
+// grows with how much terminal history the workspace has accumulated. The
+// (created_at, id) tie-break makes the pick deterministic when completed_at
+// ties or is NULL — plain completed_at DESC returned an arbitrary row there.
+// Row shape and row set are unchanged.
+//
+// Both halves JOIN / scan agent because agent_task_queue has no workspace_id.
 func (q *Queries) ListWorkspaceAgentTaskSnapshot(ctx context.Context, workspaceID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceAgentTaskSnapshot, workspaceID)
 	if err != nil {

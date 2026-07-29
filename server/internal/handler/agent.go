@@ -2338,15 +2338,18 @@ func (h *Handler) GetWorkspaceAgentActivity30d(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ListWorkspaceAgentTaskSnapshot returns the task data the front-end needs to
-// derive each agent's presence: every active task (queued/dispatched/running)
-// plus each agent's most recent OUTCOME task (completed/failed only). Cancelled
-// tasks are excluded from the outcome half by design — cancel is a procedural
-// signal ("attempt aborted"), not an outcome, so it must not mask a prior
-// failure. The front-end picks "active wins, else latest outcome"; a failed
-// outcome stays sticky until the user starts a new task or one succeeds.
-// Per-agent filtering happens in the front-end against this workspace-wide
-// snapshot.
+// ListWorkspaceAgentTaskSnapshot returns the workspace-wide task data the
+// front-end reads for two things: every active task
+// (queued/dispatched/running/waiting_local_directory), which is the current
+// workload presence derives from, plus each agent's most recent OUTCOME task
+// (completed/failed only), which is no longer part of presence since #1823 and
+// only feeds the Squad hover card's "last activity" line. Cancelled tasks are
+// excluded from the outcome half by design — cancel is a procedural signal
+// ("attempt aborted"), not an outcome, so it must not mask a prior failure.
+// Per-agent filtering happens in the front-end against this snapshot.
+//
+// The outcome half is deliberately still served here so shipped desktop builds
+// keep working; MUL-5436 tracks moving it to a dedicated lazy endpoint.
 func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	member, ok := h.workspaceMember(w, r, workspaceID)
