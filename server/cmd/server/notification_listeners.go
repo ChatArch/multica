@@ -75,6 +75,51 @@ var parentBubbleNotifTypes = map[string]bool{
 	"status_changed": true,
 }
 
+// delegatedAlwaysNotifTypes are the events a DELEGATED subscriber (reason=
+// 'delegated' — an agent created this issue on their behalf, MUL-5483) receives
+// unconditionally: they are either addressed at the human directly, or they are
+// exceptions that stall the work until a human looks.
+var delegatedAlwaysNotifTypes = map[string]bool{
+	"mentioned":     true,
+	"task_failed":   true,
+	"agent_blocked": true,
+}
+
+// delegatedStatusNotify are the statuses whose ARRIVAL is worth an inbox item
+// for a delegated subscriber. A delegated human did not ask for this specific
+// issue — their agent decided to file it under a broader mandate — so routine
+// forward progress (todo → in_progress) is churn, while "needs your review",
+// "finished", and "stuck" are the states that actually want a human.
+//
+// This is the same judgment the platform already made for child-done fan-out,
+// where firing on every child was the reported defect (#4320) and the fix was to
+// signal at the barrier instead (MUL-3508). Subscribing a human to a 30-child
+// agent-built tree without this filter would re-create that cascade, one inbox
+// row per child per transition.
+var delegatedStatusNotify = map[string]bool{
+	"in_review": true,
+	"done":      true,
+	"cancelled": true,
+	"blocked":   true,
+}
+
+// deliverToSubscriber reports whether a subscriber row should receive this
+// notification type. Direct subscriptions (creator / assignee / commenter /
+// mentioned / manual / autopilot) are unchanged — they opted in to this issue,
+// explicitly or by acting on it. Only the delegated tier is narrowed.
+func deliverToSubscriber(reason, notifType, issueStatus string) bool {
+	if reason != "delegated" {
+		return true
+	}
+	if delegatedAlwaysNotifTypes[notifType] {
+		return true
+	}
+	if notifType == "status_changed" {
+		return delegatedStatusNotify[issueStatus]
+	}
+	return false
+}
+
 // notifTypeToGroup maps each InboxItemType to a user-configurable preference
 // group. Types not in this map are always delivered (not configurable).
 var notifTypeToGroup = map[string]string{
@@ -326,6 +371,12 @@ func notifyIssueSubscribers(
 
 		// Skip if this notification type is muted by the user
 		if prefs, ok := userPrefs[subID]; ok && isNotifMuted(prefs, notifType) {
+			continue
+		}
+
+		// Delegated subscriptions deliver a narrower event set than direct
+		// ones — see deliverToSubscriber.
+		if !deliverToSubscriber(sub.Reason, notifType, issueStatus) {
 			continue
 		}
 

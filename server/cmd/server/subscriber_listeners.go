@@ -4,8 +4,10 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -42,6 +44,13 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 				addSubscriber(bus, queries, e.WorkspaceID, issue.ID, m.Type, m.ID, "mentioned")
 			}
 		}
+
+		// Subscribe the human this issue was created ON BEHALF OF. Every rule
+		// above keys on ACTOR identity, so when an agent creates an issue and
+		// assigns it to an agent, every subscriber is an agent — and
+		// notifyIssueSubscribers only delivers to members. The result is a full
+		// subscriber list with zero recipients (MUL-5483).
+		subscribeDelegatedHuman(bus, queries, e.WorkspaceID, issue.ID)
 	})
 
 	// issue:updated — subscribe new assignee or @mentioned users
@@ -117,6 +126,76 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 
 		addSubscriber(bus, queries, e.WorkspaceID, issueID, authorType, authorID, "commenter")
 	})
+}
+
+// subscribeDelegatedHuman auto-subscribes the accountable human behind an
+// agent-created issue, so a delegated chain keeps the visibility its
+// attribution already records (MUL-5483).
+//
+// The facts are read here and classified by the pure
+// attribution.DelegatedSubscriber rule, which is the SAME origin waterfall
+// ClassifyDirect uses to decide who a derived run is attributed to. That shared
+// rule is the point: the defect being fixed is attribution and notification
+// disagreeing about whose behalf an issue exists on.
+//
+// Everything is best-effort and logged, never fatal — the issue is already
+// committed and a subscription hiccup must not look like a creation failure.
+func subscribeDelegatedHuman(bus *events.Bus, queries *db.Queries, workspaceID, issueID string) {
+	ctx := context.Background()
+	issueUUID := parseUUID(issueID)
+
+	// The event payload carries no origin columns (they are platform-internal
+	// and not part of IssueResponse), so re-read the row.
+	issue, err := queries.GetIssue(ctx, issueUUID)
+	if err != nil {
+		slog.Error("delegated subscribe: load issue failed", "issue_id", issueID, "error", err)
+		return
+	}
+	if issue.CreatorType != "agent" || !issue.OriginType.Valid || !issue.OriginID.Valid {
+		return
+	}
+
+	// Workspace-scoped so a foreign origin id can never resolve a human from
+	// another tenant (the MUL-4252 guard the comment chain already applies).
+	originTask, err := queries.GetAgentTaskInWorkspace(ctx, db.GetAgentTaskInWorkspaceParams{
+		ID:          issue.OriginID,
+		WorkspaceID: parseUUID(workspaceID),
+	})
+	if err != nil {
+		// A missing origin task is normal (cancelled/reaped run), not an error
+		// worth alerting on; there is simply no human to inherit.
+		slog.Debug("delegated subscribe: origin task not resolvable",
+			"issue_id", issueID, "origin_type", issue.OriginType.String)
+		return
+	}
+
+	human, reason, ok := attribution.DelegatedSubscriber(attribution.SubscriptionFacts{
+		CreatorType:      issue.CreatorType,
+		OriginType:       issue.OriginType.String,
+		OriginOriginator: originTask.OriginatorUserID,
+	})
+	if !ok {
+		return
+	}
+
+	// Respect an opt-out anywhere up the tree. Without this, "stop watching
+	// this sub-tree" would be undone by the next child the agent files under
+	// it — the rule fires per issue, and a tree keeps growing after the user
+	// has already said no.
+	optedOut, err := queries.HasAncestorOptOut(ctx, db.HasAncestorOptOutParams{
+		ID:       issueUUID,
+		UserType: "member",
+		UserID:   human,
+	})
+	if err != nil {
+		slog.Error("delegated subscribe: opt-out check failed", "issue_id", issueID, "error", err)
+		return
+	}
+	if optedOut {
+		return
+	}
+
+	addSubscriber(bus, queries, workspaceID, issueID, "member", util.UUIDToString(human), reason)
 }
 
 // extractIssueFields normalizes an issue payload that may be either a

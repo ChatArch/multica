@@ -84,7 +84,10 @@ func (h *Handler) SubscribeToIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.Queries.AddIssueSubscriber(r.Context(), db.AddIssueSubscriberParams{
+	// Explicit action, so this CLEARS any earlier opt-out tombstone — the user
+	// is overriding their own unsubscribe. Rule-driven subscribes deliberately
+	// cannot do that (see AddIssueSubscriber).
+	err := h.Queries.SubscribeToIssueExplicitly(r.Context(), db.SubscribeToIssueExplicitlyParams{
 		IssueID:  issue.ID,
 		UserType: targetUserType,
 		UserID:   parseUUID(targetUserID),
@@ -123,6 +126,10 @@ func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserID   *string `json:"user_id"`
 		UserType *string `json:"user_type"`
+		// Subtree leaves this issue AND every descendant in one action, and —
+		// via the ancestor opt-out check the delegated rule runs — keeps future
+		// children of this tree from re-subscribing the user (MUL-5483).
+		Subtree bool `json:"subtree"`
 	}
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
@@ -139,11 +146,20 @@ func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.Queries.RemoveIssueSubscriber(r.Context(), db.RemoveIssueSubscriberParams{
-		IssueID:  issue.ID,
-		UserType: targetUserType,
-		UserID:   parseUUID(targetUserID),
-	})
+	var err error
+	if req.Subtree {
+		err = h.Queries.UnsubscribeFromIssueSubtree(r.Context(), db.UnsubscribeFromIssueSubtreeParams{
+			IssueID:  issue.ID,
+			UserType: targetUserType,
+			UserID:   parseUUID(targetUserID),
+		})
+	} else {
+		err = h.Queries.RemoveIssueSubscriber(r.Context(), db.RemoveIssueSubscriberParams{
+			IssueID:  issue.ID,
+			UserType: targetUserType,
+			UserID:   parseUUID(targetUserID),
+		})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to unsubscribe")
 		return

@@ -8,7 +8,10 @@ import type {
   SubscriberRemovedPayload,
 } from "@multica/core/types";
 import { issueSubscribersOptions, issueKeys } from "@multica/core/issues/queries";
-import { useToggleIssueSubscriber } from "@multica/core/issues/mutations";
+import {
+  useToggleIssueSubscriber,
+  useUnsubscribeFromIssueSubtree,
+} from "@multica/core/issues/mutations";
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
 
 export function useIssueSubscribers(issueId: string, userId?: string) {
@@ -18,6 +21,7 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
   );
 
   const toggleMutation = useToggleIssueSubscriber(issueId);
+  const subtreeMutation = useUnsubscribeFromIssueSubtree(issueId);
 
   // Reconnect recovery
   useWSReconnect(
@@ -83,9 +87,14 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
 
   // --- Mutations ---
 
-  const isSubscribed = subscribers.some(
+  const ownSubscription = subscribers.find(
     (s) => s.user_type === "member" && s.user_id === userId,
   );
+  const isSubscribed = !!ownSubscription;
+  // Why the current user is watching. Drives the "your agent created this on
+  // your behalf" explanation — a subscription nobody remembers opting into
+  // reads as the product being creepy unless it says why (MUL-5483).
+  const subscriptionReason = ownSubscription?.reason;
 
   const toggleSubscriber = useCallback(
     async (
@@ -106,11 +115,17 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
     if (userId) toggleSubscriber(userId, "member", isSubscribed);
   }, [userId, isSubscribed, toggleSubscriber]);
 
+  const unsubscribeFromSubtree = useCallback(() => {
+    if (userId) subtreeMutation.mutate({ userId, userType: "member" });
+  }, [userId, subtreeMutation]);
+
   return {
     subscribers,
     loading,
     isSubscribed,
+    subscriptionReason,
     toggleSubscribe,
     toggleSubscriber,
+    unsubscribeFromSubtree,
   };
 }

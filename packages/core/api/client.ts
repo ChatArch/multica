@@ -1046,10 +1046,21 @@ export class ApiClient {
     });
   }
 
-  async unsubscribeFromIssue(issueId: string, userId?: string, userType?: string): Promise<void> {
-    const body: Record<string, string> = {};
+  /**
+   * `subtree` leaves this issue and every descendant, and keeps future children
+   * of the tree from re-subscribing the user — the escape hatch for an
+   * agent-built tree that keeps growing (MUL-5483).
+   */
+  async unsubscribeFromIssue(
+    issueId: string,
+    userId?: string,
+    userType?: string,
+    subtree?: boolean,
+  ): Promise<void> {
+    const body: Record<string, string | boolean> = {};
     if (userId) body.user_id = userId;
     if (userType) body.user_type = userType;
+    if (subtree === true) body.subtree = true;
     await this.fetch(`/api/issues/${issueId}/unsubscribe`, {
       method: "POST",
       body: JSON.stringify(body),

@@ -37,6 +37,12 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@multica/ui/components/ui/dropdown-menu";
 import { Popover, PopoverTrigger, PopoverContent } from "@multica/ui/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
@@ -1358,7 +1364,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   } = useIssueReactions(id, user?.id);
 
   const {
-    subscribers, isSubscribed, toggleSubscribe: handleToggleSubscribe, toggleSubscriber,
+    subscribers, isSubscribed, subscriptionReason,
+    toggleSubscribe: handleToggleSubscribe, toggleSubscriber,
+    unsubscribeFromSubtree: handleUnsubscribeSubtree,
   } = useIssueSubscribers(id, user?.id);
 
   // Token usage
@@ -2564,13 +2572,43 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 <h2 className="text-base font-semibold">{t(($) => $.detail.activity_section)}</h2>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleToggleSubscribe}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {isSubscribed ? t(($) => $.detail.unsubscribe) : t(($) => $.detail.subscribe)}
-                </button>
+                {/* A delegated subscription is one the user never opted into
+                    by hand — their agent created this issue for them. Saying
+                    so is what keeps it from reading as the product quietly
+                    adding them to things (MUL-5483). */}
+                {isSubscribed && subscriptionReason === "delegated" && (
+                  <Tooltip>
+                    <TooltipTrigger className="text-xs text-muted-foreground cursor-default">
+                      {t(($) => $.detail.delegated_subscription_badge)}
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-64">
+                      {t(($) => $.detail.delegated_subscription_hint)}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                {isSubscribed ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                      {t(($) => $.detail.unsubscribe)}
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={handleToggleSubscribe}>
+                        {t(($) => $.detail.unsubscribe_this)}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={handleUnsubscribeSubtree}>
+                        {t(($) => $.detail.unsubscribe_subtree)}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleToggleSubscribe}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {t(($) => $.detail.subscribe)}
+                  </button>
+                )}
                 <Popover>
                   <PopoverTrigger className="cursor-pointer hover:opacity-80 transition-opacity">
                     {subscribers.length > 0 ? (
