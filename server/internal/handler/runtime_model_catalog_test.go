@@ -81,6 +81,62 @@ func TestInMemoryModelCatalogCache_ReturnsIndependentCopies(t *testing.T) {
 	}
 }
 
+// TestInMemoryModelCatalogCache_IsolatesNestedFields extends the copy guarantee
+// to everything a ModelEntry points at. A shallow slice copy would leave the
+// *ModelThinking, its level slice, and ServiceTiers aliasing the cached objects,
+// which also made this backend behave differently from the Redis one (JSON
+// round-trip always yields an independent value).
+func TestInMemoryModelCatalogCache_IsolatesNestedFields(t *testing.T) {
+	ctx := context.Background()
+	cache := NewInMemoryModelCatalogCache()
+
+	source := []ModelEntry{{
+		ID:    "gpt-5.6-sol",
+		Label: "GPT-5.6-Sol",
+		Thinking: &ModelThinking{
+			DefaultLevel:    "low",
+			SupportedLevels: []ThinkingLevel{{Value: "low", Label: "Low"}},
+		},
+		ServiceTiers: []ModelServiceTier{{ID: "fast", Name: "Fast"}},
+	}}
+	if err := cache.Put(ctx, "rt-1", source, true); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Mutating the caller's own slice after Put must not reach the cache.
+	source[0].Thinking.DefaultLevel = "mutated-by-writer"
+	source[0].Thinking.SupportedLevels[0].Label = "mutated-by-writer"
+	source[0].ServiceTiers[0].Name = "mutated-by-writer"
+
+	first, err := cache.Get(ctx, "rt-1")
+	if err != nil || first == nil {
+		t.Fatalf("get: %+v %v", first, err)
+	}
+	if first.Models[0].Thinking.DefaultLevel != "low" ||
+		first.Models[0].Thinking.SupportedLevels[0].Label != "Low" ||
+		first.Models[0].ServiceTiers[0].Name != "Fast" {
+		t.Fatalf("writer mutation leaked into the cache: %+v", first.Models[0])
+	}
+
+	// Mutating a returned snapshot must not reach the cache either.
+	first.Models[0].Thinking.DefaultLevel = "mutated-by-reader"
+	first.Models[0].Thinking.SupportedLevels[0].Value = "mutated-by-reader"
+	first.Models[0].ServiceTiers[0].ID = "mutated-by-reader"
+
+	second, err := cache.Get(ctx, "rt-1")
+	if err != nil || second == nil {
+		t.Fatalf("get: %+v %v", second, err)
+	}
+	if second.Models[0].Thinking == first.Models[0].Thinking {
+		t.Error("thinking pointer is shared between snapshots")
+	}
+	if second.Models[0].Thinking.DefaultLevel != "low" ||
+		second.Models[0].Thinking.SupportedLevels[0].Value != "low" ||
+		second.Models[0].ServiceTiers[0].ID != "fast" {
+		t.Fatalf("reader mutation leaked into the cache: %+v", second.Models[0])
+	}
+}
+
 // TestInMemoryModelCatalogCache_SkipsUncacheableResults pins the same rule the
 // daemon's own discovery cache uses: an empty catalog is a transient failure
 // (CLI not logged in, timeout), and caching it would pin the picker empty for

@@ -295,6 +295,8 @@ import {
   EMPTY_GITHUB_CONNECT_RESPONSE,
   EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
+  RuntimeModelListRequestSchema,
+  MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -1680,15 +1682,40 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
   }
 
+  // Both discovery endpoints feed a UI state machine (poll while
+  // pending/running, then render or fail), so the response is validated rather
+  // than cast: an unparseable body degrades to an explicit "failed" record that
+  // shows the discovery error and keeps manual model entry usable, instead of a
+  // fabricated empty catalog or an endless spinner (MUL-5444).
   async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
-    return this.fetch(`/api/runtimes/${runtimeId}/models`, { method: "POST" });
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/models`, {
+      method: "POST",
+    });
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      { ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST, runtime_id: runtimeId },
+      { endpoint: "POST /api/runtimes/{id}/models" },
+    );
   }
 
   async getListModelsResult(
     runtimeId: string,
     requestId: string,
   ): Promise<RuntimeModelListRequest> {
-    return this.fetch(`/api/runtimes/${runtimeId}/models/${requestId}`);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/models/${requestId}`,
+    );
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      {
+        ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+        id: requestId,
+        runtime_id: runtimeId,
+      },
+      { endpoint: "GET /api/runtimes/{id}/models/{requestId}" },
+    );
   }
 
   async initiateListLocalSkills(

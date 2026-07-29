@@ -1059,6 +1059,15 @@ export interface RuntimeModelListRequest {
 export interface RuntimeModelsResult {
   models: RuntimeModel[];
   supported: boolean;
+  /**
+   * True when the server answered from its catalog cache rather than a live
+   * daemon round trip (MUL-5444). Drives the query's freshness policy: a
+   * cached answer is immediately revalidatable so the client never extends the
+   * server's staleness window.
+   */
+  cached?: boolean;
+  /** Capture time of the served snapshot, when the answer was cached. */
+  cachedAt?: string;
 }
 
 export type RuntimeLocalSkillStatus =

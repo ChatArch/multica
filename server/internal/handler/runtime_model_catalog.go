@@ -81,6 +81,34 @@ func cacheableModelCatalog(models []ModelEntry, supported bool) bool {
 	return supported && len(models) > 0
 }
 
+// cloneModelEntries deep-copies a catalog so the in-memory backend hands out
+// values a caller cannot mutate into the shared cache. A shallow slice copy is
+// not enough: ModelEntry carries a *ModelThinking (with its own level slice) and
+// a ServiceTiers slice, all of which would still alias the cached objects. The
+// Redis backend gets this for free by round-tripping through JSON, and the two
+// implementations must not differ in whether the returned value is independent.
+func cloneModelEntries(models []ModelEntry) []ModelEntry {
+	if models == nil {
+		return nil
+	}
+	out := make([]ModelEntry, len(models))
+	for i, m := range models {
+		clone := m
+		if m.Thinking != nil {
+			thinking := *m.Thinking
+			if m.Thinking.SupportedLevels != nil {
+				thinking.SupportedLevels = append([]ThinkingLevel(nil), m.Thinking.SupportedLevels...)
+			}
+			clone.Thinking = &thinking
+		}
+		if m.ServiceTiers != nil {
+			clone.ServiceTiers = append([]ModelServiceTier(nil), m.ServiceTiers...)
+		}
+		out[i] = clone
+	}
+	return out
+}
+
 // InMemoryModelCatalogCache is the single-node implementation. Adequate for
 // self-hosted and tests; multi-node deploys should use the Redis backend so
 // every API replica shares one warm catalog.
@@ -113,7 +141,7 @@ func (c *InMemoryModelCatalogCache) Get(_ context.Context, runtimeID string) (*M
 	}
 	// Copy so a caller mutating the response cannot corrupt the cache.
 	snapshot := entry
-	snapshot.Models = append([]ModelEntry(nil), entry.Models...)
+	snapshot.Models = cloneModelEntries(entry.Models)
 	return &snapshot, nil
 }
 
@@ -135,7 +163,7 @@ func (c *InMemoryModelCatalogCache) Put(_ context.Context, runtimeID string, mod
 
 	c.entries[runtimeID] = ModelCatalogSnapshot{
 		RuntimeID: runtimeID,
-		Models:    append([]ModelEntry(nil), models...),
+		Models:    cloneModelEntries(models),
 		Supported: supported,
 		StoredAt:  now,
 	}
