@@ -151,6 +151,7 @@ type AgentTaskQueue struct {
 	// The one human accountable for this run, for audit / visibility / cost only — NEVER consulted for authorization (that is originator_user_id). Invariant: when originator_user_id IS NOT NULL, this equals it; the two diverge only when originator_user_id IS NULL (autopilot rule_owner / degraded owner_fallback name an accountable human while authorization carries none). No FK, no cascade (MUL-4302 §1/§7). NULL means no accountable human was resolved: a pre-migration row, OR a NEW row whose audit source is not-yet-resolved / unattributed (e.g. run_only autopilot until rule_owner lands) — NOT pre-migration only.
 	AccountableUserID     pgtype.UUID `json:"accountable_user_id"`
 	SessionRolloutMissing bool        `json:"session_rollout_missing"`
+	RetiredSessionID      pgtype.Text `json:"retired_session_id"`
 }
 
 type AgentToLabel struct {
@@ -320,6 +321,22 @@ type ChannelInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ChannelMediaPendingObject struct {
+	StorageKey     string             `json:"storage_key"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ChatMessageID  pgtype.UUID        `json:"chat_message_id"`
+	StorageUrl     string             `json:"storage_url"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	State          string             `json:"state"`
+	LeaseToken     pgtype.UUID        `json:"lease_token"`
+	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
+	Attempt        int32              `json:"attempt"`
+	NextAttemptAt  pgtype.Timestamptz `json:"next_attempt_at"`
+	LastError      pgtype.Text        `json:"last_error"`
+	TombstonePass  int32              `json:"tombstone_pass"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelOutboundCardMessage struct {
 	ID                   pgtype.UUID        `json:"id"`
 	ChatSessionID        pgtype.UUID        `json:"chat_session_id"`
@@ -353,15 +370,17 @@ type ChatDraftRestore struct {
 }
 
 type ChatMessage struct {
-	ID            pgtype.UUID        `json:"id"`
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	Role          string             `json:"role"`
-	Content       string             `json:"content"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	FailureReason pgtype.Text        `json:"failure_reason"`
-	ElapsedMs     pgtype.Int8        `json:"elapsed_ms"`
-	MessageKind   string             `json:"message_kind"`
+	ID                       pgtype.UUID        `json:"id"`
+	ChatSessionID            pgtype.UUID        `json:"chat_session_id"`
+	Role                     string             `json:"role"`
+	Content                  string             `json:"content"`
+	TaskID                   pgtype.UUID        `json:"task_id"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	FailureReason            pgtype.Text        `json:"failure_reason"`
+	ElapsedMs                pgtype.Int8        `json:"elapsed_ms"`
+	MessageKind              string             `json:"message_kind"`
+	ChannelMediaPendingUntil pgtype.Timestamptz `json:"channel_media_pending_until"`
+	ChannelIngested          bool               `json:"channel_ingested"`
 }
 
 type ChatPinnedAgent struct {
