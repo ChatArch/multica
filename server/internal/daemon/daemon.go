@@ -189,6 +189,11 @@ var (
 	detectAgentVersion   = agent.DetectVersion
 	checkAgentMinVersion = agent.CheckMinVersion
 
+	// listModels is an indirection over agent.ListModels so model-discovery
+	// tests can assert which executable path the daemon enumerates without
+	// shelling out to a real CLI. Mirrors the detectAgentVersion hook above.
+	listModels = agent.ListModels
+
 	// lookPath is an indirection over exec.LookPath so registration tests can
 	// resolve custom runtime-profile commands without manipulating the
 	// process PATH. Mirrors the detectAgentVersion hook above.
@@ -2910,18 +2915,31 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
-	entry, ok := d.agents()[rt.Provider]
-	if !ok {
+	// Discovery must enumerate the binary this runtime will actually execute,
+	// otherwise the picker advertises models the launched CLI may not accept
+	// (MUL-5471). Mirror runTask's resolution order: a custom runtime profile
+	// (MUL-3284) owns the executable path, and such a runtime can live on a
+	// host with NO built-in agent of the same provider installed — so a custom
+	// runtime must never fail on the built-in lookup.
+	var execPath string
+	if customSpec, isCustom := d.customProfileLaunchForRuntime(rt.ID); isCustom {
+		execPath = customSpec.path
+		d.logger.Info("model list uses custom runtime profile command",
+			"runtime_id", rt.ID, "provider", rt.Provider, "command_path", execPath)
+	} else if entry, ok := d.agents()[rt.Provider]; ok {
+		// Built-in provider: self-heal a pinned executable path an in-place
+		// upgrade deleted (MUL-4486).
+		entry, _ = d.resolveAgentEntry(ctx, rt.Provider, entry)
+		execPath = entry.Path
+	} else {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
 			"error":  fmt.Sprintf("no agent configured for provider %q", rt.Provider),
 		})
 		return
 	}
-	// Self-heal a pinned executable path an in-place upgrade deleted (MUL-4486).
-	entry, _ = d.resolveAgentEntry(ctx, rt.Provider, entry)
 
-	models, err := agent.ListModels(ctx, rt.Provider, entry.Path)
+	models, err := listModels(ctx, rt.Provider, execPath)
 	if err != nil {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",

@@ -116,38 +116,38 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 		// agy 1.0.6 added a `--model` flag plus an `agy models` catalog
 		// command (MUL-3125). Enumerate it on demand like the other
 		// dynamic-discovery backends.
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverAntigravityModels(ctx, executablePath)
 		})
 	case "traecli":
 		// Official TRAE CLI is ACP-native: it returns its model catalog from
 		// session/new. Enumerate it on demand like the other ACP backends
 		// (requires a logged-in traecli; falls back to manual entry on error).
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverTraecliModels(ctx, executablePath)
 		})
 	case "cursor":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverCursorModels(ctx, executablePath)
 		})
 	case "copilot":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverCopilotModels(ctx, executablePath)
 		})
 	case "hermes":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverHermesModels(ctx, executablePath)
 		})
 	case "kimi":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverKimiModels(ctx, executablePath)
 		})
 	case "kiro":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverKiroModels(ctx, executablePath)
 		})
 	case "qoder":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverQoderModels(ctx, executablePath)
 		})
 	case "opencode":
@@ -159,15 +159,15 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 			return discoverDevecoModels(ctx, executablePath)
 		})
 	case "pi":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverPiModels(ctx, executablePath)
 		})
 	case "openclaw":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverOpenclawAgents(ctx, executablePath)
 		})
 	case "codebuddy":
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			models, err := discoverCodebuddyModels(ctx, executablePath)
 			if err != nil {
 				return nil, err
@@ -184,7 +184,7 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 		// xAI Grok Build is ACP-native (`grok agent stdio`); model catalog
 		// comes from session/new. Falls back to a small static list so the
 		// UI picker stays usable offline / unauthenticated.
-		return cachedDiscovery(providerType, func() ([]Model, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() ([]Model, error) {
 			return discoverGrokModels(ctx, executablePath)
 		})
 	default:
@@ -299,6 +299,12 @@ func cachedDiscovery(key string, fn func() ([]Model, error)) ([]Model, error) {
 	return models, nil
 }
 
+// discoveryCacheKey scopes a memoized discovery result to the exact binary it
+// was enumerated from. Every dynamic-discovery branch above must use it: one
+// host can run both a built-in provider CLI and a custom runtime profile
+// (MUL-3284) of the same protocol_family pointing at a different — often
+// differently versioned — executable, and a provider-only key would serve one
+// binary's catalog for the other for the full TTL (MUL-5471).
 func discoveryCacheKey(providerType, executablePath string) string {
 	if executablePath == "" {
 		return providerType
