@@ -843,13 +843,13 @@ func TestCursorToolPayloadKeyIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestCursorUnknownTypeTallySummary pins the rendering the daemon log depends
+// TestCursorUnhandledTypeTallySummary pins the rendering the daemon log depends
 // on: sorted so it diffs cleanly across runs, and "name=count" so an operator
 // can see at a glance which event went missing and how often.
-func TestCursorUnknownTypeTallySummary(t *testing.T) {
+func TestCursorUnhandledTypeTallySummary(t *testing.T) {
 	t.Parallel()
 
-	var tally cursorUnknownTypeTally
+	var tally cursorUnhandledTypeTally
 	if got := tally.summary(); got != "" {
 		t.Errorf("empty tally summary = %q, want %q", got, "")
 	}
@@ -868,14 +868,14 @@ func TestCursorUnknownTypeTallySummary(t *testing.T) {
 	}
 }
 
-// TestCursorUnknownTypeTallyNormalizesKeys keeps the tally content-free: a type
+// TestCursorUnhandledTypeTallyNormalizesKeys keeps the tally content-free: a type
 // value carrying punctuation or arbitrary length must not be copied into daemon
 // logs verbatim, it collapses to the same bounded labels observedCursorEventType
 // produces everywhere else.
-func TestCursorUnknownTypeTallyNormalizesKeys(t *testing.T) {
+func TestCursorUnhandledTypeTallyNormalizesKeys(t *testing.T) {
 	t.Parallel()
 
-	var tally cursorUnknownTypeTally
+	var tally cursorUnhandledTypeTally
 	tally.observe("")
 	tally.observe("   ")
 	tally.observe("tool call with spaces")
@@ -886,28 +886,28 @@ func TestCursorUnknownTypeTallyNormalizesKeys(t *testing.T) {
 	}
 }
 
-// TestCursorUnknownTypeTallyBoundsCardinality guards the daemon against a
+// TestCursorUnhandledTypeTallyBoundsCardinality guards the daemon against a
 // stream that emits an unbounded set of novel type names: the map must stop
 // growing at the cap and fold the rest into the overflow bucket, while the
 // total still counts every event.
-func TestCursorUnknownTypeTallyBoundsCardinality(t *testing.T) {
+func TestCursorUnhandledTypeTallyBoundsCardinality(t *testing.T) {
 	t.Parallel()
 
-	var tally cursorUnknownTypeTally
+	var tally cursorUnhandledTypeTally
 	const extra = 50
-	for i := 0; i < cursorUnknownTypeCardinalityCap+extra; i++ {
+	for i := 0; i < cursorUnhandledTypeCardinalityCap+extra; i++ {
 		tally.observe(fmt.Sprintf("type-%03d", i))
 	}
 
-	if len(tally.counts) != cursorUnknownTypeCardinalityCap+1 {
+	if len(tally.counts) != cursorUnhandledTypeCardinalityCap+1 {
 		t.Errorf("distinct keys = %d, want %d (cap + overflow bucket)",
-			len(tally.counts), cursorUnknownTypeCardinalityCap+1)
+			len(tally.counts), cursorUnhandledTypeCardinalityCap+1)
 	}
-	if got := tally.counts[cursorUnknownTypeOverflowKey]; got != extra {
+	if got := tally.counts[cursorUnhandledTypeOverflowKey]; got != extra {
 		t.Errorf("overflow bucket = %d, want %d", got, extra)
 	}
-	if tally.total != cursorUnknownTypeCardinalityCap+extra {
-		t.Errorf("total = %d, want %d", tally.total, cursorUnknownTypeCardinalityCap+extra)
+	if tally.total != cursorUnhandledTypeCardinalityCap+extra {
+		t.Errorf("total = %d, want %d", tally.total, cursorUnhandledTypeCardinalityCap+extra)
 	}
 	// A capped key already in the map keeps accumulating under its own name.
 	tally.observe("type-000")
@@ -916,23 +916,37 @@ func TestCursorUnknownTypeTallyBoundsCardinality(t *testing.T) {
 	}
 	// The overflow label cannot be produced by normalizing a real type name, so
 	// a stream cannot forge counts into the bucket.
-	if observedCursorEventType(cursorUnknownTypeOverflowKey) != "invalid" {
-		t.Errorf("overflow key %q is collidable with a real type name", cursorUnknownTypeOverflowKey)
+	if observedCursorEventType(cursorUnhandledTypeOverflowKey) != "invalid" {
+		t.Errorf("overflow key %q is collidable with a real type name", cursorUnhandledTypeOverflowKey)
 	}
 }
 
-// TestCursorBenignEventType pins which unhandled types must stay silent. `user`
-// is the CLI echoing our own prompt and appears in every run: tallying it would
-// make the unknown-type warning fire always, which is the same as never.
-func TestCursorBenignEventType(t *testing.T) {
+// TestCursorNonTranscriptEventType pins which unhandled types must stay silent.
+// `user` is the CLI echoing our own prompt and appears in every run; `connection`
+// and `retry` are transport control frames. None carry transcript content, so
+// tallying them would make the warning fire always, which is the same as never.
+func TestCursorNonTranscriptEventType(t *testing.T) {
 	t.Parallel()
 
-	if !cursorBenignEventType("user") {
-		t.Error("`user` must be treated as benign; it is present in every recorded run")
+	for _, eventType := range []string{"user", "connection", "retry"} {
+		if !cursorNonTranscriptEventType(eventType) {
+			t.Errorf("%q must be non-transcript; it carries nothing the transcript needs", eventType)
+		}
 	}
 	for _, eventType := range []string{"tool_calls", "reasoning", "toolCall", ""} {
-		if cursorBenignEventType(eventType) {
-			t.Errorf("%q must NOT be benign — it has to be reported as protocol drift", eventType)
+		if cursorNonTranscriptEventType(eventType) {
+			t.Errorf("%q must NOT be suppressed — it has to be reported as unhandled", eventType)
+		}
+	}
+	// The suppression list must never shadow a type the parser actually handles,
+	// otherwise silencing the diagnostic would silence the transcript too.
+	handled := []string{
+		"system", "assistant", "thinking", "tool_call", "tool_use",
+		"tool_result", "result", "error", "text", "step_finish",
+	}
+	for _, eventType := range handled {
+		if cursorNonTranscriptEventType(eventType) {
+			t.Errorf("%q is handled by the parser and must not be in the suppression list", eventType)
 		}
 	}
 }

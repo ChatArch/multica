@@ -115,15 +115,16 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		invalidEventCount := 0
 		assistantEventCount := 0
 		toolUseCount := 0
-		// unknownSubtypeCount tracks thinking/tool_call events whose subtype we
+		// unhandledSubtypeCount tracks thinking/tool_call events whose subtype we
 		// don't recognize. They are ignored (never synthesized into a message)
 		// and surfaced once as a bounded, content-free diagnostic so an upstream
 		// protocol addition is visible instead of silent.
-		unknownSubtypeCount := 0
-		// unknownTypes tracks top-level event types the switch below does not
-		// handle. See cursorUnknownTypeTally: this is what makes a renamed
-		// tool/reasoning event loud instead of silent (MUL-5434).
-		var unknownTypes cursorUnknownTypeTally
+		unhandledSubtypeCount := 0
+		// unhandledTypes tracks top-level event types the switch below does not
+		// handle. See cursorUnhandledTypeTally: it makes a dropped event
+		// observable, and documents what the count does and does not establish
+		// (MUL-5434).
+		var unhandledTypes cursorUnhandledTypeTally
 		lastEventType := "none"
 		// assistantBytes counts only model-authored streamed text. It is kept
 		// separate from `output` because the result event also writes into
@@ -195,7 +196,7 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				case "completed":
 					thinking.complete()
 				default:
-					unknownSubtypeCount++
+					unhandledSubtypeCount++
 				}
 
 			case "tool_call":
@@ -225,7 +226,7 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 						Output: call.Result,
 					})
 				default:
-					unknownSubtypeCount++
+					unhandledSubtypeCount++
 				}
 
 			case "tool_use":
@@ -301,18 +302,22 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 			default:
 				// A top-level type this parser does not handle. Falling through
-				// here is completely silent otherwise, and that silence is the
+				// here used to be completely silent, and that silence is the
 				// bug: if the CLI renames `tool_call` or `thinking`, every tool
 				// and reasoning row vanishes while the run still reports
-				// success, tool_use_count=0 and no diagnostic at all — which is
-				// indistinguishable from a model that legitimately used no
-				// tools (MUL-5434). Count it so the two cases can be told apart.
+				// success and tool_use_count=0, with no diagnostic to
+				// distinguish that from a tool-free run (MUL-5434).
 				//
-				// Counting is all we do. An unrecognized event is never coerced
-				// into a tool or reasoning message: guessing at upstream
-				// additions is the failure mode MUL-5231 already fixed once.
-				if !cursorBenignEventType(evt.Type) {
-					unknownTypes.observe(evt.Type)
+				// Counting makes the drop observable. It does not identify the
+				// cause on its own — see cursorUnhandledTypeTally for what a
+				// non-zero and a zero tally each do and do not establish.
+				//
+				// Counting is also all we do. An unrecognized event is never
+				// coerced into a tool or reasoning message: guessing at
+				// upstream additions is the failure mode MUL-5231 already
+				// fixed once.
+				if !cursorNonTranscriptEventType(evt.Type) {
+					unhandledTypes.observe(evt.Type)
 				}
 			}
 		}
@@ -390,40 +395,40 @@ func (b *cursorBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 
 		logStreamProtocolObservation(b.cfg.Logger, streamProtocolObservation{
-			provider:              "cursor-agent",
-			cliVersion:            b.cfg.CLIVersion,
-			model:                 opts.Model,
-			exitCode:              streamProcessExitCode(exitErr),
-			eventCount:            eventCount,
-			invalidEventCount:     invalidEventCount,
-			assistantEventCount:   assistantEventCount,
-			toolUseCount:          toolUseCount,
-			sawResult:             resultSeen,
-			resultIsError:         resultIsError,
-			resultBytes:           resultBytes,
-			lastAssistantBytes:    assistantBytes,
-			scannerError:          scanErr != nil && !resultSeen,
-			lastEventType:         lastEventType,
-			unknownEventTypeCount: unknownTypes.total,
-			unknownEventTypes:     unknownTypes.summary(),
-			unknownSubtypeCount:   unknownSubtypeCount,
+			provider:                "cursor-agent",
+			cliVersion:              b.cfg.CLIVersion,
+			model:                   opts.Model,
+			exitCode:                streamProcessExitCode(exitErr),
+			eventCount:              eventCount,
+			invalidEventCount:       invalidEventCount,
+			assistantEventCount:     assistantEventCount,
+			toolUseCount:            toolUseCount,
+			sawResult:               resultSeen,
+			resultIsError:           resultIsError,
+			resultBytes:             resultBytes,
+			lastAssistantBytes:      assistantBytes,
+			scannerError:            scanErr != nil && !resultSeen,
+			lastEventType:           lastEventType,
+			unhandledEventTypeCount: unhandledTypes.total,
+			unhandledEventTypes:     unhandledTypes.summary(),
+			unhandledSubtypeCount:   unhandledSubtypeCount,
 		})
 
-		if unknownSubtypeCount > 0 {
+		if unhandledSubtypeCount > 0 {
 			// Content-free and emitted once per run: signals that the CLI sent a
 			// thinking/tool_call subtype we chose to ignore, so a protocol
 			// addition is diagnosable without the parser having guessed at it.
-			b.cfg.Logger.Warn("cursor-agent ignored unknown event subtypes", "count", unknownSubtypeCount)
+			b.cfg.Logger.Warn("cursor-agent ignored unhandled event subtypes", "count", unhandledSubtypeCount)
 		}
 
-		if unknownTypes.total > 0 {
-			// Same contract one level up, and the higher-value signal of the
-			// two: an unhandled top-level type means whole events — possibly
-			// every tool call in the run — never reached the transcript. Read
-			// this together with tool_use_count in the summary above.
-			b.cfg.Logger.Warn("cursor-agent ignored unknown event types",
-				"count", unknownTypes.total,
-				"types", unknownTypes.summary(),
+		if unhandledTypes.total > 0 {
+			// Same contract one level up, and the broader signal of the two: an
+			// unhandled top-level type means whole events never reached the
+			// transcript. What was in them is not decided here — the type names
+			// are the starting point for that, not the conclusion.
+			b.cfg.Logger.Warn("cursor-agent ignored unhandled event types",
+				"count", unhandledTypes.total,
+				"types", unhandledTypes.summary(),
 			)
 		}
 
@@ -484,60 +489,84 @@ func observedCursorEventType(value string) string {
 	return value
 }
 
-// cursorBenignEventTypes are top-level events the parser knowingly does not
-// forward and which are NOT evidence of protocol drift. `user` is the CLI
-// echoing our own prompt back on the stream (present in every recorded run), so
-// tallying it would fire the unknown-type warning on every single task — and a
-// warning that always fires is a warning nobody reads.
-var cursorBenignEventTypes = map[string]struct{}{
-	"user": {},
+// cursorNonTranscriptEventTypes are top-level events that are known to exist,
+// carry nothing the transcript needs, and are therefore NOT reported as
+// protocol drift. Dropping them is the behaviour that already shipped; listing
+// them here only keeps them out of the diagnostic, because a warning that fires
+// on every task is a warning nobody reads.
+//
+// Provenance differs per entry and matters when revisiting this list:
+//   - `user` — the CLI echoing our own prompt back. Confirmed present in the
+//     recorded 2026.07.20 stream, i.e. in every real run.
+//   - `connection`, `retry` — transport/control frames reported on newer CLI
+//     builds (MUL-5434 review). Not reproduced locally, so they are listed
+//     defensively: if a build does not emit them the entry is inert, and if it
+//     does we must not call a known control frame an unhandled protocol event.
+//
+// An entry here is a claim that the type carries no transcript content. Do not
+// add a type merely to silence the warning.
+var cursorNonTranscriptEventTypes = map[string]struct{}{
+	"user":       {},
+	"connection": {},
+	"retry":      {},
 }
 
-func cursorBenignEventType(eventType string) bool {
-	_, ok := cursorBenignEventTypes[strings.TrimSpace(eventType)]
+func cursorNonTranscriptEventType(eventType string) bool {
+	_, ok := cursorNonTranscriptEventTypes[strings.TrimSpace(eventType)]
 	return ok
 }
 
-// cursorUnknownTypeCardinalityCap bounds how many distinct unknown type names
-// the tally retains. A stream emitting novel type names (or garbage that still
+// cursorUnhandledTypeCardinalityCap bounds how many distinct type names the
+// tally retains. A stream emitting novel type names (or garbage that still
 // parses as JSON) must not grow the map without limit inside a long-running
 // daemon; names past the cap collapse into one overflow bucket.
-const cursorUnknownTypeCardinalityCap = 16
+const cursorUnhandledTypeCardinalityCap = 16
 
-// cursorUnknownTypeOverflowKey holds the counts that exceeded the cardinality
+// cursorUnhandledTypeOverflowKey holds the counts that exceeded the cardinality
 // cap. The parentheses cannot collide with a real type name: observedCursorEventType
 // only ever returns identifier characters, "unknown", or "invalid".
-const cursorUnknownTypeOverflowKey = "(overflow)"
+const cursorUnhandledTypeOverflowKey = "(overflow)"
 
-// cursorUnknownTypeTally counts top-level event types the parser does not
-// handle. It is the signal that separates "the CLI renamed an event we rely on"
-// from "the model genuinely used no tools" — before this existed, a renamed
+// cursorUnhandledTypeTally counts top-level event types this parser does not
+// handle, so that dropping them stops being silent. Before it existed a renamed
 // `tool_call` fell through the type switch and the run reported success with
-// tool_use_count=0 and no diagnostic whatsoever, which is exactly what a
-// tool-free run looks like (MUL-5434).
+// tool_use_count=0 and no diagnostic whatsoever (MUL-5434).
+//
+// Read it as evidence, not as a verdict — in both directions:
+//
+//   - A non-zero tally shows the stream carried top-level events we do not
+//     handle. Which events, and whether they are what the transcript lost,
+//     still has to be established from the type names, invalid_event_count and
+//     ultimately a captured stream.
+//   - A zero tally shows only that no unhandled top-level type was observed. It
+//     does NOT establish that the model used no tools: the CLI may have executed
+//     tools without handing the updates to its stream serializer at all, a new
+//     shape may be nested inside an event type we already recognize (e.g. an
+//     assistant content block), or the events may have been lost to invalid
+//     framing or a scanner boundary. Those branches are open on #6071.
 //
 // Only normalized identifiers and counts are retained, never payload content,
 // so the tally is safe to log beside the rest of the protocol summary.
-type cursorUnknownTypeTally struct {
+type cursorUnhandledTypeTally struct {
 	total  int
 	counts map[string]int
 }
 
-func (t *cursorUnknownTypeTally) observe(eventType string) {
+func (t *cursorUnhandledTypeTally) observe(eventType string) {
 	t.total++
 	if t.counts == nil {
 		t.counts = make(map[string]int, 4)
 	}
 	key := observedCursorEventType(eventType)
-	if _, seen := t.counts[key]; !seen && len(t.counts) >= cursorUnknownTypeCardinalityCap {
-		key = cursorUnknownTypeOverflowKey
+	if _, seen := t.counts[key]; !seen && len(t.counts) >= cursorUnhandledTypeCardinalityCap {
+		key = cursorUnhandledTypeOverflowKey
 	}
 	t.counts[key]++
 }
 
 // summary renders the tally as a stable, sorted "name=count" list (e.g.
 // "reasoning=9,tool_calls=6") so it can be grepped and diffed across runs.
-func (t *cursorUnknownTypeTally) summary() string {
+func (t *cursorUnhandledTypeTally) summary() string {
 	if len(t.counts) == 0 {
 		return ""
 	}

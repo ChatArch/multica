@@ -299,7 +299,7 @@ func countCursorMessageTypes(messages []Message) map[MessageType]int {
 	return counts
 }
 
-// TestCursorExecuteReportsUnknownTopLevelTypes is the MUL-5434 regression.
+// TestCursorExecuteReportsUnhandledTopLevelTypes is the MUL-5434 regression.
 //
 // Reported symptom: a Cursor run that demonstrably used tools produced a single
 // blob of agent text, tools=0, no reasoning — and not one diagnostic. This test
@@ -309,10 +309,13 @@ func countCursorMessageTypes(messages []Message) map[MessageType]int {
 //
 // The parser must still refuse to guess: no tool or reasoning message may be
 // synthesized from an event it does not recognize. What it must NOT do is stay
-// silent, because a silent drop is indistinguishable from a model that
-// legitimately used no tools — that ambiguity is what made the original report
-// impossible to triage from logs alone.
-func TestCursorExecuteReportsUnknownTopLevelTypes(t *testing.T) {
+// silent — a silent drop leaves no trace at all, which is what made the original
+// report impossible to triage from logs.
+//
+// This asserts only that the signal exists and that nothing is fabricated. The
+// tally is deliberately not treated as a verdict on WHY the transcript is empty;
+// see cursorUnhandledTypeTally for the branches it cannot rule out.
+func TestCursorExecuteReportsUnhandledTopLevelTypes(t *testing.T) {
 	t.Parallel()
 
 	lines := []string{
@@ -333,16 +336,16 @@ func TestCursorExecuteReportsUnknownTopLevelTypes(t *testing.T) {
 	// Unrecognized events are never coerced into transcript rows.
 	counts := countCursorMessageTypes(messages)
 	if counts[MessageToolUse] != 0 || counts[MessageToolResult] != 0 {
-		t.Errorf("unknown types synthesized tool rows: tool_use=%d tool_result=%d",
+		t.Errorf("unhandled types synthesized tool rows: tool_use=%d tool_result=%d",
 			counts[MessageToolUse], counts[MessageToolResult])
 	}
 	if counts[MessageThinking] != 0 {
-		t.Errorf("unknown type folded into reasoning: thinking=%d", counts[MessageThinking])
+		t.Errorf("unhandled type folded into reasoning: thinking=%d", counts[MessageThinking])
 	}
 
-	// ...but the drop is now loud, and names the events that went missing.
-	if !strings.Contains(logs, "cursor-agent ignored unknown event types") {
-		t.Fatalf("no unknown-type warning emitted; logs:\n%s", logs)
+	// ...but the drop is now observable, and names the events that were dropped.
+	if !strings.Contains(logs, "cursor-agent ignored unhandled event types") {
+		t.Fatalf("no unhandled-type warning emitted; logs:\n%s", logs)
 	}
 	for _, want := range []string{`count=4`, `reasoning=1`, `toolCall=1`, `tool_calls=2`} {
 		if !strings.Contains(logs, want) {
@@ -350,27 +353,30 @@ func TestCursorExecuteReportsUnknownTopLevelTypes(t *testing.T) {
 		}
 	}
 
-	// The structured summary is where tools=0 and the unknown tally sit side by
-	// side; that pairing is what identifies a rename rather than a tool-free run.
-	if !strings.Contains(logs, "unknown_event_type_count=4") {
-		t.Errorf("protocol summary missing unknown_event_type_count=4; logs:\n%s", logs)
+	// The tally is also on the structured summary line, next to the other
+	// protocol counters an operator has to weigh alongside it.
+	if !strings.Contains(logs, "unhandled_event_type_count=4") {
+		t.Errorf("protocol summary missing unhandled_event_type_count=4; logs:\n%s", logs)
 	}
 	if !strings.Contains(logs, "tool_use_count=0") {
 		t.Errorf("protocol summary missing tool_use_count=0; logs:\n%s", logs)
 	}
 }
 
-// TestCursorExecuteDoesNotWarnOnBenignStream guards the other half of the fix:
-// the warning has to stay quiet on a healthy run. The recorded stream contains
-// a top-level `user` event (the CLI echoing our prompt) which the parser
-// deliberately drops — if that counted as drift, the warning would fire on
-// every task and stop meaning anything.
-func TestCursorExecuteDoesNotWarnOnBenignStream(t *testing.T) {
+// TestCursorExecuteDoesNotWarnOnHealthyStream guards the other half of the fix:
+// the warning has to stay quiet on a run with nothing wrong with it. Top-level
+// `user` (the CLI echoing our prompt, present in every recorded run) and the
+// `connection` / `retry` control frames carry no transcript content and are
+// dropped by design — if those counted as drift the warning would fire on every
+// task and stop meaning anything.
+func TestCursorExecuteDoesNotWarnOnHealthyStream(t *testing.T) {
 	t.Parallel()
 
 	lines := []string{
 		`{"type":"system","subtype":"init","session_id":"sess-ok"}`,
 		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+		`{"type":"connection","subtype":"reconnecting"}`,
+		`{"type":"retry","subtype":"scheduled"}`,
 		`{"type":"thinking","subtype":"delta","text":"thinking"}`,
 		`{"type":"thinking","subtype":"completed"}`,
 		`{"type":"tool_call","subtype":"started","call_id":"call-a","tool_call":{"readToolCall":{"args":{"path":"/a"}},"toolCallId":"call-a"}}`,
@@ -378,16 +384,23 @@ func TestCursorExecuteDoesNotWarnOnBenignStream(t *testing.T) {
 		`{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"sess-ok"}`,
 	}
 
-	_, result, logs := runCursorStreamLines(t, lines)
+	messages, result, logs := runCursorStreamLines(t, lines)
 
 	if result.Status != "completed" {
 		t.Fatalf("status = %q, want completed; error=%q", result.Status, result.Error)
 	}
-	if strings.Contains(logs, "cursor-agent ignored unknown event types") {
-		t.Errorf("unknown-type warning fired on a healthy stream; logs:\n%s", logs)
+	if strings.Contains(logs, "cursor-agent ignored unhandled event types") {
+		t.Errorf("unhandled-type warning fired on a healthy stream; logs:\n%s", logs)
 	}
-	if !strings.Contains(logs, "unknown_event_type_count=0") {
-		t.Errorf("protocol summary should report unknown_event_type_count=0; logs:\n%s", logs)
+	if !strings.Contains(logs, "unhandled_event_type_count=0") {
+		t.Errorf("protocol summary should report unhandled_event_type_count=0; logs:\n%s", logs)
+	}
+	// Suppressing the warning must not have suppressed the real rows: the
+	// known-good `thinking` / `tool_call` events still reach the transcript.
+	counts := countCursorMessageTypes(messages)
+	if counts[MessageToolUse] != 1 || counts[MessageToolResult] != 1 || counts[MessageThinking] != 1 {
+		t.Errorf("healthy stream lost rows: tool_use=%d tool_result=%d thinking=%d",
+			counts[MessageToolUse], counts[MessageToolResult], counts[MessageThinking])
 	}
 }
 
