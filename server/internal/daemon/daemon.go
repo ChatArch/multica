@@ -910,25 +910,33 @@ func (d *Daemon) applyRegisterResponseInPlace(workspaceID string, resp *Register
 	return newIDs, droppedIDs, true
 }
 
-// mergeRegisterResponseInPlace applies a register response ADDITIVELY: returned
-// runtimes are indexed and appended, and a prior runtime ID that the response
-// did not mention is left alone.
+// mergeBuiltinRegisterResponse applies a builtins-only register response
+// ADDITIVELY: returned built-in runtimes are indexed and appended, and a prior
+// runtime ID that the response did not mention is left alone.
 //
 // applyRegisterResponseInPlace treats the response as authoritative and drops
 // unmentioned IDs, which is right for the convergence paths that deliberately
 // re-derive a workspace's whole runtime set. It is wrong for CLI discovery
-// (MUL-5439): that payload carries built-in runtimes only, and
-// appendProfileRuntimes is best-effort — one failed GetRuntimeProfiles call
-// (older server, network blip) produces a builtins-only response, which under
-// the authoritative rule would evict the workspace's custom profile runtimes
-// from runtimeIndex and stop their heartbeats, possibly mid-task. The server's
+// (MUL-5439): that payload carries built-in runtimes only, so under the
+// authoritative rule it would evict the workspace's custom profile runtimes from
+// runtimeIndex and stop their heartbeats, possibly mid-task. The server's
 // register endpoint is a pure per-entry upsert and prunes nothing, so omitted
 // runtimes still exist server-side and must be kept locally.
 //
+// Two deliberate omissions keep this path out of custom-profile business:
+//
+//   - Entries with a ProfileID are ignored. Discovery registers built-ins only,
+//     so this is an invariant guard: a custom runtime must never enter the set
+//     through here.
+//   - profileSetSig is neither read nor written. Caching a signature observed
+//     during discovery would tell refreshWorkspaceRuntimeProfiles that the
+//     profile set was already converged, and a profile disabled at that moment
+//     would keep its runtime alive forever.
+//
 // ID rotation is still handled: when the response returns a different ID for a
-// provider/profile pair the workspace already had, that specific old ID is
-// replaced rather than accumulating a duplicate heartbeat.
-func (d *Daemon) mergeRegisterResponseInPlace(workspaceID string, resp *RegisterResponse, profileSig string) (newIDs []string, ok bool) {
+// built-in provider the workspace already had, that specific old ID is replaced
+// rather than accumulating a duplicate heartbeat.
+func (d *Daemon) mergeBuiltinRegisterResponse(workspaceID string, resp *RegisterResponse) (newIDs []string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ws, exists := d.workspaces[workspaceID]
@@ -936,29 +944,29 @@ func (d *Daemon) mergeRegisterResponseInPlace(workspaceID string, resp *Register
 		return nil, false
 	}
 
-	// Index the workspace's current runtimes by identity (provider + profile)
-	// so a rotated ID replaces its predecessor instead of doubling it.
-	type runtimeKey struct{ provider, profileID string }
-	existingByKey := make(map[runtimeKey]string, len(ws.runtimeIDs))
+	// Index the workspace's current built-in runtimes by provider so a rotated
+	// ID replaces its predecessor instead of doubling it.
+	existingByProvider := make(map[string]string, len(ws.runtimeIDs))
 	kept := make([]string, 0, len(ws.runtimeIDs)+len(resp.Runtimes))
+	present := make(map[string]struct{}, len(ws.runtimeIDs))
 	for _, id := range ws.runtimeIDs {
-		if rt, found := d.runtimeIndex[id]; found {
-			existingByKey[runtimeKey{rt.Provider, rt.ProfileID}] = id
+		if rt, found := d.runtimeIndex[id]; found && rt.ProfileID == "" {
+			existingByProvider[rt.Provider] = id
 		}
 		kept = append(kept, id)
-	}
-
-	present := make(map[string]struct{}, len(kept))
-	for _, id := range kept {
 		present[id] = struct{}{}
 	}
+
 	for _, rt := range resp.Runtimes {
+		if rt.ProfileID != "" {
+			// Not ours to manage; the drift path owns custom profiles.
+			continue
+		}
 		d.runtimeIndex[rt.ID] = rt
 		if _, already := present[rt.ID]; already {
 			continue
 		}
-		key := runtimeKey{rt.Provider, rt.ProfileID}
-		if oldID, rotated := existingByKey[key]; rotated && oldID != rt.ID {
+		if oldID, rotated := existingByProvider[rt.Provider]; rotated && oldID != rt.ID {
 			// Same runtime, new ID: swap in place and retire the old entry.
 			for i, id := range kept {
 				if id == oldID {
@@ -968,14 +976,11 @@ func (d *Daemon) mergeRegisterResponseInPlace(workspaceID string, resp *Register
 			}
 			delete(d.runtimeIndex, oldID)
 			delete(present, oldID)
-			present[rt.ID] = struct{}{}
-			existingByKey[key] = rt.ID
-			newIDs = append(newIDs, rt.ID)
-			continue
+		} else {
+			kept = append(kept, rt.ID)
 		}
-		kept = append(kept, rt.ID)
 		present[rt.ID] = struct{}{}
-		existingByKey[key] = rt.ID
+		existingByProvider[rt.Provider] = rt.ID
 		newIDs = append(newIDs, rt.ID)
 	}
 	ws.runtimeIDs = kept
@@ -986,12 +991,6 @@ func (d *Daemon) mergeRegisterResponseInPlace(workspaceID string, resp *Register
 	}
 	if len(resp.Settings) > 0 {
 		ws.settings = resp.Settings
-	}
-	// Only cache a signature we actually fetched; empty means the profile fetch
-	// failed and the previous value must survive so real drift is still
-	// detectable later.
-	if profileSig != "" {
-		ws.profileSetSig = profileSig
 	}
 	return newIDs, true
 }
@@ -1627,6 +1626,48 @@ func (d *Daemon) registerRuntimesForWorkspaceBatch(ctx context.Context, workspac
 	}
 	d.logger.Debug("register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes), "repos", len(resp.Repos), "repos_version", resp.ReposVersion)
 	return resp, profileSig, nil
+}
+
+// registerBuiltinRuntimesForWorkspace registers ONLY the built-in runtimes for a
+// workspace: no custom runtime profiles are fetched or sent, and no profile
+// signature is produced.
+//
+// This exists for the CLI-discovery path (MUL-5439), which must not participate
+// in custom-profile convergence at all. Going through the profile-appending
+// registration made discovery observe the profile set as a side effect, and
+// caching that observation told the drift path "already converged" — so a
+// profile disabled at the same moment a new CLI was discovered would keep its
+// runtime alive forever (refreshWorkspaceRuntimeProfiles short-circuits on a
+// matching signature). Custom profile add/edit/disable stays exclusively with
+// the existing drift path.
+//
+// builtins is treated as read-only.
+func (d *Daemon) registerBuiltinRuntimesForWorkspace(ctx context.Context, workspaceID string, builtins []map[string]string) (*RegisterResponse, error) {
+	runtimes := cloneRuntimeEntries(builtins)
+	if len(runtimes) == 0 {
+		return nil, ErrNoRuntimesToRegister
+	}
+	req := map[string]any{
+		"workspace_id":      workspaceID,
+		"daemon_id":         d.cfg.DaemonID,
+		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
+		"device_name":       d.cfg.DeviceName,
+		"cli_version":       d.cfg.CLIVersion,
+		"launched_by":       d.cfg.LaunchedBy,
+		"runtimes":          runtimes,
+		// Deliberately empty: this call carries no profiles, so it must not
+		// report profile failures either.
+		"failed_profiles": []map[string]string{},
+	}
+	resp, err := d.client.Register(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("register builtin runtimes: %w", err)
+	}
+	if len(resp.Runtimes) == 0 {
+		return nil, fmt.Errorf("register builtin runtimes: empty response")
+	}
+	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
+	return resp, nil
 }
 
 // appendProfileRuntimes fetches the workspace's enabled custom runtime

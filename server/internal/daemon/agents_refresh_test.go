@@ -241,10 +241,11 @@ func TestDiscovery_RetriesOnlyTheWorkspacesThatStillNeedIt(t *testing.T) {
 }
 
 // TestDiscovery_KeepsCustomRuntimeWhenProfileFetchFails is the review's second
-// P1. appendProfileRuntimes is best-effort, so a failed GetRuntimeProfiles call
-// yields a builtins-only register response. Applying that as authoritative would
-// evict the workspace's custom profile runtimes from the local index and stop
-// their heartbeats — the opposite of "existing runtimes are unaffected".
+// P1. The discovery path registers built-ins only, so its response never
+// mentions custom profile runtimes. Applying that as authoritative would evict
+// them from the local index and stop their heartbeats — the opposite of
+// "existing runtimes are unaffected". The profile fetch failing is the sharpest
+// version of the same hazard.
 func TestDiscovery_KeepsCustomRuntimeWhenProfileFetchFails(t *testing.T) {
 	fx := newBatchFixture(t)
 	stubLookPath(t, map[string]string{"company-codex": "/opt/bin/company-codex"})
@@ -263,6 +264,7 @@ func TestDiscovery_KeepsCustomRuntimeWhenProfileFetchFails(t *testing.T) {
 
 	customID := ""
 	d.mu.Lock()
+	sigBefore := d.workspaces["ws-1"].profileSetSig
 	for _, id := range d.workspaces["ws-1"].runtimeIDs {
 		if d.runtimeIndex[id].ProfileID == "prof-1" {
 			customID = id
@@ -291,7 +293,7 @@ func TestDiscovery_KeepsCustomRuntimeWhenProfileFetchFails(t *testing.T) {
 			stillWatched = true
 		}
 	}
-	sig := d.workspaces["ws-1"].profileSetSig
+	sigAfter := d.workspaces["ws-1"].profileSetSig
 	d.mu.Unlock()
 
 	if !stillIndexed {
@@ -300,11 +302,79 @@ func TestDiscovery_KeepsCustomRuntimeWhenProfileFetchFails(t *testing.T) {
 	if !stillWatched {
 		t.Error("custom profile runtime was dropped from the workspace's runtime set (heartbeats would stop)")
 	}
-	if sig == "" {
-		t.Error("profileSetSig was cleared by a failed fetch; later drift would go undetected")
+	if sigAfter != sigBefore {
+		t.Errorf("profileSetSig changed %q -> %q; discovery must not touch it", sigBefore, sigAfter)
 	}
 	if got := registeredProviders(t, d, "ws-1"); len(got) != 2 || got[0] != "antigravity" {
 		t.Errorf("providers = %v, want the new built-in registered alongside codex", got)
+	}
+}
+
+// TestDiscovery_DoesNotMaskAProfileDisabledConcurrently is the second review
+// round's P1. Discovery used to register through the profile-appending path and
+// cache the resulting signature. If a user disabled a custom profile at the same
+// moment a new CLI was discovered, the additive merge correctly kept the old
+// runtime ID but recorded the post-disable signature — so
+// refreshWorkspaceRuntimeProfiles saw "no drift", returned early, and the
+// disabled runtime stayed tracked and heartbeating forever.
+func TestDiscovery_DoesNotMaskAProfileDisabledConcurrently(t *testing.T) {
+	fx := newBatchFixture(t)
+	stubLookPath(t, map[string]string{"company-codex": "/opt/bin/company-codex"})
+	d := fx.daemon
+	d.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/fake/codex"}}
+	fx.setWorkspaces(WorkspaceInfo{ID: "ws-1", Name: "one"})
+	fx.profiles["ws-1"] = []RuntimeProfile{{
+		ID: "prof-1", WorkspaceID: "ws-1", DisplayName: "Company Codex",
+		ProtocolFamily: "codex", CommandName: "company-codex",
+		Visibility: "workspace", Enabled: true,
+	}}
+	setProbe := stubAgentProbe(t, map[string]AgentEntry{"codex": {Path: "/fake/codex"}})
+	if err := d.syncWorkspacesFromAPI(context.Background(), false); err != nil {
+		t.Fatalf("syncWorkspacesFromAPI: %v", err)
+	}
+
+	customID := ""
+	d.mu.Lock()
+	for _, id := range d.workspaces["ws-1"].runtimeIDs {
+		if d.runtimeIndex[id].ProfileID == "prof-1" {
+			customID = id
+		}
+	}
+	d.mu.Unlock()
+	if customID == "" {
+		t.Fatal("custom profile runtime was never registered; fixture setup is wrong")
+	}
+
+	// The user disables the profile at the same time as installing a new CLI.
+	fx.profiles["ws-1"] = nil
+	setProbe(map[string]AgentEntry{
+		"codex":       {Path: "/fake/codex"},
+		"antigravity": {Path: "/fake/agy"},
+	})
+	d.refreshAgentAvailability()
+	d.convergeRuntimeRegistrations(context.Background())
+
+	// Discovery must not have decided the profile set is converged.
+	if err := d.refreshWorkspaceRuntimeProfiles(context.Background(), "ws-1"); err != nil {
+		t.Fatalf("refreshWorkspaceRuntimeProfiles: %v", err)
+	}
+
+	d.mu.Lock()
+	_, stillIndexed := d.runtimeIndex[customID]
+	var stillWatched bool
+	for _, id := range d.workspaces["ws-1"].runtimeIDs {
+		if id == customID {
+			stillWatched = true
+		}
+	}
+	d.mu.Unlock()
+
+	if stillWatched || stillIndexed {
+		t.Errorf("disabled custom runtime %s remained tracked (indexed=%v watched=%v); discovery masked the drift",
+			customID, stillIndexed, stillWatched)
+	}
+	if got := registeredProviders(t, d, "ws-1"); len(got) == 0 {
+		t.Error("built-in runtimes were lost while converging the disabled profile")
 	}
 }
 
@@ -493,18 +563,18 @@ func TestHealth_ReportsSkippedAgents(t *testing.T) {
 	}
 }
 
-// TestMergeRegisterResponse_ReplacesRotatedRuntimeID guards the one case the
-// additive merge still has to handle destructively: the server returning a new
-// ID for a runtime the workspace already had must swap, not duplicate, or the
-// daemon would run two heartbeat goroutines for one runtime.
-func TestMergeRegisterResponse_ReplacesRotatedRuntimeID(t *testing.T) {
+// TestMergeBuiltinRegisterResponse_ReplacesRotatedRuntimeID guards the one case
+// the additive merge still has to handle destructively: the server returning a
+// new ID for a runtime the workspace already had must swap, not duplicate, or
+// the daemon would run two heartbeat goroutines for one runtime.
+func TestMergeBuiltinRegisterResponse_ReplacesRotatedRuntimeID(t *testing.T) {
 	d := freshDaemon("http://localhost:0")
 	d.workspaces["ws-1"] = newWorkspaceState("ws-1", []string{"rt-old"}, "", nil, nil)
 	d.runtimeIndex["rt-old"] = Runtime{ID: "rt-old", Provider: "codex"}
 
-	newIDs, ok := d.mergeRegisterResponseInPlace("ws-1", &RegisterResponse{
+	newIDs, ok := d.mergeBuiltinRegisterResponse("ws-1", &RegisterResponse{
 		Runtimes: []Runtime{{ID: "rt-new", Provider: "codex"}},
-	}, "sig")
+	})
 	if !ok {
 		t.Fatal("merge reported the workspace as untracked")
 	}
@@ -516,6 +586,48 @@ func TestMergeRegisterResponse_ReplacesRotatedRuntimeID(t *testing.T) {
 	}
 	if _, stale := d.runtimeIndex["rt-old"]; stale {
 		t.Error("rt-old left in runtimeIndex; its heartbeat goroutine would leak")
+	}
+}
+
+// TestMergeBuiltinRegisterResponse_IgnoresCustomProfileRuntimes pins the
+// invariant guard: only the drift path may introduce a custom profile runtime, so
+// a profile-bearing entry arriving here must be ignored rather than adopted.
+func TestMergeBuiltinRegisterResponse_IgnoresCustomProfileRuntimes(t *testing.T) {
+	d := freshDaemon("http://localhost:0")
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "", nil, nil)
+
+	newIDs, ok := d.mergeBuiltinRegisterResponse("ws-1", &RegisterResponse{
+		Runtimes: []Runtime{
+			{ID: "rt-builtin", Provider: "codex"},
+			{ID: "rt-custom", Provider: "codex", ProfileID: "prof-1"},
+		},
+	})
+	if !ok {
+		t.Fatal("merge reported the workspace as untracked")
+	}
+	if len(newIDs) != 1 || newIDs[0] != "rt-builtin" {
+		t.Errorf("newIDs = %v, want only the built-in runtime", newIDs)
+	}
+	if _, adopted := d.runtimeIndex["rt-custom"]; adopted {
+		t.Error("custom profile runtime was adopted by the discovery merge")
+	}
+}
+
+// TestMergeBuiltinRegisterResponse_NeverTouchesProfileSignature is the direct
+// unit-level pin for the second review round's P1.
+func TestMergeBuiltinRegisterResponse_NeverTouchesProfileSignature(t *testing.T) {
+	d := freshDaemon("http://localhost:0")
+	ws := newWorkspaceState("ws-1", nil, "", nil, nil)
+	ws.profileSetSig = "sig-before"
+	d.workspaces["ws-1"] = ws
+
+	if _, ok := d.mergeBuiltinRegisterResponse("ws-1", &RegisterResponse{
+		Runtimes: []Runtime{{ID: "rt-1", Provider: "codex"}},
+	}); !ok {
+		t.Fatal("merge reported the workspace as untracked")
+	}
+	if got := d.workspaces["ws-1"].profileSetSig; got != "sig-before" {
+		t.Errorf("profileSetSig = %q, want it untouched at sig-before", got)
 	}
 }
 

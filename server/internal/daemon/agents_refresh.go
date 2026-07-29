@@ -220,6 +220,11 @@ func (d *Daemon) providersMissingRuntimes() []string {
 // discovery tick — nothing here records "already handled", so a partial
 // failure across workspaces retries only the workspaces that still need it.
 //
+// Strictly built-ins: this path never fetches, sends, or observes custom runtime
+// profiles. Custom profile add/edit/disable remains owned by the drift path
+// (refreshWorkspaceRuntimeProfiles), which is the only place allowed to cache a
+// profile-set signature.
+//
 // RecoverOrphans is deliberately NOT called: unlike the runtime_gone recovery
 // path, the surviving runtime IDs may still be executing tasks for the user,
 // and failing those as orphans would kill live work (MUL-3332).
@@ -270,14 +275,14 @@ func (d *Daemon) convergeRuntimeRegistrations(ctx context.Context) {
 
 	var changed bool
 	for _, t := range targets {
-		resp, profileSig, err := d.registerRuntimesForWorkspaceBatch(ctx, t.id, builtins)
+		resp, err := d.registerBuiltinRuntimesForWorkspace(ctx, t.id, builtins)
 		if err != nil {
 			// Left in the missing set on purpose: the next tick retries.
 			d.logger.Warn("register newly available runtimes failed; will retry",
 				"workspace_id", t.id, "providers", t.missing, "error", err)
 			continue
 		}
-		newIDs, ok := d.mergeRegisterResponseInPlace(t.id, resp, profileSig)
+		newIDs, ok := d.mergeBuiltinRegisterResponse(t.id, resp)
 		if !ok {
 			continue
 		}
