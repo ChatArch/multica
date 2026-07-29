@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { openLink, toInternalAppPath } from "./link-handler";
+import {
+  openLink,
+  parseWorkspaceEntityLink,
+  toInternalAppPath,
+} from "./link-handler";
 
 const APP_ORIGIN = "https://app.multica.ai";
 
@@ -105,5 +109,89 @@ describe("openLink", () => {
   it("leaves a path that already carries a slug alone", () => {
     openLink("/other/issues/MUL-1", "acme", APP_ORIGIN);
     expect(navigatedPaths()).toEqual(["/other/issues/MUL-1"]);
+  });
+});
+
+describe("parseWorkspaceEntityLink", () => {
+  const PROJECT_ID = "8f14e45f-ceea-4d0e-a1a2-9b1c0d3e4f5a";
+  const ISSUE_ID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
+
+  it("parses an absolute project URL on the app origin", () => {
+    expect(
+      parseWorkspaceEntityLink(
+        `${APP_ORIGIN}/acme/projects/${PROJECT_ID}`,
+        APP_ORIGIN,
+      ),
+    ).toEqual({ kind: "project", id: PROJECT_ID, slug: "acme" });
+  });
+
+  it("parses an absolute issue URL on the app origin", () => {
+    expect(
+      parseWorkspaceEntityLink(`${APP_ORIGIN}/acme/issues/${ISSUE_ID}`, APP_ORIGIN),
+    ).toEqual({ kind: "issue", id: ISSUE_ID, slug: "acme" });
+  });
+
+  it("parses a site-relative path without needing an app origin", () => {
+    expect(parseWorkspaceEntityLink(`/acme/projects/${PROJECT_ID}`)).toEqual({
+      kind: "project",
+      id: PROJECT_ID,
+      slug: "acme",
+    });
+  });
+
+  it("reports a null slug for the slugless legacy form", () => {
+    expect(parseWorkspaceEntityLink(`/projects/${PROJECT_ID}`)).toEqual({
+      kind: "project",
+      id: PROJECT_ID,
+      slug: null,
+    });
+  });
+
+  it("returns null for another origin", () => {
+    expect(
+      parseWorkspaceEntityLink(
+        `https://evil.example/acme/projects/${PROJECT_ID}`,
+        APP_ORIGIN,
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for a list page", () => {
+    expect(parseWorkspaceEntityLink("/acme/projects")).toBeNull();
+  });
+
+  it("returns null for a deeper route under the entity", () => {
+    expect(
+      parseWorkspaceEntityLink(`/acme/projects/${PROJECT_ID}/settings`),
+    ).toBeNull();
+  });
+
+  it("returns null for an entity route this parser has no chip for", () => {
+    expect(parseWorkspaceEntityLink(`/acme/agents/${PROJECT_ID}`)).toBeNull();
+  });
+
+  // A query string or fragment addresses something narrower than the entity
+  // page, and a chip cannot carry it.
+  it("returns null when the link carries a query string or fragment", () => {
+    expect(
+      parseWorkspaceEntityLink(`/acme/projects/${PROJECT_ID}?tab=issues`),
+    ).toBeNull();
+    expect(
+      parseWorkspaceEntityLink(`/acme/issues/${ISSUE_ID}#comment-3`),
+    ).toBeNull();
+  });
+
+  // Only the UUID form the app's own "copy link" produces qualifies; an
+  // identifier stays an ordinary link.
+  it("returns null for a non-UUID id", () => {
+    expect(parseWorkspaceEntityLink("/acme/issues/MUL-1")).toBeNull();
+  });
+
+  it("returns null when the slug position holds a reserved slug", () => {
+    expect(parseWorkspaceEntityLink(`/login/projects/${PROJECT_ID}`)).toBeNull();
+  });
+
+  it("returns null for a malformed percent-escape", () => {
+    expect(parseWorkspaceEntityLink("/acme/projects/%E0%A4%A")).toBeNull();
   });
 });

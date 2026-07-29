@@ -53,7 +53,12 @@ import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectChip } from "../projects/components/project-chip";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
-import { openLink, isMentionHref } from "../editor/utils/link-handler";
+import {
+  openLink,
+  isMentionHref,
+  parseWorkspaceEntityLink,
+  type WorkspaceEntityRef,
+} from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
 import { highlightToHtml } from "../editor/utils/highlight-markdown";
 import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
@@ -161,6 +166,39 @@ function childrenToLabel(children: ReactNode): string | undefined {
   return undefined;
 }
 
+/**
+ * Decide whether a link should render as an entity chip instead of a raw URL.
+ *
+ * Pasting a link copied out of the app is how people reference a project:
+ * projects carry only a UUID and a free-text title, so unlike an issue they have
+ * no `MUL-123` shorthand for the autolink preprocessor to detect — the URL IS
+ * the reference. Rendering it as the same chip the `mention://project/<uuid>`
+ * form produces closes that gap without inventing a new text form. Issue URLs
+ * go through the same path for symmetry.
+ *
+ * Three conditions, each load-bearing:
+ *   - BARE: the visible text is the URL itself, which is what the linkify
+ *     preprocessor emits for a pasted URL. `[路线图](…/projects/<id>)` carries a
+ *     label the author chose, and replacing it with a chip would discard it.
+ *   - SAME WORKSPACE: a chip resolves its title against the CURRENT workspace,
+ *     so unfurling a link into another workspace would turn a working link into
+ *     a permanently empty chip. A slug-less path is current-workspace already.
+ *   - Whatever `parseWorkspaceEntityLink` enforces: a UUID id, an exact entity
+ *     route, and no query string or fragment.
+ */
+function unfurlableEntityLink(
+  href: string,
+  children: ReactNode,
+  currentSlug: string | null,
+  appOrigin: string | null,
+): WorkspaceEntityRef | null {
+  if (childrenToLabel(children) !== href) return null;
+  const entity = parseWorkspaceEntityLink(href, appOrigin);
+  if (!entity) return null;
+  if (entity.slug !== null && entity.slug !== currentSlug) return null;
+  return entity;
+}
+
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
@@ -184,6 +222,17 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     }
     // Member / agent / all mentions
     return <span className="mention">{children}</span>;
+  }
+
+  // A bare in-app entity URL renders as the chip its mention form would.
+  const entity = href
+    ? unfurlableEntityLink(href, children, slug, appOrigin)
+    : null;
+  if (entity?.kind === "issue") {
+    return <IssueMentionLink issueId={entity.id} />;
+  }
+  if (entity?.kind === "project") {
+    return <ProjectMentionLink projectId={entity.id} />;
   }
 
   // Regular links — open directly on click. A URL pointing back at this

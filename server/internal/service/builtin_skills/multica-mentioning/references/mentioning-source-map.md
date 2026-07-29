@@ -15,6 +15,7 @@ a pointer.
 | `ParseMentions` extracts and dedups `{Type, ID}` from `m[2]`/`m[3]` | `server/internal/util/mention.go:24-37` |
 | `Mention.Type` doc enum = "member", "agent", "issue", or "all" (squad added in regex) | `server/internal/util/mention.go:7` |
 | `HasMentionAll` reports whether any parsed mention is `all` | `server/internal/util/mention.go:40-47` |
+| **`project` is NOT in the type group** — `[Label](mention://project/<uuid>)` never parses, so it can enqueue nothing. It is a render-only link the clients turn into a project chip (`RichLink` in `packages/views/rich-content/rich-content.tsx`; tap handling in `apps/mobile/lib/markdown/markdown.tsx`) | `server/internal/util/mention.go:16` |
 
 ### Parser behavior tests (pin the example shapes the skill uses)
 

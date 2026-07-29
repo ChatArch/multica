@@ -89,6 +89,91 @@ export function toInternalAppPath(
   return `${target.pathname}${target.search}${target.hash}`;
 }
 
+/** An in-app entity page addressed by a link — the two kinds that have a chip. */
+export interface WorkspaceEntityRef {
+  kind: "issue" | "project";
+  /** Entity UUID, decoded from the path. */
+  id: string;
+  /**
+   * Workspace slug the link names, or `null` for the slug-less legacy form
+   * (`/projects/<uuid>`), which `openLink` resolves against the current
+   * workspace. A caller that renders workspace-scoped data MUST compare a
+   * non-null slug against the current one — the entity itself is only
+   * resolvable inside the workspace that owns it.
+   */
+  slug: string | null;
+}
+
+const ENTITY_ROUTE_SEGMENTS: Record<string, WorkspaceEntityRef["kind"]> = {
+  issues: "issue",
+  projects: "project",
+};
+
+// Every link the app itself produces carries a UUID (`paths.issueDetail` /
+// `paths.projectDetail` are called with entity ids). Requiring that shape keeps
+// a hand-written `/issues/MUL-1` out: it stays an ordinary link rather than
+// needing a second, identifier-shaped resolution path here.
+const ENTITY_ID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function decodeSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a link that addresses exactly one issue or project page on this
+ * deployment; `null` for everything else — external URLs, list pages, deeper
+ * routes, and links carrying a query string or fragment.
+ *
+ * Accepts the same two forms `openLink` navigates: a site-relative path, and an
+ * absolute URL pointing back at this deployment's app origin.
+ */
+export function parseWorkspaceEntityLink(
+  href: string,
+  appOrigin?: string | null,
+): WorkspaceEntityRef | null {
+  const path = href.startsWith("/") ? href : toInternalAppPath(href, appOrigin);
+  if (!path) return null;
+  // A query string or fragment addresses something more specific than the
+  // entity page (a saved filter, an anchored comment). Collapsing that to a
+  // plain entity reference would silently drop it.
+  if (path.includes("?") || path.includes("#")) return null;
+
+  const segments: string[] = [];
+  for (const raw of path.split("/").filter(Boolean)) {
+    const decoded = decodeSegment(raw);
+    if (decoded === null) return null;
+    segments.push(decoded);
+  }
+
+  // `/{slug}/{route}/{id}` — what every in-app "copy link" produces.
+  // `/{route}/{id}` — slug-less legacy content, current-workspace by
+  // definition since `openLink` prepends the current slug to it.
+  let slug: string | null;
+  let route: string | undefined;
+  let id: string | undefined;
+  if (segments.length === 3) {
+    const [first, second, third] = segments;
+    if (!first || isReservedSlug(first.toLowerCase())) return null;
+    slug = first;
+    route = second;
+    id = third;
+  } else if (segments.length === 2) {
+    slug = null;
+    [route, id] = segments;
+  } else {
+    return null;
+  }
+
+  const kind = route ? ENTITY_ROUTE_SEGMENTS[route] : undefined;
+  if (!kind || !id || !ENTITY_ID_RE.test(id)) return null;
+  return { kind, id, slug };
+}
+
 /**
  * Open a link — internal paths dispatch multica:navigate, external open new tab.
  *
