@@ -1709,7 +1709,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {/* Same scrollbar-gutter as the loaded scroller below, so the skeleton
               column doesn't shift sideways when real content mounts. */}
           <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
-            <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
+            {/* Same max-w as the loaded content column below — a mismatch here
+                shifts the whole page sideways the moment the skeleton is
+                replaced (MUL-5450). */}
+            <div className="mx-auto w-full max-w-xl px-8 py-8 space-y-6">
               <Skeleton className="h-8 w-3/4" />
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />
@@ -2319,7 +2322,24 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           data-tab-scroll-root
           className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
-        <div className="mx-auto w-full max-w-4xl px-8 py-8">
+        {/* Reading measure. max-w-xl (576px) - px-8 both sides = 512px of text.
+            At the prose body size (14px Inter, see editor/styles/prose.css) that
+            is ~75 characters per line for Latin and ~36 for CJK — the top of the
+            45-75 comfortable range, and the CJK sweet spot. The previous
+            max-w-4xl gave 832px = ~122 Latin / ~59 CJK characters, long enough
+            that the eye loses the return sweep on multi-paragraph descriptions
+            (MUL-5450). Comment bodies are inset a further 72px by the card's
+            px-4 + the pl-10 avatar gutter, landing them at ~64 characters.
+
+            Deliberately px, not `ch`: `ch` is the advance of "0", which in Inter
+            is 0.63em against an average prose character of 0.47em, so a `Nch`
+            cap holds ~1.33N characters — and on this container `ch` would
+            resolve against the inherited 16px root, not the prose's 14px.
+            `max-w-[68ch]` here would be 686px, not the intended measure.
+
+            Keep in sync with the loading skeleton's column above, or the page
+            jumps sideways when real content replaces it. */}
+        <div className="mx-auto w-full max-w-xl px-8 py-8">
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor
@@ -2717,9 +2737,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             next to the scrollbar, where the pointer already is while
             scrolling (MUL-4522). right-3 is the inset that works in both
             scrollbar modes: it clears a classic scrollbar's ~11px gutter,
-            and the rail's own 20px width lands it exactly on the content
-            column's px-8 padding when the gutter is 0 (overlay scrollbars),
-            so it covers neither the scrollbar nor body text. It also clears
+            and with overlay scrollbars (gutter 0) the rail's own 20px width
+            still lands clear of the centered content column, so it covers
+            neither the scrollbar nor body text. It also clears
             the resize handle's 4px drag strip at the panel edge. Hover
             previews a thread, click jumps to it. Hidden on mobile: no
             hover, and the gutter is too tight. */}
