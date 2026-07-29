@@ -42,11 +42,8 @@ import {
   sortUserItemsByRecency,
 } from "./mention-recency";
 import { matchesPinyin } from "./pinyin-match";
-import {
-  createSuggestionPopupRender,
-  isPasteLikeTransaction,
-  isPickerAcceptKey,
-} from "./suggestion-popup";
+import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -123,17 +120,6 @@ function groupItems(items: MentionItem[]): MentionGroup[] {
 // ---------------------------------------------------------------------------
 
 const MAX_ITEMS = 20;
-/**
- * Longest `@` query the picker will stay open for.
- *
- * `allowSpaces` makes the suggestion regex run from the `@` to the end of the
- * line, so a pasted line like `npx @scope/pkg --token=eyJ...` becomes one
- * enormous query that matches nothing — and the resulting empty popup captures
- * Enter, so the user cannot type a newline (MUL-5429). Real targets (member /
- * agent / squad names, issue identifiers and titles) sit well under this cap,
- * so it only ever fires on text that was never a mention in the first place.
- */
-export const MAX_MENTION_QUERY_LENGTH = 60;
 const SERVER_ISSUE_SEARCH_LIMIT = 20;
 const SERVER_CONTEXT_SEARCH_LIMIT = 8;
 const SERVER_SEARCH_DEBOUNCE_MS = 150;
@@ -632,15 +618,10 @@ export function createMentionSuggestion(
   return {
     pluginKey,
     allowSpaces: true,
-    shouldShow: ({ query, transaction }) => {
-      // Pasted/dropped text is not a mention intent even when it contains `@`.
-      if (isPasteLikeTransaction(transaction)) return false;
-
-      // Guards the tail of the same bug: once pasted `@…` text sits in the
-      // document, later edits are ordinary transactions that the check above no
-      // longer covers. A query this long is never a real mention target.
-      return query.length <= MAX_MENTION_QUERY_LENGTH;
-    },
+    // Only open over an `@` the user actually typed. Tiptap matches on document
+    // content alone, so without this a pasted, dropped, undone or server-loaded
+    // `@` opens the picker just as readily (MUL-5429).
+    shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
     items: ({ query }) => {
       if (options.mode === "context") {
         const normalizedQuery = query.trim();

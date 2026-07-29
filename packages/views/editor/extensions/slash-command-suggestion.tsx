@@ -19,11 +19,8 @@ import { isImeComposing } from "@multica/core/utils";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
-import {
-  createSuggestionPopupRender,
-  isPasteLikeTransaction,
-  isPickerAcceptKey,
-} from "./suggestion-popup";
+import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 
 const MAX_ITEMS = 20;
 
@@ -206,8 +203,9 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
   return {
     char: "/",
     pluginKey,
-    // Pasting a path (`/usr/local/bin`) must not open the skill picker.
-    shouldShow: ({ transaction }) => !isPasteLikeTransaction(transaction),
+    // Only open over a `/` the user actually typed, so a pasted path
+    // (`/usr/local/bin`) never opens the skill picker (MUL-5429).
+    shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
     items: ({ query }) => buildItems(qc, query),
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
@@ -279,8 +277,9 @@ export function createBuiltinCommandSuggestion(): Omit<
   return {
     char: "/",
     pluginKey,
-    // Pasting a path (`/usr/local/bin`) must not open the command menu.
-    shouldShow: ({ transaction }) => !isPasteLikeTransaction(transaction),
+    // Only open over a `/` the user actually typed, so a pasted path
+    // (`/usr/local/bin`) never opens the command menu (MUL-5429).
+    shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
     items: ({ query }) => buildBuiltinCommandItems(query),
     command: ({ editor, range, props }) => {
       // Insert the plain-text prefix (e.g. "/note ") rather than a rich node,
