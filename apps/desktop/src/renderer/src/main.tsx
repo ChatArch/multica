@@ -9,7 +9,13 @@ import "@fontsource-variable/inter";
 // (see tokens.css @theme inline). Variable font = one file covers all weights.
 import "@fontsource-variable/source-serif-4";
 import "@fontsource-variable/source-serif-4/wght-italic.css";
+// 400/500/700 mirror the weights shared components actually ask for. Web gets
+// Geist Mono from next/font as a variable face (every weight available), so a
+// weight missing here renders lighter on desktop than on web for the same
+// component — `font-mono font-medium` in packages/ui/components/ui/chart.tsx is
+// the case that surfaced it. Add the file here when a new mono weight appears.
 import "@fontsource/geist-mono/400.css";
+import "@fontsource/geist-mono/500.css";
 import "@fontsource/geist-mono/700.css";
 import "./globals.css";
 
