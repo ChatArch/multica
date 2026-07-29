@@ -1712,7 +1712,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             {/* Same max-w as the loaded content column below — a mismatch here
                 shifts the whole page sideways the moment the skeleton is
                 replaced (MUL-5450). */}
-            <div className="mx-auto w-full max-w-xl px-8 py-8 space-y-6">
+            <div className="mx-auto w-full max-w-2xl px-8 py-8 space-y-6">
               <Skeleton className="h-8 w-3/4" />
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />
@@ -2322,14 +2322,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           data-tab-scroll-root
           className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
-        {/* Reading measure. max-w-xl (576px) - px-8 both sides = 512px of text.
+        {/* Reading measure. max-w-2xl (672px) - px-8 both sides = 608px of text.
             At the prose body size (14px Inter, see editor/styles/prose.css) that
-            is ~75 characters per line for Latin and ~36 for CJK — the top of the
-            45-75 comfortable range, and the CJK sweet spot. The previous
-            max-w-4xl gave 832px = ~122 Latin / ~59 CJK characters, long enough
-            that the eye loses the return sweep on multi-paragraph descriptions
-            (MUL-5450). Comment bodies are inset a further 72px by the card's
-            px-4 + the pl-10 avatar gutter, landing them at ~64 characters.
+            is ~90 characters per line for Latin and ~43 for CJK; comment bodies
+            are inset a further 72px by the card's px-4 + the pl-10 avatar
+            gutter, landing at ~80 / ~38. The previous max-w-4xl gave 832px =
+            ~122 Latin / ~59 CJK, long enough that the eye loses the return
+            sweep on multi-paragraph descriptions (MUL-5450).
+
+            Sized for CJK, which is what actually binds here: full-width glyphs
+            are comfortable to about 45 per line, and 672px is the widest column
+            that keeps both the description and comment bodies under that. The
+            Latin count lands above the 45-75 range quoted for book typography,
+            which is the right trade — this is an app surface carrying sub-issue
+            tables, comment threads and a composer, not an article column, and
+            672px is roughly where Linear sits. Going narrower to satisfy the
+            Latin figure starves the non-prose UI in this column.
 
             Deliberately px, not `ch`: `ch` is the advance of "0", which in Inter
             is 0.63em against an average prose character of 0.47em, so a `Nch`
@@ -2339,7 +2347,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
             Keep in sync with the loading skeleton's column above, or the page
             jumps sideways when real content replaces it. */}
-        <div className="mx-auto w-full max-w-xl px-8 py-8">
+        <div className="mx-auto w-full max-w-2xl px-8 py-8">
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor
