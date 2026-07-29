@@ -232,7 +232,7 @@ function SkillIdentity({
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-muted text-muted-foreground">
             <Sparkles className="h-4 w-4" aria-hidden="true" />
           </div>
-          <h1 className="min-w-0 truncate font-mono text-lg font-semibold tracking-tight">
+          <h1 className="min-w-0 truncate font-mono text-title font-semibold tracking-tight">
             {skill.name}
           </h1>
         </div>
@@ -357,7 +357,7 @@ function OverviewTab({
   return (
     <div className="mx-auto w-full max-w-3xl p-4 sm:p-6 md:p-8">
       <section>
-        <h2 className="text-base font-medium">{t(($) => $.detail.overview.properties)}</h2>
+        <h2 className="text-title-sm font-medium">{t(($) => $.detail.overview.properties)}</h2>
         <p className="mt-1 text-caption text-muted-foreground">
           {t(($) => $.detail.overview.properties_hint)}
         </p>
@@ -410,7 +410,7 @@ function OverviewTab({
 
       <section className="mt-10">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="min-w-0 text-base font-medium">
+          <h2 className="min-w-0 text-title-sm font-medium">
             {t(($) => $.detail.overview.used_by, { count: skillAgents.length })}
           </h2>
           <Button
@@ -487,7 +487,7 @@ function FilesTab({
         aria-label={t(($) => $.detail.files.list_aria)}
         className="shrink-0 border-b border-surface-border p-3 md:w-52 md:overflow-y-auto md:border-b-0 md:border-r md:p-4"
       >
-        <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="px-2.5 pb-1 text-micro font-semibold uppercase tracking-wider text-muted-foreground">
           {t(($) => $.detail.files.main)}
         </p>
         <FileTree
@@ -496,7 +496,7 @@ function FilesTab({
           onSelect={onSelectPath}
         />
 
-        <p className="px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="px-2.5 pb-1 pt-3 text-micro font-semibold uppercase tracking-wider text-muted-foreground">
           {t(($) => $.detail.files.supporting, { count: supportingPaths.length })}
         </p>
         {supportingPaths.length > 0 ? (
