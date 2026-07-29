@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useCanonicalIssueId } from "@multica/core/issues/canonical-id";
-import { issueDetailOptions } from "@multica/core/issues/queries";
+import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
@@ -49,21 +47,14 @@ export function useCanonicalIssueUrl(routeId: string, identifier: string | undef
  * Two jobs the panel-embedded `IssueDetail` must not do:
  *  - resolve an identifier segment to the issue's UUID before rendering, so
  *    every cache key below stays UUID-keyed and realtime updates land (see
- *    `useCanonicalIssueId`);
+ *    `useCanonicalIssue`);
  *  - rewrite the address bar to the canonical identifier URL. That belongs to
  *    the route and only the route — the inbox renders `IssueDetail` in a side
  *    panel, where replacing the URL would navigate the user out of the inbox.
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, isResolving } = useCanonicalIssueId(wsId, routeId);
-
-  // Cache hit in every case: either the segment was already a UUID and
-  // `IssueDetail` populates this same entry, or resolution just seeded it.
-  const { data: issue } = useQuery({
-    ...issueDetailOptions(wsId, canonicalId ?? ""),
-    enabled: !!canonicalId && !!wsId,
-  });
+  const { canonicalId, issue, isResolving } = useCanonicalIssue(wsId, routeId);
 
   useCanonicalIssueUrl(routeId, issue?.identifier);
 
