@@ -117,6 +117,37 @@ func TestRenderQuickActionIssueURL(t *testing.T) {
 	}
 }
 
+// TestNormalizeQuickActionVisibility locks the two-value intent field. An
+// empty value defaults to public (the common case); anything outside the pair
+// is rejected rather than silently stored.
+func TestNormalizeQuickActionVisibility(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "public", false},
+		{"public", "public", false},
+		{"private", "private", false},
+		{"workspace", "", true},
+		{"owner_only", "", true},
+	} {
+		got, err := normalizeQuickActionVisibility(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("expected %q to be rejected", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("expected %q to be accepted, got %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("normalize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestValidateQuickActionAssignee locks the polymorphic binding to the two
 // supported actor kinds; anything else would store a target the run path
 // cannot resolve.

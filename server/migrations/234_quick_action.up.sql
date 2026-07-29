@@ -8,13 +8,23 @@
 -- leader routing, the execution log, and pending-task coalescing are all
 -- inherited from that path by construction.
 --
+-- `visibility` is the AUTHOR'S INTENT, chosen at creation:
+--   - 'public'  — meant for the team. The handler requires a target every
+--                 workspace member can invoke, so a public action is runnable
+--                 by everyone by construction.
+--   - 'private' — meant for its creator only; any target is allowed.
+--
+-- It is intent, NOT an authorization decision: the run path always re-checks
+-- canInvokeAgent, so a target whose permission_mode changes later can never
+-- turn a stale row into an actual privilege. The worst case is a public action
+-- whose agent went private, which then fails loudly at click time.
+--
 -- Deliberately absent columns:
---   - `visibility`: derived, never stored. Who may see and run an action is a
---     function of the bound agent's permission_mode (and the squad leader's
---     for squad bindings), evaluated per request. Storing it would let the
---     two drift, and the permission model is the authority.
 --   - cron / webhook_token / execution_mode: those belong to autopilot. A
 --     quick action is human-triggered and always acts on an existing issue.
+--   - `position`: ordering is use_count DESC everywhere. A manual order plus a
+--     usage order meant one list with two different sorts, which is its own
+--     source of confusion.
 --
 -- Actions archive (status='archived') instead of deleting so historical
 -- `quick_action` comments stay resolvable to a name.
@@ -38,7 +48,7 @@ CREATE TABLE quick_action (
     input_label TEXT NOT NULL DEFAULT '',
     input_placeholder TEXT NOT NULL DEFAULT '',
     input_required BOOLEAN NOT NULL DEFAULT false,
-    position FLOAT NOT NULL DEFAULT 0,
+    visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('private', 'public')),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
     last_used_at TIMESTAMPTZ,
     use_count BIGINT NOT NULL DEFAULT 0,

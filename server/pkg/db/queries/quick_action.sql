@@ -1,11 +1,17 @@
 -- name: ListQuickActions :many
--- The settings page passes include_archived=true; the issue sidebar does not.
--- Ordering matches the index (workspace_id, status, position); name is the
--- stable tiebreaker so equal positions never render in random order.
+-- One projection for every caller. `private` rows belong to their creator, so
+-- they are filtered here rather than in the handler; nothing else is hidden.
+-- Permission to actually RUN an action is decided only at run time, so this
+-- query does no permission work at all.
+--
+-- Ordering is use_count DESC everywhere — the list's job is to answer "what
+-- does this workspace actually use". LOWER(name) breaks ties so equal counts
+-- never render in random order.
 SELECT * FROM quick_action
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND (sqlc.arg('include_archived')::bool OR status = 'active')
-ORDER BY position ASC, LOWER(name) ASC;
+  AND (visibility = 'public' OR created_by_id = sqlc.arg('viewer_id')::uuid)
+ORDER BY use_count DESC, LOWER(name) ASC;
 
 -- name: GetQuickAction :one
 SELECT * FROM quick_action
@@ -16,25 +22,25 @@ SELECT COUNT(*) FROM quick_action
 WHERE workspace_id = $1 AND status = 'active';
 
 -- name: CreateQuickAction :one
--- New actions append to the end: position = max + 1.
 INSERT INTO quick_action (
     workspace_id, name, description, assignee_type, assignee_id, prompt,
     input_enabled, input_label, input_placeholder, input_required,
-    position, created_by_type, created_by_id
+    visibility, created_by_type, created_by_id
+) VALUES (
+    sqlc.arg('workspace_id')::uuid,
+    sqlc.arg('name')::text,
+    sqlc.arg('description')::text,
+    sqlc.arg('assignee_type')::text,
+    sqlc.arg('assignee_id')::uuid,
+    sqlc.arg('prompt')::text,
+    sqlc.arg('input_enabled')::bool,
+    sqlc.arg('input_label')::text,
+    sqlc.arg('input_placeholder')::text,
+    sqlc.arg('input_required')::bool,
+    sqlc.arg('visibility')::text,
+    sqlc.arg('created_by_type')::text,
+    sqlc.arg('created_by_id')::uuid
 )
-SELECT sqlc.arg('workspace_id')::uuid,
-       sqlc.arg('name')::text,
-       sqlc.arg('description')::text,
-       sqlc.arg('assignee_type')::text,
-       sqlc.arg('assignee_id')::uuid,
-       sqlc.arg('prompt')::text,
-       sqlc.arg('input_enabled')::bool,
-       sqlc.arg('input_label')::text,
-       sqlc.arg('input_placeholder')::text,
-       sqlc.arg('input_required')::bool,
-       COALESCE((SELECT MAX(position) FROM quick_action WHERE workspace_id = sqlc.arg('workspace_id')::uuid), 0) + 1,
-       sqlc.arg('created_by_type')::text,
-       sqlc.arg('created_by_id')::uuid
 RETURNING *;
 
 -- name: UpdateQuickAction :one
@@ -51,8 +57,8 @@ UPDATE quick_action SET
     input_label = COALESCE(sqlc.narg('input_label'), input_label),
     input_placeholder = COALESCE(sqlc.narg('input_placeholder'), input_placeholder),
     input_required = COALESCE(sqlc.narg('input_required'), input_required),
+    visibility = COALESCE(sqlc.narg('visibility'), visibility),
     status = COALESCE(sqlc.narg('status'), status),
-    position = COALESCE(sqlc.narg('position'), position),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
@@ -64,7 +70,8 @@ DELETE FROM quick_action WHERE id = $1 AND workspace_id = $2;
 -- name: TouchQuickActionUsage :exec
 -- Best-effort usage telemetry, written after a successful run. Deliberately
 -- not part of the run transaction: a failed counter bump must never lose the
--- run the user asked for.
+-- run the user asked for. It also drives the list order, so it is the one
+-- place ordering state changes.
 UPDATE quick_action
 SET use_count = use_count + 1, last_used_at = now()
 WHERE id = $1 AND workspace_id = $2;

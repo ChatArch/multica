@@ -27,22 +27,23 @@ const createQuickAction = `-- name: CreateQuickAction :one
 INSERT INTO quick_action (
     workspace_id, name, description, assignee_type, assignee_id, prompt,
     input_enabled, input_label, input_placeholder, input_required,
-    position, created_by_type, created_by_id
+    visibility, created_by_type, created_by_id
+) VALUES (
+    $1::uuid,
+    $2::text,
+    $3::text,
+    $4::text,
+    $5::uuid,
+    $6::text,
+    $7::bool,
+    $8::text,
+    $9::text,
+    $10::bool,
+    $11::text,
+    $12::text,
+    $13::uuid
 )
-SELECT $1::uuid,
-       $2::text,
-       $3::text,
-       $4::text,
-       $5::uuid,
-       $6::text,
-       $7::bool,
-       $8::text,
-       $9::text,
-       $10::bool,
-       COALESCE((SELECT MAX(position) FROM quick_action WHERE workspace_id = $1::uuid), 0) + 1,
-       $11::text,
-       $12::uuid
-RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, position, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
 `
 
 type CreateQuickActionParams struct {
@@ -56,11 +57,11 @@ type CreateQuickActionParams struct {
 	InputLabel       string      `json:"input_label"`
 	InputPlaceholder string      `json:"input_placeholder"`
 	InputRequired    bool        `json:"input_required"`
+	Visibility       string      `json:"visibility"`
 	CreatedByType    string      `json:"created_by_type"`
 	CreatedByID      pgtype.UUID `json:"created_by_id"`
 }
 
-// New actions append to the end: position = max + 1.
 func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionParams) (QuickAction, error) {
 	row := q.db.QueryRow(ctx, createQuickAction,
 		arg.WorkspaceID,
@@ -73,6 +74,7 @@ func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionPa
 		arg.InputLabel,
 		arg.InputPlaceholder,
 		arg.InputRequired,
+		arg.Visibility,
 		arg.CreatedByType,
 		arg.CreatedByID,
 	)
@@ -89,7 +91,7 @@ func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionPa
 		&i.InputLabel,
 		&i.InputPlaceholder,
 		&i.InputRequired,
-		&i.Position,
+		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,
 		&i.UseCount,
@@ -117,7 +119,7 @@ func (q *Queries) DeleteQuickAction(ctx context.Context, arg DeleteQuickActionPa
 }
 
 const getQuickAction = `-- name: GetQuickAction :one
-SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, position, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
+SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -141,7 +143,7 @@ func (q *Queries) GetQuickAction(ctx context.Context, arg GetQuickActionParams) 
 		&i.InputLabel,
 		&i.InputPlaceholder,
 		&i.InputRequired,
-		&i.Position,
+		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,
 		&i.UseCount,
@@ -154,22 +156,29 @@ func (q *Queries) GetQuickAction(ctx context.Context, arg GetQuickActionParams) 
 }
 
 const listQuickActions = `-- name: ListQuickActions :many
-SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, position, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
+SELECT id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at FROM quick_action
 WHERE workspace_id = $1::uuid
   AND ($2::bool OR status = 'active')
-ORDER BY position ASC, LOWER(name) ASC
+  AND (visibility = 'public' OR created_by_id = $3::uuid)
+ORDER BY use_count DESC, LOWER(name) ASC
 `
 
 type ListQuickActionsParams struct {
 	WorkspaceID     pgtype.UUID `json:"workspace_id"`
 	IncludeArchived bool        `json:"include_archived"`
+	ViewerID        pgtype.UUID `json:"viewer_id"`
 }
 
-// The settings page passes include_archived=true; the issue sidebar does not.
-// Ordering matches the index (workspace_id, status, position); name is the
-// stable tiebreaker so equal positions never render in random order.
+// One projection for every caller. `private` rows belong to their creator, so
+// they are filtered here rather than in the handler; nothing else is hidden.
+// Permission to actually RUN an action is decided only at run time, so this
+// query does no permission work at all.
+//
+// Ordering is use_count DESC everywhere — the list's job is to answer "what
+// does this workspace actually use". LOWER(name) breaks ties so equal counts
+// never render in random order.
 func (q *Queries) ListQuickActions(ctx context.Context, arg ListQuickActionsParams) ([]QuickAction, error) {
-	rows, err := q.db.Query(ctx, listQuickActions, arg.WorkspaceID, arg.IncludeArchived)
+	rows, err := q.db.Query(ctx, listQuickActions, arg.WorkspaceID, arg.IncludeArchived, arg.ViewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +198,7 @@ func (q *Queries) ListQuickActions(ctx context.Context, arg ListQuickActionsPara
 			&i.InputLabel,
 			&i.InputPlaceholder,
 			&i.InputRequired,
-			&i.Position,
+			&i.Visibility,
 			&i.Status,
 			&i.LastUsedAt,
 			&i.UseCount,
@@ -221,7 +230,8 @@ type TouchQuickActionUsageParams struct {
 
 // Best-effort usage telemetry, written after a successful run. Deliberately
 // not part of the run transaction: a failed counter bump must never lose the
-// run the user asked for.
+// run the user asked for. It also drives the list order, so it is the one
+// place ordering state changes.
 func (q *Queries) TouchQuickActionUsage(ctx context.Context, arg TouchQuickActionUsageParams) error {
 	_, err := q.db.Exec(ctx, touchQuickActionUsage, arg.ID, arg.WorkspaceID)
 	return err
@@ -238,27 +248,27 @@ UPDATE quick_action SET
     input_label = COALESCE($9, input_label),
     input_placeholder = COALESCE($10, input_placeholder),
     input_required = COALESCE($11, input_required),
-    status = COALESCE($12, status),
-    position = COALESCE($13, position),
+    visibility = COALESCE($12, visibility),
+    status = COALESCE($13, status),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, position, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, name, description, assignee_type, assignee_id, prompt, input_enabled, input_label, input_placeholder, input_required, visibility, status, last_used_at, use_count, created_by_type, created_by_id, created_at, updated_at
 `
 
 type UpdateQuickActionParams struct {
-	ID               pgtype.UUID   `json:"id"`
-	WorkspaceID      pgtype.UUID   `json:"workspace_id"`
-	Name             pgtype.Text   `json:"name"`
-	Description      pgtype.Text   `json:"description"`
-	AssigneeType     pgtype.Text   `json:"assignee_type"`
-	AssigneeID       pgtype.UUID   `json:"assignee_id"`
-	Prompt           pgtype.Text   `json:"prompt"`
-	InputEnabled     pgtype.Bool   `json:"input_enabled"`
-	InputLabel       pgtype.Text   `json:"input_label"`
-	InputPlaceholder pgtype.Text   `json:"input_placeholder"`
-	InputRequired    pgtype.Bool   `json:"input_required"`
-	Status           pgtype.Text   `json:"status"`
-	Position         pgtype.Float8 `json:"position"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	Name             pgtype.Text `json:"name"`
+	Description      pgtype.Text `json:"description"`
+	AssigneeType     pgtype.Text `json:"assignee_type"`
+	AssigneeID       pgtype.UUID `json:"assignee_id"`
+	Prompt           pgtype.Text `json:"prompt"`
+	InputEnabled     pgtype.Bool `json:"input_enabled"`
+	InputLabel       pgtype.Text `json:"input_label"`
+	InputPlaceholder pgtype.Text `json:"input_placeholder"`
+	InputRequired    pgtype.Bool `json:"input_required"`
+	Visibility       pgtype.Text `json:"visibility"`
+	Status           pgtype.Text `json:"status"`
 }
 
 // COALESCE-on-narg partial update: an omitted field keeps its stored value.
@@ -277,8 +287,8 @@ func (q *Queries) UpdateQuickAction(ctx context.Context, arg UpdateQuickActionPa
 		arg.InputLabel,
 		arg.InputPlaceholder,
 		arg.InputRequired,
+		arg.Visibility,
 		arg.Status,
-		arg.Position,
 	)
 	var i QuickAction
 	err := row.Scan(
@@ -293,7 +303,7 @@ func (q *Queries) UpdateQuickAction(ctx context.Context, arg UpdateQuickActionPa
 		&i.InputLabel,
 		&i.InputPlaceholder,
 		&i.InputRequired,
-		&i.Position,
+		&i.Visibility,
 		&i.Status,
 		&i.LastUsedAt,
 		&i.UseCount,

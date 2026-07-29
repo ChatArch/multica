@@ -252,18 +252,19 @@ export const QuickActionSchema = z.object({
   input_label: z.string().optional().default(""),
   input_placeholder: z.string().optional().default(""),
   input_required: z.boolean().optional().default(false),
-  position: z.number().optional().default(0),
+  visibility: z.string().optional().default("public"),
   status: z.string().optional().default("active"),
   last_used_at: z.string().nullable().optional().default(null),
   use_count: z.number().optional().default(0),
+  created_by_id: z.string().optional().default(""),
   created_at: z.string(),
   updated_at: z.string(),
-  visibility: z.string().optional().default("unavailable"),
-  // Defaults to false: an older server that omits the field must not have its
-  // silence read as "everyone may run this".
-  can_run: z.boolean().optional().default(false),
   target_name: z.string().optional(),
-  target_avatar_url: z.string().optional(),
+  // Both default to the pessimistic reading on an older server: "not known to
+  // be public" and "not known to be missing" keep the settings row honest
+  // rather than asserting a state the server never sent.
+  target_public: z.boolean().optional().default(false),
+  target_missing: z.boolean().optional().default(false),
 }).loose();
 
 export const EMPTY_QUICK_ACTION: QuickAction = {
@@ -278,24 +279,23 @@ export const EMPTY_QUICK_ACTION: QuickAction = {
   input_label: "",
   input_placeholder: "",
   input_required: false,
-  position: 0,
+  visibility: "public",
   status: "active",
   last_used_at: null,
   use_count: 0,
+  created_by_id: "",
   created_at: "",
   updated_at: "",
-  visibility: "unavailable",
-  can_run: false,
+  target_public: false,
+  target_missing: true,
 };
 
 export const ListQuickActionsResponseSchema = z.object({
   quick_actions: z.array(QuickActionSchema).default([]),
-  sidebar_limit: z.number().optional().default(5),
 }).loose();
 
 export const EMPTY_LIST_QUICK_ACTIONS_RESPONSE: ListQuickActionsResponse = {
   quick_actions: [],
-  sidebar_limit: 5,
 };
 
 export const QuickActionRenderSchema = z.object({

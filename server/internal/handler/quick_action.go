@@ -28,16 +28,20 @@ import (
 //     the execution log, and pending-task coalescing are inherited from the
 //     comment path rather than reimplemented — the MUL-3375 lesson about four
 //     drifting copies of one trigger decision.
-//   - Visibility is DERIVED from the bound agent's permission_mode, never
-//     stored. A workspace action bound to a private agent is usable only by
-//     that agent's owner; the settings UI says so at bind time so the author
-//     learns it immediately instead of from a confused teammate months later.
+//   - PERMISSION IS CHECKED IN EXACTLY ONE PLACE: RunQuickAction. The list
+//     endpoint does no permission work and hides nothing beyond `private`
+//     ownership. Filtering the sidebar by invoke permission was tried and
+//     removed: it made two people looking at one issue see different sidebars
+//     with no explanation, which is harder to debug than a button that says
+//     why it refused.
+//   - `visibility` is the author's stated intent, not an authorization
+//     decision. A `public` action must bind a target every member can invoke,
+//     so it is runnable by construction; the run-time gate still has the final
+//     say, so a target that goes private later fails loudly at click time
+//     rather than silently granting anything.
 //   - Prompt templating is flat substitution over a fixed whitelist. No
 //     conditionals, loops, or filters — the agent already reads the whole
 //     issue, so natural language is the control flow.
-//   - Definitions are managed by human owner/admin members, mirroring
-//     property/label definitions. Agents can propose in comments; humans
-//     confirm. Otherwise an admin's agent could mass-produce them.
 const (
 	maxActiveQuickActionsPerWorkspace = 30
 	maxQuickActionNameLen             = 32
@@ -45,11 +49,6 @@ const (
 	maxQuickActionPromptLen           = 4000
 	maxQuickActionInputLabelLen       = 60
 	maxQuickActionInputValueLen       = 2000
-	// quickActionSidebarLimit is how many actions the issue sidebar shows
-	// before the rest collapse behind "More". Scarcity here is structural: a
-	// list that renders all 30 stops being a shortlist and becomes a menu
-	// nobody reads.
-	quickActionSidebarLimit = 5
 )
 
 // quickActionVariableRe finds every {{token}} in a prompt. Whitespace inside
@@ -75,27 +74,6 @@ const quickActionInputVariable = "input"
 // Types
 // ---------------------------------------------------------------------------
 
-// QuickActionVisibility is the derived answer to "who can actually use this",
-// computed per request from the bound target's permission model.
-//
-// It is presentation-only: the authority is canInvokeAgent, re-checked on every
-// run. Clients must `default` any switch on it (server-driven enum).
-type QuickActionVisibility string
-
-const (
-	// QuickActionVisibilityWorkspace: every workspace member may run it.
-	QuickActionVisibilityWorkspace QuickActionVisibility = "workspace"
-	// QuickActionVisibilityRestricted: a public_to allow-list of specific
-	// members may run it.
-	QuickActionVisibilityRestricted QuickActionVisibility = "restricted"
-	// QuickActionVisibilityOwnerOnly: the target is private, so only its owner
-	// may run it. This is the case the settings UI must call out loudly.
-	QuickActionVisibilityOwnerOnly QuickActionVisibility = "owner_only"
-	// QuickActionVisibilityUnavailable: the target is archived or gone. The
-	// action can never run until it is rebound.
-	QuickActionVisibilityUnavailable QuickActionVisibility = "unavailable"
-)
-
 type QuickActionResponse struct {
 	ID               string  `json:"id"`
 	WorkspaceID      string  `json:"workspace_id"`
@@ -108,24 +86,26 @@ type QuickActionResponse struct {
 	InputLabel       string  `json:"input_label"`
 	InputPlaceholder string  `json:"input_placeholder"`
 	InputRequired    bool    `json:"input_required"`
-	Position         float64 `json:"position"`
+	Visibility       string  `json:"visibility"`
 	Status           string  `json:"status"`
 	LastUsedAt       *string `json:"last_used_at"`
 	UseCount         int64   `json:"use_count"`
+	CreatedByID      string  `json:"created_by_id"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
 
-	// Derived per request — never stored. See QuickActionVisibility.
-	Visibility QuickActionVisibility `json:"visibility"`
-	// CanRun is the caller's own invoke verdict. The sidebar renders only
-	// can_run actions; settings renders all of them with the visibility badge
-	// so an admin can audit which entries are effectively personal.
-	CanRun bool `json:"can_run"`
-	// TargetName / TargetAvatarURL identify the bound agent or squad. Omitted
-	// when the caller cannot even see the target, so the response never
-	// discloses a private agent's existence to a stranger.
-	TargetName      string `json:"target_name,omitempty"`
-	TargetAvatarURL string `json:"target_avatar_url,omitempty"`
+	// Target identity, for display. Always populated when the target resolves:
+	// a `public` action binds a publicly-invocable agent whose name everyone
+	// can already see, and a `private` action is only ever returned to its
+	// creator — so there is nothing left to redact.
+	TargetName string `json:"target_name,omitempty"`
+	// TargetPublic reports whether the bound target is currently invocable by
+	// every workspace member. Plain metadata, not a verdict: settings renders
+	// it beside the binding so a `public` action pointing at a now-private
+	// agent is visibly wrong without a bespoke "broken" state.
+	TargetPublic bool `json:"target_public"`
+	// TargetMissing marks an archived or deleted target.
+	TargetMissing bool `json:"target_missing"`
 }
 
 type CreateQuickActionRequest struct {
@@ -138,20 +118,21 @@ type CreateQuickActionRequest struct {
 	InputLabel       string `json:"input_label"`
 	InputPlaceholder string `json:"input_placeholder"`
 	InputRequired    bool   `json:"input_required"`
+	Visibility       string `json:"visibility"`
 }
 
 type UpdateQuickActionRequest struct {
-	Name             *string  `json:"name"`
-	Description      *string  `json:"description"`
-	AssigneeType     *string  `json:"assignee_type"`
-	AssigneeID       *string  `json:"assignee_id"`
-	Prompt           *string  `json:"prompt"`
-	InputEnabled     *bool    `json:"input_enabled"`
-	InputLabel       *string  `json:"input_label"`
-	InputPlaceholder *string  `json:"input_placeholder"`
-	InputRequired    *bool    `json:"input_required"`
-	Status           *string  `json:"status"`
-	Position         *float64 `json:"position"`
+	Name             *string `json:"name"`
+	Description      *string `json:"description"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	Prompt           *string `json:"prompt"`
+	InputEnabled     *bool   `json:"input_enabled"`
+	InputLabel       *string `json:"input_label"`
+	InputPlaceholder *string `json:"input_placeholder"`
+	InputRequired    *bool   `json:"input_required"`
+	Visibility       *string `json:"visibility"`
+	Status           *string `json:"status"`
 }
 
 type RunQuickActionRequest struct {
@@ -160,9 +141,6 @@ type RunQuickActionRequest struct {
 
 type ListQuickActionsResponse struct {
 	QuickActions []QuickActionResponse `json:"quick_actions"`
-	// SidebarLimit lets the client render the "top N + More" split without
-	// hardcoding the number in three codebases.
-	SidebarLimit int `json:"sidebar_limit"`
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +198,6 @@ func quickActionVariableNames() []string {
 	for n := range quickActionVariables {
 		names = append(names, "{{"+n+"}}")
 	}
-	// Stable order for a deterministic error message.
 	for i := 0; i < len(names); i++ {
 		for j := i + 1; j < len(names); j++ {
 			if names[j] < names[i] {
@@ -241,8 +218,19 @@ func validateQuickActionAssignee(assigneeType, assigneeID string) error {
 	return nil
 }
 
+func normalizeQuickActionVisibility(raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "public", nil
+	}
+	if v != "public" && v != "private" {
+		return "", fmt.Errorf("visibility must be \"public\" or \"private\"")
+	}
+	return v, nil
+}
+
 // ---------------------------------------------------------------------------
-// Target resolution + derived visibility
+// Target resolution
 // ---------------------------------------------------------------------------
 
 // quickActionTarget is the resolved execution target of an action: the agent
@@ -264,7 +252,7 @@ type quickActionTarget struct {
 
 // resolveQuickActionTarget loads the execution target. A missing/archived
 // agent, or a missing/archived squad, resolves to Found=false — the caller
-// renders that as `unavailable` rather than failing the whole list.
+// renders that as an unavailable target rather than failing the whole list.
 func (h *Handler) resolveQuickActionTarget(ctx context.Context, qa db.QuickAction) quickActionTarget {
 	switch qa.AssigneeType {
 	case "squad":
@@ -311,39 +299,30 @@ func (h *Handler) resolveQuickActionTarget(ctx context.Context, qa db.QuickActio
 	}
 }
 
-// deriveQuickActionVisibility answers "who can use this" from the target's
-// permission model. This is the whole of decision D6: the field is computed,
-// never stored, so it can never drift out of sync with the agent's actual
-// permission_mode after someone flips it.
-func (h *Handler) deriveQuickActionVisibility(ctx context.Context, target quickActionTarget) QuickActionVisibility {
-	if !target.Found {
-		return QuickActionVisibilityUnavailable
+// agentInvocableByEveryone reports whether every workspace member may invoke
+// this agent — `public_to` carrying a `workspace` target.
+//
+// A `public_to` agent whose allow-list names specific members does NOT count:
+// binding one to a public quick action would make the "everyone" promise false
+// for the members left out. Fails closed on a lookup error.
+func (h *Handler) agentInvocableByEveryone(ctx context.Context, agent db.Agent) bool {
+	if agent.PermissionMode != "public_to" {
+		return false
 	}
-	if target.Agent.PermissionMode != "public_to" {
-		return QuickActionVisibilityOwnerOnly
-	}
-	targets, err := h.Queries.ListAgentInvocationTargets(ctx, target.Agent.ID)
+	targets, err := h.Queries.ListAgentInvocationTargets(ctx, agent.ID)
 	if err != nil {
-		// Fail closed on a lookup error: claiming "everyone" here would be a
-		// visibility promise we cannot back.
-		return QuickActionVisibilityOwnerOnly
+		return false
 	}
 	for _, t := range targets {
 		if t.TargetType == "workspace" {
-			return QuickActionVisibilityWorkspace
+			return true
 		}
 	}
-	return QuickActionVisibilityRestricted
+	return false
 }
 
-func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction, actorType, actorID, originatorUserID, workspaceID string) QuickActionResponse {
+func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction) QuickActionResponse {
 	target := h.resolveQuickActionTarget(ctx, qa)
-	visibility := h.deriveQuickActionVisibility(ctx, target)
-
-	canRun := false
-	if target.Found {
-		canRun = h.canInvokeAgent(ctx, target.Agent, actorType, actorID, originatorUserID, workspaceID)
-	}
 
 	resp := QuickActionResponse{
 		ID:               uuidToString(qa.ID),
@@ -357,21 +336,18 @@ func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction, 
 		InputLabel:       qa.InputLabel,
 		InputPlaceholder: qa.InputPlaceholder,
 		InputRequired:    qa.InputRequired,
-		Position:         qa.Position,
+		Visibility:       qa.Visibility,
 		Status:           qa.Status,
 		LastUsedAt:       timestampToPtr(qa.LastUsedAt),
 		UseCount:         qa.UseCount,
+		CreatedByID:      uuidToString(qa.CreatedByID),
 		CreatedAt:        timestampToString(qa.CreatedAt),
 		UpdatedAt:        timestampToString(qa.UpdatedAt),
-		Visibility:       visibility,
-		CanRun:           canRun,
+		TargetMissing:    !target.Found,
 	}
-	// Only disclose the target's identity to callers who can already see it.
-	// A stranger learning "this button points at Lambda" would leak the
-	// existence of a private agent the invoke gate is meant to hide.
-	if target.Found && h.canAccessPrivateAgent(ctx, target.Agent, actorType, actorID, workspaceID) {
+	if target.Found {
 		resp.TargetName = target.Name
-		resp.TargetAvatarURL = target.AvatarURL
+		resp.TargetPublic = h.agentInvocableByEveryone(ctx, target.Agent)
 	}
 	return resp
 }
@@ -417,14 +393,17 @@ func quickActionIssueURL(publicURL, issueID string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Permission gate
+// Management gate
 // ---------------------------------------------------------------------------
 
-// requireQuickActionAdmin gates definition writes to human owner/admin members,
-// mirroring requirePropertyAdmin. Agents are rejected before the role check:
-// an agent inherits its runtime owner's credentials, so without this an admin's
+// requireQuickActionActor resolves the acting member. Agents are rejected: an
+// agent inherits its runtime owner's credentials, and without this an admin's
 // agent could mass-produce actions that then appear in everyone's sidebar.
-func (h *Handler) requireQuickActionAdmin(w http.ResponseWriter, r *http.Request) (workspaceID, userID string, ok bool) {
+//
+// The role check is deliberately NOT here — it depends on the visibility being
+// written. A `public` action is workspace furniture and needs owner/admin; a
+// `private` one is personal and any member may create it.
+func (h *Handler) requireQuickActionActor(w http.ResponseWriter, r *http.Request) (workspaceID, userID string, ok bool) {
 	workspaceID = h.resolveWorkspaceID(r)
 	userID, ok = requireUserID(w, r)
 	if !ok {
@@ -434,16 +413,27 @@ func (h *Handler) requireQuickActionAdmin(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusForbidden, "agents cannot manage quick actions")
 		return "", "", false
 	}
-	if _, roleOK := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin"); !roleOK {
+	if _, memberOK := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !memberOK {
 		return "", "", false
 	}
 	return workspaceID, userID, true
+}
+
+// requirePublicQuickActionRole gates writes that leave an action `public`.
+// Returns false having already written the error response.
+func (h *Handler) requirePublicQuickActionRole(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
+	_, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin")
+	return ok
 }
 
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
+// ListQuickActions returns the workspace catalog. It performs NO permission
+// work: `private` rows are scoped to their creator by the query (that is what
+// the field means, not a permission check), and every other row is returned to
+// everyone. Whether the caller may RUN one is answered by RunQuickAction.
 func (h *Handler) ListQuickActions(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
@@ -454,13 +444,16 @@ func (h *Handler) ListQuickActions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
+	viewerUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
 
 	includeArchived := r.URL.Query().Get("include_archived") == "true"
 	rows, err := h.Queries.ListQuickActions(r.Context(), db.ListQuickActionsParams{
 		WorkspaceID:     wsUUID,
 		IncludeArchived: includeArchived,
+		ViewerID:        viewerUUID,
 	})
 	if err != nil {
 		slog.Warn("list quick actions failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -468,24 +461,15 @@ func (h *Handler) ListQuickActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// runnable_only is the issue sidebar's mode: it must never render a button
-	// the caller cannot actually press. Settings omits it so an admin sees the
-	// whole catalog, each row carrying its derived visibility badge.
-	runnableOnly := r.URL.Query().Get("runnable_only") == "true"
-
 	out := make([]QuickActionResponse, 0, len(rows))
 	for _, qa := range rows {
-		resp := h.quickActionToResponse(r.Context(), qa, actorType, actorID, originatorUserID, workspaceID)
-		if runnableOnly && !resp.CanRun {
-			continue
-		}
-		out = append(out, resp)
+		out = append(out, h.quickActionToResponse(r.Context(), qa))
 	}
-	writeJSON(w, http.StatusOK, ListQuickActionsResponse{QuickActions: out, SidebarLimit: quickActionSidebarLimit})
+	writeJSON(w, http.StatusOK, ListQuickActionsResponse{QuickActions: out})
 }
 
 func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
-	workspaceID, userID, ok := h.requireQuickActionAdmin(w, r)
+	workspaceID, userID, ok := h.requireQuickActionActor(w, r)
 	if !ok {
 		return
 	}
@@ -497,6 +481,14 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 	var req CreateQuickActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	visibility, err := normalizeQuickActionVisibility(req.Visibility)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if visibility == "public" && !h.requirePublicQuickActionRole(w, r, workspaceID) {
 		return
 	}
 	name, err := validateQuickActionName(req.Name)
@@ -517,27 +509,20 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	description := strings.TrimSpace(req.Description)
-	if utf8.RuneCountInString(description) > maxQuickActionDescriptionLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("description must be at most %d characters", maxQuickActionDescriptionLen))
+	description, ok := trimmedWithinLimit(w, req.Description, maxQuickActionDescriptionLen, "description")
+	if !ok {
 		return
 	}
-	inputLabel := strings.TrimSpace(req.InputLabel)
-	if utf8.RuneCountInString(inputLabel) > maxQuickActionInputLabelLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("input_label must be at most %d characters", maxQuickActionInputLabelLen))
+	inputLabel, ok := trimmedWithinLimit(w, req.InputLabel, maxQuickActionInputLabelLen, "input_label")
+	if !ok {
 		return
 	}
-	inputPlaceholder := strings.TrimSpace(req.InputPlaceholder)
-	if utf8.RuneCountInString(inputPlaceholder) > maxQuickActionInputLabelLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("input_placeholder must be at most %d characters", maxQuickActionInputLabelLen))
+	inputPlaceholder, ok := trimmedWithinLimit(w, req.InputPlaceholder, maxQuickActionInputLabelLen, "input_placeholder")
+	if !ok {
 		return
 	}
 
-	// Verify the target exists in THIS workspace before storing a dangling
-	// binding. A cross-workspace id would otherwise persist and render as
-	// permanently `unavailable`.
-	if !h.quickActionAssigneeExists(r.Context(), req.AssigneeType, assigneeUUID, wsUUID) {
-		writeError(w, http.StatusBadRequest, "assignee not found in this workspace")
+	if !h.validateQuickActionBinding(w, r, req.AssigneeType, assigneeUUID, wsUUID, visibility) {
 		return
 	}
 
@@ -558,6 +543,7 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 		InputLabel:       inputLabel,
 		InputPlaceholder: inputPlaceholder,
 		InputRequired:    req.InputRequired && req.InputEnabled,
+		Visibility:       visibility,
 		CreatedByType:    "member",
 		CreatedByID:      parseUUID(userID),
 	})
@@ -566,12 +552,11 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create quick action")
 		return
 	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	writeJSON(w, http.StatusCreated, h.quickActionToResponse(r.Context(), qa, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID))
+	writeJSON(w, http.StatusCreated, h.quickActionToResponse(r.Context(), qa))
 }
 
 func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
-	workspaceID, userID, ok := h.requireQuickActionAdmin(w, r)
+	workspaceID, _, ok := h.requireQuickActionActor(w, r)
 	if !ok {
 		return
 	}
@@ -595,7 +580,25 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The resulting visibility decides the role needed, so resolve it first.
+	// Editing an already-public action also requires the role, otherwise a
+	// member could rewrite the prompt behind a workspace-wide button.
+	visibility := existing.Visibility
+	if req.Visibility != nil {
+		visibility, err = normalizeQuickActionVisibility(*req.Visibility)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if (visibility == "public" || existing.Visibility == "public") && !h.requirePublicQuickActionRole(w, r, workspaceID) {
+		return
+	}
+
 	params := db.UpdateQuickActionParams{ID: idUUID, WorkspaceID: wsUUID}
+	if req.Visibility != nil {
+		params.Visibility = pgtype.Text{String: visibility, Valid: true}
+	}
 
 	if req.Name != nil {
 		name, err := validateQuickActionName(*req.Name)
@@ -606,39 +609,39 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		params.Name = pgtype.Text{String: name, Valid: true}
 	}
 	if req.Description != nil {
-		description := strings.TrimSpace(*req.Description)
-		if utf8.RuneCountInString(description) > maxQuickActionDescriptionLen {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("description must be at most %d characters", maxQuickActionDescriptionLen))
+		description, ok := trimmedWithinLimit(w, *req.Description, maxQuickActionDescriptionLen, "description")
+		if !ok {
 			return
 		}
 		params.Description = pgtype.Text{String: description, Valid: true}
 	}
 
 	// assignee_type and assignee_id move together so a type swap can never
-	// land with a mismatched id (the same rule autopilot enforces).
+	// land with a mismatched id (the same rule autopilot enforces). The
+	// binding is re-validated against the RESULTING visibility, so flipping an
+	// action to public with a private agent still bound is caught here.
+	newType := existing.AssigneeType
+	newID := uuidToString(existing.AssigneeID)
+	if req.AssigneeType != nil {
+		newType = *req.AssigneeType
+	}
+	if req.AssigneeID != nil {
+		newID = *req.AssigneeID
+	}
+	if err := validateQuickActionAssignee(newType, newID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	newUUID, ok := parseUUIDOrBadRequest(w, newID, "assignee_id")
+	if !ok {
+		return
+	}
 	if req.AssigneeType != nil || req.AssigneeID != nil {
-		newType := existing.AssigneeType
-		if req.AssigneeType != nil {
-			newType = *req.AssigneeType
-		}
-		newID := uuidToString(existing.AssigneeID)
-		if req.AssigneeID != nil {
-			newID = *req.AssigneeID
-		}
-		if err := validateQuickActionAssignee(newType, newID); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		newUUID, ok := parseUUIDOrBadRequest(w, newID, "assignee_id")
-		if !ok {
-			return
-		}
-		if !h.quickActionAssigneeExists(r.Context(), newType, newUUID, wsUUID) {
-			writeError(w, http.StatusBadRequest, "assignee not found in this workspace")
-			return
-		}
 		params.AssigneeType = pgtype.Text{String: newType, Valid: true}
 		params.AssigneeID = newUUID
+	}
+	if !h.validateQuickActionBinding(w, r, newType, newUUID, wsUUID, visibility) {
+		return
 	}
 
 	// The prompt and the input toggle are validated as a pair even when only
@@ -667,17 +670,15 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.InputLabel != nil {
-		label := strings.TrimSpace(*req.InputLabel)
-		if utf8.RuneCountInString(label) > maxQuickActionInputLabelLen {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("input_label must be at most %d characters", maxQuickActionInputLabelLen))
+		label, ok := trimmedWithinLimit(w, *req.InputLabel, maxQuickActionInputLabelLen, "input_label")
+		if !ok {
 			return
 		}
 		params.InputLabel = pgtype.Text{String: label, Valid: true}
 	}
 	if req.InputPlaceholder != nil {
-		placeholder := strings.TrimSpace(*req.InputPlaceholder)
-		if utf8.RuneCountInString(placeholder) > maxQuickActionInputLabelLen {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("input_placeholder must be at most %d characters", maxQuickActionInputLabelLen))
+		placeholder, ok := trimmedWithinLimit(w, *req.InputPlaceholder, maxQuickActionInputLabelLen, "input_placeholder")
+		if !ok {
 			return
 		}
 		params.InputPlaceholder = pgtype.Text{String: placeholder, Valid: true}
@@ -699,9 +700,6 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		}
 		params.Status = pgtype.Text{String: *req.Status, Valid: true}
 	}
-	if req.Position != nil {
-		params.Position = pgtype.Float8{Float64: *req.Position, Valid: true}
-	}
 
 	qa, err := h.Queries.UpdateQuickAction(r.Context(), params)
 	if err != nil {
@@ -709,12 +707,11 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update quick action")
 		return
 	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	writeJSON(w, http.StatusOK, h.quickActionToResponse(r.Context(), qa, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID))
+	writeJSON(w, http.StatusOK, h.quickActionToResponse(r.Context(), qa))
 }
 
 func (h *Handler) DeleteQuickAction(w http.ResponseWriter, r *http.Request) {
-	workspaceID, _, ok := h.requireQuickActionAdmin(w, r)
+	workspaceID, userID, ok := h.requireQuickActionActor(w, r)
 	if !ok {
 		return
 	}
@@ -726,6 +723,22 @@ func (h *Handler) DeleteQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	existing, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: idUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "quick action not found")
+		return
+	}
+	// A public action is workspace furniture; a private one belongs to its
+	// creator and nobody else may remove it.
+	if existing.Visibility == "public" {
+		if !h.requirePublicQuickActionRole(w, r, workspaceID) {
+			return
+		}
+	} else if uuidToString(existing.CreatedByID) != userID {
+		writeError(w, http.StatusForbidden, "only the creator can delete a private quick action")
+		return
+	}
+
 	if err := h.Queries.DeleteQuickAction(r.Context(), db.DeleteQuickActionParams{ID: idUUID, WorkspaceID: wsUUID}); err != nil {
 		slog.Warn("delete quick action failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete quick action")
@@ -734,22 +747,44 @@ func (h *Handler) DeleteQuickAction(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) quickActionAssigneeExists(ctx context.Context, assigneeType string, id, workspaceID pgtype.UUID) bool {
-	if assigneeType == "squad" {
-		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
-		return err == nil && !squad.ArchivedAt.Valid
+// trimmedWithinLimit trims a free-text field and enforces its rune ceiling,
+// writing the 400 itself so callers stay linear.
+func trimmedWithinLimit(w http.ResponseWriter, raw string, limit int, field string) (string, bool) {
+	v := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(v) > limit {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be at most %d characters", field, limit))
+		return "", false
 	}
-	agent, err := h.Queries.GetAgent(ctx, id)
-	return err == nil && !agent.ArchivedAt.Valid && uuidToString(agent.WorkspaceID) == uuidToString(workspaceID)
+	return v, true
+}
+
+// validateQuickActionBinding checks that the target exists in this workspace
+// and, for a `public` action, that every member can invoke it. Writes the 400
+// itself and returns false when the binding is rejected.
+func (h *Handler) validateQuickActionBinding(w http.ResponseWriter, r *http.Request, assigneeType string, id, workspaceID pgtype.UUID, visibility string) bool {
+	qa := db.QuickAction{AssigneeType: assigneeType, AssigneeID: id, WorkspaceID: workspaceID}
+	target := h.resolveQuickActionTarget(r.Context(), qa)
+	if !target.Found {
+		writeError(w, http.StatusBadRequest, "assignee not found in this workspace")
+		return false
+	}
+	// A public action promises "everyone can run this". Binding a target the
+	// team cannot invoke would make that promise false on the first click, so
+	// it is refused at write time instead.
+	if visibility == "public" && !h.agentInvocableByEveryone(r.Context(), target.Agent) {
+		writeError(w, http.StatusBadRequest, "a public quick action must use an agent every workspace member can trigger; make the agent public or set this action to private")
+		return false
+	}
+	return true
 }
 
 // RenderQuickAction returns what the action WOULD post, without posting it.
 //
-// This backs the composer hand-off (⌥-click and the `/` slash command): the
-// user gets the fully rendered text in the comment box to edit before sending.
-// Rendering stays on the server even for this read-only path so there is
-// exactly one interpolation implementation — a client-side copy would drift
-// from the run path and quietly send something different from the preview.
+// This backs the composer hand-off (the `/` slash command): the user gets the
+// fully rendered text in the comment box to edit before sending. Rendering
+// stays on the server even for this read-only path so there is exactly one
+// interpolation implementation — a client-side copy would drift from the run
+// path and quietly send something different from the preview.
 func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -788,13 +823,23 @@ func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	// Same gate as the run path: a preview that reveals a private agent's name
-	// would leak exactly what the invoke gate exists to hide.
+	// Same gate as the run path: the preview would otherwise hand a user the
+	// exact text needed to trigger an agent they may not invoke.
 	if !h.canInvokeAgent(r.Context(), target.Agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
 
+	writeJSON(w, http.StatusOK, map[string]string{
+		"content": h.buildQuickActionBody(r, qa, issue, target, userID, input),
+	})
+}
+
+// buildQuickActionBody renders the prompt and prepends the mention line that
+// actually triggers the run. It is parsed by the same ParseMentions the
+// composer's output goes through, so a quick action is indistinguishable from
+// a hand-typed @mention downstream.
+func (h *Handler) buildQuickActionBody(r *http.Request, qa db.QuickAction, issue db.Issue, target quickActionTarget, userID, input string) string {
 	identifier := ""
 	if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil {
 		identifier = fmt.Sprintf("%s-%d", ws.IssuePrefix, issue.Number)
@@ -803,21 +848,22 @@ func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 	if u, err := h.Queries.GetUser(r.Context(), parseUUID(userID)); err == nil {
 		userName = u.Name
 	}
-
 	rendered := renderQuickActionPrompt(qa.Prompt, issue, identifier, userName, h.cfg.PublicURL, input)
-	writeJSON(w, http.StatusOK, map[string]string{
-		"content": fmt.Sprintf("[@%s](mention://%s/%s)\n\n%s", target.Name, target.MentionType, target.MentionID, rendered),
-	})
+	return fmt.Sprintf("[@%s](mention://%s/%s)\n\n%s", target.Name, target.MentionType, target.MentionID, rendered)
 }
 
 // RunQuickAction renders the action and posts it as a quick_action comment,
 // then hands off to the standard comment trigger path.
 //
-// The response is a CommentResponse carrying trigger_outcomes, identical in
-// shape to POST /comments — so the client reuses one result handler and gets
-// `coalesced` (merged into the target's pending task), `deferred` (runtime
-// offline), and `blocked` for free, instead of a bespoke success/failure
-// vocabulary that would drift from the comment path's.
+// This is the ONLY place invoke permission is checked. The list endpoint hides
+// nothing beyond `private` ownership, so a member may well click an action
+// they cannot run; that returns a structured 403 the client renders as a
+// dialog, which is more informative than a button that silently was not there.
+//
+// The success response is a CommentResponse carrying trigger_outcomes,
+// identical in shape to POST /comments — so the client reuses one result
+// handler and gets `coalesced` (merged into the target's pending task),
+// `deferred` (runtime offline), and `blocked` for free.
 func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -839,6 +885,11 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if qa.Status != "active" {
 		writeError(w, http.StatusBadRequest, "quick action is archived")
+		return
+	}
+	// A private action is its creator's; nobody else can reach it even by id.
+	if qa.Visibility == "private" && uuidToString(qa.CreatedByID) != userID {
+		writeError(w, http.StatusNotFound, "quick action not found")
 		return
 	}
 
@@ -873,30 +924,14 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
-	// Re-gate on every run. The list endpoint already filters, but a stale
-	// client, a direct API call, or a permission flip between render and click
-	// must all land here — issue visibility never implies the right to trigger
-	// someone's private agent.
+	// The single permission gate. Issue visibility never implies the right to
+	// trigger someone's private agent.
 	if !h.canInvokeAgent(r.Context(), target.Agent, actorType, actorID, originatorUserID, workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
 
-	identifier := ""
-	if ws, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID); err == nil {
-		identifier = fmt.Sprintf("%s-%d", ws.IssuePrefix, issue.Number)
-	}
-	userName := ""
-	if u, err := h.Queries.GetUser(r.Context(), parseUUID(userID)); err == nil {
-		userName = u.Name
-	}
-
-	rendered := renderQuickActionPrompt(qa.Prompt, issue, identifier, userName, h.cfg.PublicURL, input)
-	// The mention line is what actually triggers the run — it is parsed by the
-	// same ParseMentions the composer's output goes through, so a quick action
-	// is indistinguishable from a hand-typed @mention downstream.
-	body := fmt.Sprintf("[@%s](mention://%s/%s)\n\n%s", target.Name, target.MentionType, target.MentionID, rendered)
-	body = sanitizeNullBytes(body)
+	body := sanitizeNullBytes(h.buildQuickActionBody(r, qa, issue, target, userID, input))
 
 	comment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
 		IssueID:       issue.ID,

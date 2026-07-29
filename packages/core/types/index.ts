@@ -95,6 +95,7 @@ export type {
   ListQuickActionsResponse,
 } from "./quick-action";
 export {
+  QUICK_ACTION_SIDEBAR_LIMIT,
   QUICK_ACTION_VARIABLES,
   QUICK_ACTION_INPUT_VARIABLE,
   QUICK_ACTION_VARIABLE_RE,

@@ -5,14 +5,19 @@ import { renderWithI18n } from "../../test/i18n";
 import { QuickActionsSection } from "./quick-actions-section";
 
 // The section's contract (MUL-5465) is mostly about being HONEST with the
-// user, so these tests target exactly that: which actions are offered, and
-// what the toast claims happened afterwards. The `coalesced` case is the one
-// worth locking — the DB allows only one pending task per (issue, agent), so a
-// click can legitimately start NO new run, and reporting that as success is
-// the bug this feature is most likely to ship with.
+// user, so these tests target exactly that: what gets offered, and what the
+// result claims happened.
+//
+// Two cases are worth locking hardest:
+//   - `coalesced` — the DB allows one pending task per (issue, agent), so a
+//     click can legitimately start NO new run. Reporting that as success is
+//     the bug this feature is most likely to ship with.
+//   - a permission refusal — the list is deliberately NOT filtered by invoke
+//     permission, so a member CAN click something they cannot run. That must
+//     open the explanatory dialog, not a bare error toast.
 
 const runMock = vi.fn();
-let listData: { quick_actions: QuickAction[]; sidebar_limit: number } | undefined;
+let listData: QuickAction[] = [];
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: listData, isLoading: false }),
@@ -23,8 +28,13 @@ vi.mock("@multica/core/paths", () => ({
 }));
 
 vi.mock("@multica/core/quick-actions", () => ({
-  runnableQuickActionsOptions: () => ({ queryKey: ["quick-actions"], queryFn: vi.fn() }),
+  quickActionListOptions: () => ({ queryKey: ["quick-actions"], queryFn: vi.fn() }),
   useRunQuickAction: () => ({ mutateAsync: runMock, isPending: false }),
+}));
+
+let reasonCode: string | undefined;
+vi.mock("@multica/core/api", () => ({
+  dispatchReasonCode: () => reasonCode,
 }));
 
 vi.mock("../../common/actor-avatar", () => ({
@@ -53,15 +63,16 @@ function action(overrides: Partial<QuickAction> = {}): QuickAction {
     input_label: "",
     input_placeholder: "",
     input_required: false,
-    position: 1,
+    visibility: "public",
     status: "active",
     last_used_at: null,
     use_count: 0,
+    created_by_id: "u-1",
     created_at: "",
     updated_at: "",
-    visibility: "workspace",
-    can_run: true,
     target_name: "Lambda",
+    target_public: true,
+    target_missing: false,
     ...overrides,
   };
 }
@@ -79,17 +90,18 @@ describe("QuickActionsSection", () => {
   beforeEach(() => {
     runMock.mockReset();
     toastCalls.length = 0;
-    listData = { quick_actions: [action()], sidebar_limit: 5 };
+    reasonCode = undefined;
+    listData = [action()];
   });
 
-  it("renders nothing when the workspace has no runnable actions", () => {
-    listData = { quick_actions: [], sidebar_limit: 5 };
+  it("renders nothing when the workspace has no actions", () => {
+    listData = [];
     const { container } = renderWithI18n(<QuickActionsSection issueId="i-1" />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("hides archived actions even if the server returned them", () => {
-    listData = { quick_actions: [action({ status: "archived" })], sidebar_limit: 5 };
+    listData = [action({ status: "archived" })];
     const { container } = renderWithI18n(<QuickActionsSection issueId="i-1" />);
     expect(container).toBeEmptyDOMElement();
   });
@@ -100,15 +112,14 @@ describe("QuickActionsSection", () => {
 
     fireEvent.click(screen.getByText("Code Review"));
 
-    await waitFor(() => expect(runMock).toHaveBeenCalledWith({ quickActionId: "qa-1", input: undefined }));
+    await waitFor(() =>
+      expect(runMock).toHaveBeenCalledWith({ quickActionId: "qa-1", input: undefined }),
+    );
     await waitFor(() => expect(toastCalls[0]?.kind).toBe("success"));
     expect(toastCalls[0]?.message).toContain("Lambda");
   });
 
   it("reports a coalesced run as queued-behind, never as a fresh start", async () => {
-    // One pending task per (issue, agent) means the second click adds to the
-    // existing run. Claiming "Lambda started working" here would be a lie the
-    // user has to debug later.
     runMock.mockResolvedValue(outcome("coalesced"));
     renderWithI18n(<QuickActionsSection issueId="i-1" />);
 
@@ -131,8 +142,6 @@ describe("QuickActionsSection", () => {
   });
 
   it("does not claim success for an unknown server status", async () => {
-    // Server-driven enum: a value this build has never seen must not fall
-    // through to the success branch.
     runMock.mockResolvedValue(outcome("some_future_status"));
     renderWithI18n(<QuickActionsSection issueId="i-1" />);
 
@@ -142,13 +151,35 @@ describe("QuickActionsSection", () => {
     expect(toastCalls[0]?.kind).not.toBe("success");
   });
 
+  it("still offers an action the viewer cannot run, and explains the refusal in a dialog", async () => {
+    // The list is intentionally unfiltered, so this path is reachable by
+    // design — the explanation is the whole point of not hiding the button.
+    reasonCode = "invocation_not_allowed";
+    runMock.mockRejectedValue(new Error("forbidden"));
+    renderWithI18n(<QuickActionsSection issueId="i-1" />);
+
+    fireEvent.click(screen.getByText("Code Review"));
+
+    await waitFor(() => expect(screen.getByRole("alertdialog")).toBeInTheDocument());
+    expect(screen.getByText(/can’t run this quick action/i)).toBeInTheDocument();
+    // A refusal is explained, not toasted as a transient failure.
+    expect(toastCalls).toHaveLength(0);
+  });
+
+  it("toasts a non-permission failure instead of opening the dialog", async () => {
+    reasonCode = undefined;
+    runMock.mockRejectedValue(new Error("network down"));
+    renderWithI18n(<QuickActionsSection issueId="i-1" />);
+
+    fireEvent.click(screen.getByText("Code Review"));
+
+    await waitFor(() => expect(toastCalls).toHaveLength(1));
+    expect(toastCalls[0]?.kind).toBe("error");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("opens an input field instead of running when the action asks for input", () => {
-    listData = {
-      quick_actions: [
-        action({ input_enabled: true, input_label: "What should it focus on?" }),
-      ],
-      sidebar_limit: 5,
-    };
+    listData = [action({ input_enabled: true, input_label: "What should it focus on?" })];
     renderWithI18n(<QuickActionsSection issueId="i-1" />);
 
     fireEvent.click(screen.getByText("Code Review"));
@@ -157,22 +188,21 @@ describe("QuickActionsSection", () => {
     expect(runMock).not.toHaveBeenCalled();
   });
 
-  it("collapses everything past the server's sidebar limit behind More", () => {
-    listData = {
-      quick_actions: [
-        action({ id: "a", name: "One" }),
-        action({ id: "b", name: "Two" }),
-        action({ id: "c", name: "Three" }),
-      ],
-      sidebar_limit: 2,
-    };
+  it("collapses everything past the sidebar limit behind More", () => {
+    listData = [
+      action({ id: "a", name: "One" }),
+      action({ id: "b", name: "Two" }),
+      action({ id: "c", name: "Three" }),
+      action({ id: "d", name: "Four" }),
+      action({ id: "e", name: "Five" }),
+      action({ id: "f", name: "Six" }),
+    ];
     renderWithI18n(<QuickActionsSection issueId="i-1" />);
 
-    expect(screen.getByText("One")).toBeInTheDocument();
-    expect(screen.getByText("Two")).toBeInTheDocument();
-    expect(screen.queryByText("Three")).not.toBeInTheDocument();
+    expect(screen.getByText("Five")).toBeInTheDocument();
+    expect(screen.queryByText("Six")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText(/Show 1 more/i));
-    expect(screen.getByText("Three")).toBeInTheDocument();
+    expect(screen.getByText("Six")).toBeInTheDocument();
   });
 });

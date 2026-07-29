@@ -5,7 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
+  Globe,
   Info,
+  Lock,
   Pencil,
   Plus,
   Trash2,
@@ -20,7 +22,11 @@ import {
   useDeleteQuickAction,
   useUpdateQuickAction,
 } from "@multica/core/quick-actions";
-import type { QuickAction, QuickActionAssigneeType } from "@multica/core/types";
+import type {
+  QuickAction,
+  QuickActionAssigneeType,
+  QuickActionVisibility,
+} from "@multica/core/types";
 import {
   QUICK_ACTION_VARIABLES,
   findUnknownQuickActionVariables,
@@ -80,33 +86,21 @@ function daysSince(iso: string | null): number | null {
 type QuickActionsT = ReturnType<typeof useT<"settings">>["t"];
 
 function VisibilityBadge({ action, t }: { action: QuickAction; t: QuickActionsT }) {
-  // Server-driven enum: every unknown value must land on a generic fallback
+  // Server-driven enum: an unknown value must land on a generic fallback
   // rather than rendering nothing (API compatibility rule).
   switch (action.visibility) {
-    case "workspace":
+    case "public":
       return (
         <Badge variant="secondary" className="gap-1 font-normal">
-          {t(($) => $.quick_actions.visibility_workspace)}
+          <Globe className="size-3" />
+          {t(($) => $.quick_actions.visibility_public)}
         </Badge>
       );
-    case "restricted":
+    case "private":
       return (
         <Badge variant="outline" className="gap-1 font-normal">
-          {t(($) => $.quick_actions.visibility_restricted)}
-        </Badge>
-      );
-    case "owner_only":
-      return (
-        <Badge variant="outline" className="gap-1 border-amber-500/40 font-normal text-amber-600 dark:text-amber-400">
-          <TriangleAlert className="size-3" />
-          {t(($) => $.quick_actions.visibility_owner_only)}
-        </Badge>
-      );
-    case "unavailable":
-      return (
-        <Badge variant="outline" className="gap-1 border-destructive/40 font-normal text-destructive">
-          <TriangleAlert className="size-3" />
-          {t(($) => $.quick_actions.visibility_unavailable)}
+          <Lock className="size-3" />
+          {t(($) => $.quick_actions.visibility_private)}
         </Badge>
       );
     default:
@@ -116,6 +110,34 @@ function VisibilityBadge({ action, t }: { action: QuickAction; t: QuickActionsT 
         </Badge>
       );
   }
+}
+
+/**
+ * The bound target plus its CURRENT reachability, as plain metadata.
+ *
+ * This replaces a derived "broken" flag: a `public` action whose agent has
+ * since gone private simply reads wrong here — public badge, "private" target
+ * — without a bespoke error state to maintain. The cost is that nobody is
+ * actively notified; that trade was made deliberately (drift is rare and the
+ * failure is loud at click time, not silent).
+ */
+function TargetLine({ action, t }: { action: QuickAction; t: QuickActionsT }) {
+  if (action.target_missing === true) {
+    return (
+      <span className="inline-flex items-center gap-1 text-destructive">
+        <TriangleAlert className="size-3" />
+        {t(($) => $.quick_actions.target_missing)}
+      </span>
+    );
+  }
+  const mismatched = action.visibility === "public" && action.target_public !== true;
+  return (
+    <span className={cn("inline-flex items-center gap-1", mismatched && "text-amber-600 dark:text-amber-400")}>
+      {mismatched ? <TriangleAlert className="size-3" /> : null}
+      {action.target_name}
+      {action.target_public !== true ? ` · ${t(($) => $.quick_actions.target_private)}` : ""}
+    </span>
+  );
 }
 
 interface FormState {
@@ -128,6 +150,7 @@ interface FormState {
   inputLabel: string;
   inputPlaceholder: string;
   inputRequired: boolean;
+  visibility: QuickActionVisibility;
 }
 
 const EMPTY_FORM: FormState = {
@@ -140,6 +163,7 @@ const EMPTY_FORM: FormState = {
   inputLabel: "",
   inputPlaceholder: "",
   inputRequired: false,
+  visibility: "public",
 };
 
 function toFormState(action: QuickAction): FormState {
@@ -153,6 +177,7 @@ function toFormState(action: QuickAction): FormState {
     inputLabel: action.input_label,
     inputPlaceholder: action.input_placeholder,
     inputRequired: action.input_required,
+    visibility: action.visibility === "private" ? "private" : "public",
   };
 }
 
@@ -252,7 +277,7 @@ export function QuickActionsTab() {
                     </div>
                     <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                       <span className="truncate">
-                        {action.target_name || t(($) => $.quick_actions.target_hidden)}
+                        <TargetLine action={action} t={t} />
                       </span>
                       <span aria-hidden>·</span>
                       <span className={cn("shrink-0", unused && "text-amber-600 dark:text-amber-400")}>
@@ -337,6 +362,7 @@ export function QuickActionsTab() {
               input_label: form.inputLabel,
               input_placeholder: form.inputPlaceholder,
               input_required: form.inputRequired,
+              visibility: form.visibility,
             });
           } else {
             await createMutation.mutateAsync({
@@ -349,6 +375,7 @@ export function QuickActionsTab() {
               input_label: form.inputLabel,
               input_placeholder: form.inputPlaceholder,
               input_required: form.inputRequired,
+              visibility: form.visibility,
             });
           }
         }}
@@ -449,6 +476,46 @@ function QuickActionDialog({
             />
           </div>
 
+          {/* Visibility first: it is the one choice that constrains the rest
+              (a public action may only bind a publicly-invocable target), so
+              asking it up front avoids a rejected Save. */}
+          <div className="space-y-1.5">
+            <FieldLabel>{t(($) => $.quick_actions.field_visibility)}</FieldLabel>
+            <div className="grid grid-cols-2 gap-2">
+              {(["public", "private"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, visibility: option }))}
+                  className={cn(
+                    "flex items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                    form.visibility === option
+                      ? "border-primary bg-accent/50"
+                      : "border-surface-border hover:bg-accent/30",
+                  )}
+                >
+                  {option === "public" ? (
+                    <Globe className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">
+                      {option === "public"
+                        ? t(($) => $.quick_actions.visibility_public)
+                        : t(($) => $.quick_actions.visibility_private)}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {option === "public"
+                        ? t(($) => $.quick_actions.visibility_public_hint)
+                        : t(($) => $.quick_actions.visibility_private_hint)}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="space-y-1.5">
             <FieldLabel>{t(($) => $.quick_actions.field_target)}</FieldLabel>
             <AgentPicker
@@ -457,11 +524,12 @@ function QuickActionDialog({
                 setForm((f) => ({ ...f, assigneeType: next.type, assigneeId: next.id }))
               }
             />
-            {/* The private-agent consequence, stated where it is caused. */}
-            {action?.visibility === "owner_only" ? (
-              <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-400">
-                <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                <span>{t(($) => $.quick_actions.private_target_warning)}</span>
+            {/* Public promises "everyone can run this", so the server refuses a
+                target the team cannot invoke. Saying so here turns a 400 into
+                an expectation set before the user hits Save. */}
+            {form.visibility === "public" ? (
+              <p className="text-xs text-muted-foreground">
+                {t(($) => $.quick_actions.public_target_hint)}
               </p>
             ) : null}
           </div>

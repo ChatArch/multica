@@ -872,7 +872,7 @@ type QuickAction struct {
 	InputLabel       string             `json:"input_label"`
 	InputPlaceholder string             `json:"input_placeholder"`
 	InputRequired    bool               `json:"input_required"`
-	Position         float64            `json:"position"`
+	Visibility       string             `json:"visibility"`
 	Status           string             `json:"status"`
 	LastUsedAt       pgtype.Timestamptz `json:"last_used_at"`
 	UseCount         int64              `json:"use_count"`

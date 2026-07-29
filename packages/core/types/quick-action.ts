@@ -9,17 +9,17 @@
  */
 
 /**
- * Who can actually use an action. Derived server-side from the bound agent's
- * permission mode on every request — never stored, so it cannot drift out of
- * sync after someone flips an agent between private and public_to.
+ * The author's stated intent, chosen at creation.
  *
- * Server-driven enum: switch on it with a `default` branch.
+ * - `public`  — meant for the team. The server requires a target every member
+ *   can invoke, so it is runnable by everyone by construction.
+ * - `private` — meant for its creator only; any target is allowed, and the
+ *   list endpoint returns it to nobody else.
+ *
+ * This is intent, NOT an authorization decision — the run endpoint always
+ * re-checks invoke permission. Server-driven enum: switch with a `default`.
  */
-export type QuickActionVisibility =
-  | "workspace"
-  | "restricted"
-  | "owner_only"
-  | "unavailable";
+export type QuickActionVisibility = "private" | "public";
 
 export type QuickActionAssigneeType = "agent" | "squad";
 
@@ -38,22 +38,23 @@ export interface QuickAction {
   input_label: string;
   input_placeholder: string;
   input_required: boolean;
-  position: number;
+  visibility: QuickActionVisibility | string;
   status: QuickActionStatus | string;
   last_used_at: string | null;
   use_count: number;
+  created_by_id: string;
   created_at: string;
   updated_at: string;
-  /** Derived per request. Unknown values must fall through a `default`. */
-  visibility: QuickActionVisibility | string;
-  /**
-   * The caller's own invoke verdict. The sidebar renders only `can_run`
-   * actions — a button nobody can press is worse than no button.
-   */
-  can_run: boolean;
-  /** Omitted when the caller cannot see the bound target at all. */
+  /** Display name of the bound agent or squad. Absent when it no longer resolves. */
   target_name?: string;
-  target_avatar_url?: string;
+  /**
+   * Whether the bound target is currently invocable by every workspace member.
+   * Plain metadata, not a verdict — settings shows it beside the binding so a
+   * `public` action pointing at a now-private agent reads as visibly wrong.
+   */
+  target_public: boolean;
+  /** The bound agent or squad was archived or deleted. */
+  target_missing: boolean;
 }
 
 export interface CreateQuickActionRequest {
@@ -66,6 +67,7 @@ export interface CreateQuickActionRequest {
   input_label?: string;
   input_placeholder?: string;
   input_required?: boolean;
+  visibility?: QuickActionVisibility;
 }
 
 export interface UpdateQuickActionRequest {
@@ -78,18 +80,20 @@ export interface UpdateQuickActionRequest {
   input_label?: string;
   input_placeholder?: string;
   input_required?: boolean;
+  visibility?: QuickActionVisibility;
   status?: QuickActionStatus;
-  position?: number;
 }
 
 export interface ListQuickActionsResponse {
   quick_actions: QuickAction[];
-  /**
-   * How many actions the sidebar shows before the rest collapse behind
-   * "More". Server-driven so the number lives in one place, not three.
-   */
-  sidebar_limit: number;
 }
+
+/**
+ * How many actions the issue sidebar shows before the rest collapse behind
+ * "More". Scarcity here is structural: a list that renders all 30 stops being
+ * a shortlist and becomes a menu nobody reads.
+ */
+export const QUICK_ACTION_SIDEBAR_LIMIT = 5;
 
 /**
  * The closed set of prompt variables. Flat substitution only — no

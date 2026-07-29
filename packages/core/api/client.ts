@@ -2499,19 +2499,19 @@ export class ApiClient {
   }
 
   /**
-   * Quick actions catalog. `runnableOnly` is the issue sidebar's mode: the
-   * server drops every action the caller cannot invoke, so the sidebar never
-   * renders a button that would 403 on click. Settings omits it to show the
-   * full catalog with per-row visibility badges.
+   * Quick actions catalog — one projection for every caller.
+   *
+   * The server hides nothing beyond `private` ownership; whether the caller
+   * may RUN an action is answered by runQuickAction, not here. There is
+   * deliberately no "runnable only" mode: filtering the sidebar by permission
+   * made two people looking at one issue see different sidebars with no
+   * explanation.
    *
    * A backend predating quick actions 404s here; treat that as an empty
    * catalog so the sidebar section and settings tab simply do not render.
    */
-  async listQuickActions(opts?: { includeArchived?: boolean; runnableOnly?: boolean }): Promise<ListQuickActionsResponse> {
-    const params = new URLSearchParams();
-    if (opts?.includeArchived === true) params.set("include_archived", "true");
-    if (opts?.runnableOnly === true) params.set("runnable_only", "true");
-    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  async listQuickActions(opts?: { includeArchived?: boolean }): Promise<ListQuickActionsResponse> {
+    const suffix = opts?.includeArchived === true ? "?include_archived=true" : "";
     let raw: unknown;
     try {
       raw = await this.fetch<unknown>(`/api/quick-actions${suffix}`);

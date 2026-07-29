@@ -1,14 +1,25 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, CornerDownLeft, Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
+import { dispatchReasonCode } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
-import { runnableQuickActionsOptions, useRunQuickAction } from "@multica/core/quick-actions";
+import { quickActionListOptions, useRunQuickAction } from "@multica/core/quick-actions";
 import type { Comment, CommentTriggerOutcome, QuickAction } from "@multica/core/types";
+import { QUICK_ACTION_SIDEBAR_LIMIT } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import {
   Popover,
   PopoverContent,
@@ -21,14 +32,15 @@ import { useT } from "../../i18n";
 
 // Quick Actions sidebar section (MUL-5465).
 //
-// Three interaction tiers, in ascending cost:
-//   1. no runtime input  -> click runs it (one click)
-//   2. runtime input     -> click opens ONE field, Enter runs it
-//   3. any action, ⌥-click -> hand off to the comment composer to edit freely
+// The list is NOT filtered by invoke permission. An earlier version hid
+// actions the viewer could not run, which meant two people on one issue saw
+// different sidebars with nothing to explain the difference — harder to debug
+// than a button that tells you why it refused. Permission is answered once, by
+// the run endpoint; a refusal opens a dialog.
 //
-// Tier 3 is the universal escape hatch. It costs almost nothing to build (the
-// composer and its trigger preview already exist) and it removes the pressure
-// to make every prompt cover its own 5% exceptions.
+// Two interaction tiers:
+//   1. no runtime input  -> click runs it
+//   2. runtime input     -> click opens ONE field, Enter runs it
 //
 // The result toast is deliberately outcome-specific rather than a generic
 // "done". A second click against an agent that already has a pending task on
@@ -36,17 +48,7 @@ import { useT } from "../../i18n";
 // (issue, agent) and the comment is merged into the existing one. Reporting
 // that as success would be a lie the user later has to debug.
 
-interface QuickActionsSectionProps {
-  issueId: string;
-  /**
-   * Hands the rendered prompt to the comment composer instead of running it.
-   * Wired by the issue detail view; when absent, ⌥-click falls back to a
-   * normal run so the modifier is never a dead end.
-   */
-  onEditInComposer?: (action: QuickAction) => void;
-}
-
-export function QuickActionsSection({ issueId, onEditInComposer }: QuickActionsSectionProps) {
+export function QuickActionsSection({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
   // Nullable read, not useWorkspaceId(): this section is an enhancement on the
   // sidebar and must degrade to "not rendered" outside a workspace route
@@ -54,22 +56,19 @@ export function QuickActionsSection({ issueId, onEditInComposer }: QuickActionsS
   const wsId = useCurrentWorkspace()?.id ?? "";
   const [open, setOpen] = useState(true);
   const [showAll, setShowAll] = useState(false);
+  const [blocked, setBlocked] = useState<QuickAction | null>(null);
 
-  const { data, isLoading } = useQuery({
-    ...runnableQuickActionsOptions(wsId),
+  const { data = [], isLoading } = useQuery({
+    ...quickActionListOptions(wsId),
     enabled: wsId !== "",
   });
-  const actions = useMemo(
-    () => (data?.quick_actions ?? []).filter((a) => a.status === "active"),
-    [data],
-  );
-  const sidebarLimit = data?.sidebar_limit ?? 5;
+  const actions = useMemo(() => data.filter((a) => a.status === "active"), [data]);
 
-  // Nothing configured (or nothing this member may run) renders nothing at
-  // all: an empty section header in the sidebar is pure noise.
+  // Nothing configured renders nothing at all: an empty section header in the
+  // sidebar is pure noise.
   if (isLoading || actions.length === 0) return null;
 
-  const visible = showAll ? actions : actions.slice(0, sidebarLimit);
+  const visible = showAll ? actions : actions.slice(0, QUICK_ACTION_SIDEBAR_LIMIT);
   const hiddenCount = actions.length - visible.length;
 
   return (
@@ -97,7 +96,7 @@ export function QuickActionsSection({ issueId, onEditInComposer }: QuickActionsS
               key={action.id}
               action={action}
               issueId={issueId}
-              onEditInComposer={onEditInComposer}
+              onBlocked={() => setBlocked(action)}
             />
           ))}
           {hiddenCount > 0 ? (
@@ -111,6 +110,24 @@ export function QuickActionsSection({ issueId, onEditInComposer }: QuickActionsS
           ) : null}
         </div>
       ) : null}
+
+      {/* One message for every refusal. The person reading this dialog and the
+          person who can fix the binding are different people — the clicker's
+          next step is the same either way, and the diagnostic detail lives in
+          settings where the owner will act on it. */}
+      <AlertDialog open={blocked !== null} onOpenChange={(v) => !v && setBlocked(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.detail.quick_action_blocked_title)}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(($) => $.detail.quick_action_blocked_body, { name: blocked?.name ?? "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction>{t(($) => $.detail.quick_action_blocked_ok)}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -118,9 +135,9 @@ export function QuickActionsSection({ issueId, onEditInComposer }: QuickActionsS
 /**
  * Translate the per-target outcome into an honest sentence.
  *
- * `coalesced` / `already_active` is the one that matters: the click was
- * accepted but no NEW run started. "Added to Lambda's queue" is the truth;
- * "Lambda started working" is not.
+ * `coalesced` is the one that matters: the click was accepted but no NEW run
+ * started. "Added to Lambda's current run" is the truth; "Lambda started
+ * working" is not.
  */
 function outcomeMessage(
   outcome: CommentTriggerOutcome | undefined,
@@ -151,18 +168,17 @@ function outcomeMessage(
 function QuickActionRow({
   action,
   issueId,
-  onEditInComposer,
+  onBlocked,
 }: {
   action: QuickAction;
   issueId: string;
-  onEditInComposer?: (action: QuickAction) => void;
+  onBlocked: () => void;
 }) {
   const { t } = useT("issues");
   const [inputOpen, setInputOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const runMutation = useRunQuickAction(issueId);
   const running = runMutation.isPending;
-  const rowRef = useRef<HTMLDivElement>(null);
 
   const targetName = action.target_name || t(($) => $.detail.quick_action_target_fallback);
 
@@ -172,25 +188,26 @@ function QuickActionRow({
         quickActionId: action.id,
         input,
       });
-      const outcome = comment.trigger_outcomes?.[0];
-      const { message, kind } = outcomeMessage(outcome, targetName, t);
+      const { message, kind } = outcomeMessage(comment.trigger_outcomes?.[0], targetName, t);
       if (kind === "success") toast.success(message);
       else if (kind === "error") toast.error(message);
       else toast.info(message);
       setInputOpen(false);
       setInputValue("");
     } catch (error) {
+      // A permission refusal is a structured 403 the user needs explained, not
+      // a transient failure they should retry — it gets the dialog. Everything
+      // else stays a toast.
+      if (dispatchReasonCode(error) === "invocation_not_allowed") {
+        setInputOpen(false);
+        onBlocked();
+        return;
+      }
       toast.error(error instanceof Error ? error.message : String(error));
     }
   };
 
-  const handleClick = (e: React.MouseEvent) => {
-    // ⌥-click = "let me edit this one" for ANY action, with or without a
-    // configured input.
-    if (e.altKey && onEditInComposer) {
-      onEditInComposer(action);
-      return;
-    }
+  const handleClick = () => {
     if (action.input_enabled) {
       setInputOpen(true);
       return;
@@ -199,7 +216,7 @@ function QuickActionRow({
   };
 
   const row = (
-    <div ref={rowRef}>
+    <div>
       <button
         type="button"
         disabled={running}
@@ -235,9 +252,6 @@ function QuickActionRow({
       <div className="text-muted-foreground">
         {t(($) => $.detail.quick_action_runs_as, { name: targetName })}
       </div>
-      {onEditInComposer ? (
-        <div className="text-muted-foreground">{t(($) => $.detail.quick_action_alt_click)}</div>
-      ) : null}
     </div>
   );
 
@@ -274,9 +288,8 @@ function QuickActionRow({
             }}
           />
           <div className="flex items-center justify-between">
-            {/* The placeholder already sits in the field; repeating it here
-                would say the same thing twice. This line carries the one thing
-                the field cannot: whether leaving it blank is allowed. */}
+            {/* The placeholder already sits in the field; this line carries the
+                one thing the field cannot — whether blank is allowed. */}
             <span className="text-[11px] text-muted-foreground">
               {action.input_required
                 ? t(($) => $.detail.quick_action_input_required_hint)

@@ -4,7 +4,7 @@ import { useCallback, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
-import { runnableQuickActionsOptions } from "@multica/core/quick-actions";
+import { quickActionListOptions } from "@multica/core/quick-actions";
 
 /**
  * Supplies the comment composer's `/` menu with this workspace's quick actions
@@ -15,8 +15,9 @@ import { runnableQuickActionsOptions } from "@multica/core/quick-actions";
  * gets to edit and then send with the normal shortcut. Running without review
  * is what the sidebar button is for.
  *
- * The list is the runnable projection, so the menu can never offer an action
- * whose target the user is not allowed to invoke.
+ * The menu offers the same catalog the sidebar shows — no permission
+ * pre-filtering. A pick the user cannot run fails at the render endpoint and
+ * simply inserts nothing, matching how the sidebar reports a refusal.
  *
  * Reads workspace identity through `useCurrentWorkspace` (nullable) rather
  * than `useWorkspaceId` (throws): the comment composer also mounts outside a
@@ -26,8 +27,8 @@ import { runnableQuickActionsOptions } from "@multica/core/quick-actions";
 export function useQuickActionMenu(issueId: string) {
   const workspace = useCurrentWorkspace();
   const wsId = workspace?.id ?? "";
-  const { data } = useQuery({
-    ...runnableQuickActionsOptions(wsId),
+  const { data = [] } = useQuery({
+    ...quickActionListOptions(wsId),
     enabled: wsId !== "",
   });
 
@@ -36,7 +37,7 @@ export function useQuickActionMenu(issueId: string) {
   const actionsRef = useRef<{ id: string; name: string; description?: string }[]>([]);
   actionsRef.current = useMemo(
     () =>
-      (data?.quick_actions ?? [])
+      data
         .filter((a) => a.status === "active")
         .map((a) => ({ id: a.id, name: a.name, description: a.description || undefined })),
     [data],

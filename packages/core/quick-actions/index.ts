@@ -1,8 +1,4 @@
-export {
-  quickActionKeys,
-  quickActionListOptions,
-  runnableQuickActionsOptions,
-} from "./queries";
+export { quickActionKeys, quickActionListOptions } from "./queries";
 export {
   useCreateQuickAction,
   useUpdateQuickAction,
