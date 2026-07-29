@@ -446,6 +446,17 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // "own the status arc" and "do not touch the status" can never be read as
 // peer instructions with no arbitration.
 //
+// Step 3 asks for a roots scan first, not `--recent 10` (MUL-5372). `--recent N`
+// caps THREADS, not comments: each returned thread carries its root plus every
+// descendant with no depth cap, so on an issue with fewer than N root threads it
+// returns the entire comment history. Because this step is mandatory and fires on
+// every run, making it the bulk read meant every reply turn re-read the whole
+// issue — and, on comment-triggered turns, duplicated the bounded thread read the
+// per-turn message had already pointed at (see daemon.buildCommentPrompt and
+// BuildColdCommentsHint). `--roots-only --summary` keeps the anti-stale property
+// that step exists for — the agent still sees every thread that exists — at a
+// fraction of the payload, and the drill-down stays explicit.
+//
 // Ordinary agents own the full status arc for their issue: open with
 // in_progress, deliver with in_review. Squad leaders share the opening
 // in_progress step so the parent leaves todo as soon as coordination
@@ -466,7 +477,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("**Steps 1–6 — both modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. See the `## Issue Metadata` section above for what to look for.\n", ctx.IssueID)
-	fmt.Fprintf(b, "3. Run `multica issue comment list %s --recent 10 --output json` to catch up on recent active comment threads — this is mandatory, not optional. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions. Resolved threads come back folded — `--full` to expand. If the recent window shows that older context is needed, page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history. In Reply mode the per-turn user message also tells you which thread to start from.\n", ctx.IssueID)
+	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional, but read it in two bounded steps instead of one bulk pull. First scan every thread cheaply: `multica issue comment list %s --roots-only --summary --output json` returns each top-level comment clipped to a preview, with `reply_count` and `last_activity_at`, so you learn what discussion exists without paying for its contents. Then expand only the threads that matter: `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant. Reach for `multica issue comment list %s --recent 10 --output json` only when you genuinely need several complete threads at once: it returns the root plus EVERY descendant per thread with no per-thread cap, so on an issue with fewer than 10 threads it hands you the entire history. Resolved threads come back folded — `--full` to expand. Page older threads with the stderr `Next thread cursor:` values and the matching `--before` / `--before-id` flags until you have enough history.\n", ctx.IssueID, ctx.IssueID, ctx.IssueID)
 	b.WriteString("4. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {
 		fmt.Fprintf(b, "5. **Post your final results as a comment** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient; you MUST exit without posting any comment. DO NOT post a comment announcing no_action or saying you are exiting silently): post it with `multica issue comment add %s` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n", ctx.IssueID, ctx.IssueID)

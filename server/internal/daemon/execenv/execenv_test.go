@@ -4858,6 +4858,62 @@ func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
 	}
 }
 
+// TestInjectRuntimeConfigCatchUpScansRootsBeforeBulkRead locks in MUL-5372: the
+// mandatory step-3 catch-up leads with a bounded `--roots-only --summary` scan
+// and an explicit per-thread drill-down, instead of making `--recent 10` the
+// required first read. `--recent N` caps threads, not comments — it returns every
+// descendant of each thread — so as the mandatory read it handed every run the
+// issue's entire comment history, and duplicated the bounded thread read the
+// per-turn message already points at on comment-triggered turns.
+func TestInjectRuntimeConfigCatchUpScansRootsBeforeBulkRead(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(data)
+
+	for _, want := range []string{
+		// The cheap scan is the first thing step 3 asks for.
+		"multica issue comment list issue-1 --roots-only --summary --output json",
+		// ...followed by an explicit, bounded drill-down.
+		"multica issue comment list issue-1 --thread <thread-id> --tail 30 --output json",
+		// ...and the saturation semantics that made --recent 10 misleading are
+		// stated, so an agent can tell what the flag actually bounds.
+		"no per-thread cap",
+		"fewer than 10 threads",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("step 3 missing bounded catch-up guidance %q\n---\n%s", want, s)
+		}
+	}
+
+	// The scan must come before the bulk read, or the ordering does not steer
+	// anything: an agent following the step top-to-bottom would still pull
+	// everything first.
+	scan := strings.Index(s, "--roots-only --summary --output json")
+	bulk := strings.Index(s, "--recent 10 --output json")
+	if scan < 0 || bulk < 0 || scan > bulk {
+		t.Errorf("roots scan must be introduced before the --recent bulk read (scan=%d bulk=%d)\n---\n%s", scan, bulk, s)
+	}
+
+	// The catch-up stays mandatory — this change is about payload shape, not
+	// about letting agents skip context and act on stale instructions.
+	for _, want := range []string{
+		"this is mandatory, not optional",
+		"Skipping this step is the most common cause",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("step 3 must stay mandatory, missing %q\n---\n%s", want, s)
+		}
+	}
+}
+
 // TestInjectRuntimeConfigIssueMetadataSectionScope locks in MUL-2017:
 // the `## Issue Metadata` section (semantic guide + recommended keys +
 // pin/clear rules) and the `metadata list` workflow step are emitted only
