@@ -86,6 +86,14 @@ vi.mock("../../navigation", () => ({
     </a>
   ),
   useNavigation: () => ({ push: vi.fn(), pathname: "/" }),
+  // TableView routes whole-row clicks through this. Inert here — these tests
+  // are about pagination and selection, and row navigation has its own
+  // coverage in table-view-editing.test.tsx.
+  useRowLink: () => () => ({
+    onClick: () => {},
+    onAuxClick: () => {},
+    onMouseEnter: () => {},
+  }),
 }));
 
 vi.mock("@multica/core/paths", async () => {

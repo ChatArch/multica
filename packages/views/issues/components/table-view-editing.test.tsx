@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -29,6 +30,8 @@ import type {
   IssueTableQuerySpec,
   IssueTableRowsResponse,
 } from "@multica/core/types";
+import { NavigationProvider } from "../../navigation";
+import type { NavigationAdapter } from "../../navigation";
 import { renderWithI18n } from "../../test/i18n";
 import { IssueSurfaceSelectionProvider } from "../surface/selection-context";
 import type { IssueSurfaceSelection } from "../surface/selection-context";
@@ -78,26 +81,29 @@ vi.mock("@multica/core/auth", () => ({
   ),
 }));
 
-const navigationMocks = vi.hoisted(() => ({
+// The real NavigationProvider rather than a module mock: row clicks go through
+// useRowLink, and stubbing the navigation module out would replace the very
+// hook whose semantics these tests are pinning down (MUL-5459).
+const navigationMocks = {
   push: vi.fn(),
   openInNewTab: vi.fn(),
   getShareableUrl: vi.fn((path: string) => `https://app.example${path}`),
-}));
-const navigationState = vi.hoisted(() => ({ hasOpenInNewTab: true }));
+};
 
-vi.mock("../../navigation", () => ({
-  AppLink: ({ children, ...props }: React.ComponentProps<"a">) => (
-    <a {...props}>{children}</a>
-  ),
-  useNavigation: () => ({
+/** Desktop supplies openInNewTab; web leaves it undefined. */
+function makeAdapter(withTabAdapter: boolean): NavigationAdapter {
+  return {
     push: navigationMocks.push,
-    openInNewTab: navigationState.hasOpenInNewTab
-      ? navigationMocks.openInNewTab
-      : undefined,
-    getShareableUrl: navigationMocks.getShareableUrl,
+    replace: vi.fn(),
+    back: vi.fn(),
     pathname: "/",
-  }),
-}));
+    searchParams: new URLSearchParams(),
+    getShareableUrl: navigationMocks.getShareableUrl,
+    ...(withTabAdapter ? { openInNewTab: navigationMocks.openInNewTab } : {}),
+  };
+}
+
+let navigationAdapter: NavigationAdapter = makeAdapter(true);
 
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>(
@@ -172,25 +178,27 @@ function Harness({
   onCreateIssue?: (defaults: IssueCreateDefaults) => void;
 }) {
   return (
-    <ViewStoreProvider store={getIssueSurfaceViewStore(surfaceKey)}>
-      <IssueSurfaceSelectionProvider selection={selection}>
-        <TableView
-          serverQuery={serverQuery}
-          childProgressMap={childProgressMap}
-          search=""
-          onSearchChange={() => {}}
-          onLoadedIssuesChange={() => {}}
-          onCreateIssue={onCreateIssue}
-          exportIssues={() => Promise.resolve(serverIssues)}
-          resolveExportLookups={() =>
-            Promise.resolve({
-              projectMap: new Map(),
-              childProgressMap: new Map(),
-            })
-          }
-        />
-      </IssueSurfaceSelectionProvider>
-    </ViewStoreProvider>
+    <NavigationProvider value={navigationAdapter}>
+      <ViewStoreProvider store={getIssueSurfaceViewStore(surfaceKey)}>
+        <IssueSurfaceSelectionProvider selection={selection}>
+          <TableView
+            serverQuery={serverQuery}
+            childProgressMap={childProgressMap}
+            search=""
+            onSearchChange={() => {}}
+            onLoadedIssuesChange={() => {}}
+            onCreateIssue={onCreateIssue}
+            exportIssues={() => Promise.resolve(serverIssues)}
+            resolveExportLookups={() =>
+              Promise.resolve({
+                projectMap: new Map(),
+                childProgressMap: new Map(),
+              })
+            }
+          />
+        </IssueSurfaceSelectionProvider>
+      </ViewStoreProvider>
+    </NavigationProvider>
   );
 }
 
@@ -204,7 +212,7 @@ describe("TableView cell editors under data refresh", () => {
     navigationMocks.getShareableUrl.mockImplementation(
       (path: string) => `https://app.example${path}`,
     );
-    navigationState.hasOpenInNewTab = true;
+    navigationAdapter = makeAdapter(true);
     vi.stubGlobal("IntersectionObserver", ObserverStub);
     vi.stubGlobal("ResizeObserver", ObserverStub);
     queryClient = new QueryClient({
@@ -350,7 +358,7 @@ describe("TableView cell editors under data refresh", () => {
     });
   });
 
-  it("opens title and row clicks in a foreground Desktop tab", async () => {
+  it("opens the title's explicit affordance in a foreground Desktop tab", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     serverIssues = [makeIssue("a", "Alpha task", "todo")];
 
@@ -371,22 +379,13 @@ describe("TableView cell editors under data refresh", () => {
       { activate: true },
     );
     expect(navigationMocks.push).not.toHaveBeenCalled();
-
-    navigationMocks.openInNewTab.mockClear();
-    await user.click(row);
-    expect(navigationMocks.openInNewTab).toHaveBeenCalledWith(
-      "/test/issues/a",
-      "MUL-a",
-      { activate: true },
-    );
-    expect(navigationMocks.push).not.toHaveBeenCalled();
   });
 
-  it("opens a real browser tab when the platform has no tab adapter", async () => {
+  it("opens a real browser tab from the title when the platform has no tab adapter", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     const windowOpen = vi.fn();
     vi.stubGlobal("open", windowOpen);
-    navigationState.hasOpenInNewTab = false;
+    navigationAdapter = makeAdapter(false);
     serverIssues = [makeIssue("a", "Alpha task", "todo")];
 
     renderWithI18n(
@@ -410,6 +409,147 @@ describe("TableView cell editors under data refresh", () => {
       "noopener,noreferrer",
     );
     expect(navigationMocks.push).not.toHaveBeenCalled();
+  });
+
+  // MUL-5459: a table row is navigation, not a reference — the same gesture on
+  // a List row, a Board card and a Gantt bar all stay on the page, and the
+  // table was the one surface that used to jump the user into a new tab.
+  it("navigates in place on a plain row click", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    serverIssues = [makeIssue("a", "Alpha task", "todo")];
+
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <Harness
+          childProgressMap={new Map()}
+          surfaceKey={`test-row-push-${Math.floor(Math.random() * 1e9)}`}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByText("MUL-a")).closest("tr")!;
+    await user.click(row);
+
+    expect(navigationMocks.push).toHaveBeenCalledWith("/test/issues/a");
+    expect(navigationMocks.openInNewTab).not.toHaveBeenCalled();
+  });
+
+  // A <tr> cannot be an <a>, so the modifier semantics a real link inherits
+  // from the browser have to be wired by hand — before this the table row
+  // ignored modifiers entirely.
+  it("opens a background tab on cmd/ctrl-click and on middle click", async () => {
+    serverIssues = [makeIssue("a", "Alpha task", "todo")];
+
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <Harness
+          childProgressMap={new Map()}
+          surfaceKey={`test-row-modifier-${Math.floor(Math.random() * 1e9)}`}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByText("MUL-a")).closest("tr")!;
+
+    fireEvent.click(row, { metaKey: true });
+    fireEvent.click(row, { ctrlKey: true });
+    // No `activate`, i.e. a BACKGROUND tab: a modifier click means "keep me
+    // here", unlike the title's explicit open.
+    expect(navigationMocks.openInNewTab).toHaveBeenCalledTimes(2);
+    expect(navigationMocks.openInNewTab).toHaveBeenNthCalledWith(
+      1,
+      "/test/issues/a",
+    );
+
+    navigationMocks.openInNewTab.mockClear();
+    const auxClick = new MouseEvent("auxclick", {
+      bubbles: true,
+      button: 1,
+      cancelable: true,
+    });
+    act(() => {
+      row.dispatchEvent(auxClick);
+    });
+    expect(auxClick.defaultPrevented).toBe(true);
+    expect(navigationMocks.openInNewTab).toHaveBeenCalledWith(
+      "/test/issues/a",
+    );
+    expect(navigationMocks.push).not.toHaveBeenCalled();
+  });
+
+  // On web the row is still a <tr> with no adapter behind it, so the two
+  // gestures have to split here rather than both falling through to the same
+  // window.open the way they used to.
+  it("splits plain and modifier row clicks when the platform has no tab adapter", async () => {
+    const windowOpen = vi.fn();
+    vi.stubGlobal("open", windowOpen);
+    navigationAdapter = makeAdapter(false);
+    serverIssues = [makeIssue("a", "Alpha task", "todo")];
+
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <Harness
+          childProgressMap={new Map()}
+          surfaceKey={`test-row-modifier-web-${Math.floor(Math.random() * 1e9)}`}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByText("MUL-a")).closest("tr")!;
+
+    fireEvent.click(row);
+    expect(navigationMocks.push).toHaveBeenCalledWith("/test/issues/a");
+    expect(windowOpen).not.toHaveBeenCalled();
+
+    navigationMocks.push.mockClear();
+    fireEvent.click(row, { metaKey: true });
+    expect(windowOpen).toHaveBeenCalledWith(
+      "https://app.example/test/issues/a",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(navigationMocks.push).not.toHaveBeenCalled();
+  });
+
+  // Inline editors sit inside the row, so every gesture they own has to be
+  // stopped on BOTH click and auxclick or the new middle-click handler would
+  // navigate out from under an open picker.
+  it("leaves inline editing and selection alone", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    serverIssues = [makeIssue("a", "Alpha task", "todo")];
+
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <Harness
+          childProgressMap={new Map()}
+          surfaceKey={`test-row-editors-${Math.floor(Math.random() * 1e9)}`}
+        />
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByText("MUL-a")).closest("tr")!;
+
+    // Status picker: opens, and neither its click nor a middle click on it
+    // navigates.
+    const statusTrigger = within(row).getByRole("button", { name: /Todo/ });
+    await user.click(statusTrigger);
+    expect(screen.getByRole("button", { name: /Backlog/ })).toBeTruthy();
+
+    act(() => {
+      statusTrigger.dispatchEvent(
+        new MouseEvent("auxclick", {
+          bubbles: true,
+          button: 1,
+          cancelable: true,
+        }),
+      );
+    });
+
+    // Selection checkbox: toggles without navigating.
+    await user.click(within(row).getByRole("checkbox"));
+
+    expect(navigationMocks.push).not.toHaveBeenCalled();
+    expect(navigationMocks.openInNewTab).not.toHaveBeenCalled();
   });
 });
 

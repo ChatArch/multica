@@ -44,8 +44,14 @@ interface DataTableProps<TData> extends React.ComponentProps<"div"> {
   // descendant — buttons / dropdowns inside cells should call
   // event.stopPropagation in their own handlers). Used to navigate to
   // a detail page on row click without nesting an <a> around <tr>,
-  // which is invalid HTML.
-  onRowClick?: (row: Row<TData>) => void;
+  // which is invalid HTML. The event is handed over so the caller can read
+  // modifier keys, which is how a plain <tr> gets the cmd/ctrl-click
+  // semantics a real anchor would have given it for free.
+  onRowClick?: (row: Row<TData>, event: React.MouseEvent) => void;
+  // Middle click, which never raises a `click` event and so never reaches
+  // onRowClick. Kept a separate prop for the same reason useRowLink splits
+  // its two handlers: only this one needs the button check and preventDefault.
+  onRowAuxClick?: (row: Row<TData>, event: React.MouseEvent) => void;
   // Optional escape hatch for semantic rows such as collapsible group
   // headers. Return null/undefined to use the standard data row renderer.
   renderRow?: (row: Row<TData>) => React.ReactNode;
@@ -81,6 +87,7 @@ export function DataTable<TData>({
   actionBar,
   emptyMessage = "No results.",
   onRowClick,
+  onRowAuxClick,
   renderRow,
   footer,
   virtualizeRows = false,
@@ -370,6 +377,7 @@ export function DataTable<TData>({
     rows,
     emptyMessage,
     onRowClick,
+    onRowAuxClick,
     renderRow,
     hasExplicitSize,
     measureRow: rowVirtualizer.measureElement,
@@ -572,7 +580,8 @@ interface DataTableBodyProps<TData> {
   table: TanstackTable<TData>;
   rows: Row<TData>[];
   emptyMessage: React.ReactNode;
-  onRowClick?: (row: Row<TData>) => void;
+  onRowClick?: (row: Row<TData>, event: React.MouseEvent) => void;
+  onRowAuxClick?: (row: Row<TData>, event: React.MouseEvent) => void;
   renderRow?: (row: Row<TData>) => React.ReactNode;
   hasExplicitSize: (columnId: string) => boolean;
   // The virtualizer's own measuring ref; rows report their height through it.
@@ -588,6 +597,7 @@ function DataTableBody<TData>({
   rows,
   emptyMessage,
   onRowClick,
+  onRowAuxClick,
   renderRow,
   hasExplicitSize,
   measureRow,
@@ -620,7 +630,10 @@ function DataTableBody<TData>({
         key={row.id}
         {...measured}
         data-state={row.getIsSelected() && "selected"}
-        onClick={onRowClick ? () => onRowClick(row) : undefined}
+        onClick={onRowClick ? (event) => onRowClick(row, event) : undefined}
+        onAuxClick={
+          onRowAuxClick ? (event) => onRowAuxClick(row, event) : undefined
+        }
         // `group` lets pinned cells track row hover via group-hover (their bg
         // is in className, not on the row, so they stay opaque enough to cover
         // content scrolling beneath them).

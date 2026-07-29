@@ -114,7 +114,7 @@ import {
 } from "@tanstack/react-query";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { LabelChip } from "../../labels/label-chip";
-import { useNavigation } from "../../navigation";
+import { useNavigation, useRowLink } from "../../navigation";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { useT } from "../../i18n";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
@@ -284,9 +284,13 @@ const SORTABLE_COLUMNS: Partial<Record<TableSystemColumnKey, SortField>> = {
   updated_at: "updated_at",
 };
 
-function stopRowNavigation(event: React.SyntheticEvent) {
-  event.stopPropagation();
-}
+// Row navigation listens on click AND auxclick (middle click opens a
+// background tab), so a cell that owns its own gesture has to stop both —
+// otherwise middle-clicking an inline editor would navigate out from under it.
+const stopRowNavigation = {
+  onClick: (event: React.SyntheticEvent) => event.stopPropagation(),
+  onAuxClick: (event: React.SyntheticEvent) => event.stopPropagation(),
+};
 
 function SelectAllCheckbox({
   issueIds,
@@ -678,24 +682,29 @@ export function InlineTitle({
     else setDraft(row.issue.title);
   };
 
+  // Swallow the gesture in the capture phase — before it can reach the row
+  // (navigation) or the title's own open handler. A gesture that began while
+  // NOT editing passes through untouched, so clicking dead space still opens
+  // the issue. Middle click goes through the same guard: it raises `auxclick`
+  // rather than `click`, and row navigation now listens on both.
+  const swallowGestureWhileEditing = (event: React.SyntheticEvent) => {
+    if (editing || gestureStartedWhileEditingRef.current) {
+      event.stopPropagation();
+    }
+    gestureStartedWhileEditingRef.current = false;
+  };
+
   return (
     <div
       className="group/title relative flex min-w-0 items-center gap-1.5"
       style={{ paddingLeft: row.depth * 18 }}
       // Record whether the gesture began while editing (mousedown fires before
-      // the blur that commits), then swallow that click in the capture phase —
-      // before it can reach the row (navigation) or the title's open handler.
-      // A gesture that began while NOT editing passes through untouched, so
-      // clicking dead space still opens the issue.
+      // the blur that commits).
       onMouseDownCapture={() => {
         gestureStartedWhileEditingRef.current = editingRef.current;
       }}
-      onClickCapture={(event) => {
-        if (editing || gestureStartedWhileEditingRef.current) {
-          event.stopPropagation();
-        }
-        gestureStartedWhileEditingRef.current = false;
-      }}
+      onClickCapture={swallowGestureWhileEditing}
+      onAuxClickCapture={swallowGestureWhileEditing}
     >
       {row.hasChildren ? (
         <button
@@ -808,7 +817,7 @@ function LazyLabelCell({
   const labels = issue.labels ?? [];
   if (open) {
     return (
-      <div onClick={stopRowNavigation}>
+      <div {...stopRowNavigation}>
         <LabelPicker
           issueId={issue.id}
           open
@@ -1109,7 +1118,7 @@ function IssueTableBodyCell({
     const property = meta.propertyById.get(propertyId);
     if (!property) return null;
     return (
-      <div onClick={stopRowNavigation}>
+      <div {...stopRowNavigation}>
         <CustomPropertyValueEditor
           issue={issue}
           property={property}
@@ -1141,7 +1150,7 @@ function IssueTableBodyCell({
       );
     case "status":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <StatusPicker
             status={issue.status}
             onUpdate={onUpdate}
@@ -1153,7 +1162,7 @@ function IssueTableBodyCell({
       );
     case "priority":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <PriorityPicker
             priority={issue.priority}
             onUpdate={onUpdate}
@@ -1165,7 +1174,7 @@ function IssueTableBodyCell({
       );
     case "assignee":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <AssigneePicker
             assigneeType={issue.assignee_type}
             assigneeId={issue.assignee_id}
@@ -1186,7 +1195,7 @@ function IssueTableBodyCell({
       );
     case "project":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <ProjectPicker
             projectId={issue.project_id}
             onUpdate={onUpdate}
@@ -1203,7 +1212,7 @@ function IssueTableBodyCell({
       );
     case "start_date":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <StartDatePicker
             startDate={issue.start_date}
             onUpdate={onUpdate}
@@ -1214,7 +1223,7 @@ function IssueTableBodyCell({
       );
     case "due_date":
       return (
-        <div onClick={stopRowNavigation}>
+        <div {...stopRowNavigation}>
           <DueDatePicker
             dueDate={issue.due_date}
             onUpdate={onUpdate}
@@ -1276,6 +1285,13 @@ export function TableView({
   const wsId = useWorkspaceId();
   const queryClient = useQueryClient();
   const navigation = useNavigation();
+  // Same whole-row click contract the projects / agents / skills lists use:
+  // a plain click navigates in place, cmd/ctrl and middle click open a
+  // background tab. A table row is navigation — the user is picking what to
+  // read out of a list — so it opens in place like List / Board / Gantt do,
+  // and like them it is a <tr>, never an <a>, so the modifier semantics an
+  // anchor gets for free have to be wired here (MUL-5459).
+  const rowLink = useRowLink();
   const paths = useWorkspacePaths();
   const actions = useIssueSurfaceActionsOptional();
   const selection = useIssueSurfaceSelection();
@@ -2083,6 +2099,10 @@ export function TableView({
     [actions],
   );
 
+  // Explicit "open this issue" CTA — the title's own affordance, not the row.
+  // Asking for it means asking to move into that context, so it takes the
+  // foreground tab, matching the actions menu's "Open in new tab" (MUL-5455).
+  // Whole-row clicks are plain navigation and go through rowLink below.
   const openIssue = useCallback(
     (issue: Issue) => {
       const path = paths.issueDetail(issue.id);
@@ -2412,10 +2432,15 @@ export function TableView({
             table={table}
             virtualizeRows
             emptyMessage={t(($) => $.table.empty)}
-            onRowClick={(row) => {
-              if (row.original.kind === "issue") {
-                openIssue(row.original.issue);
-              }
+            onRowClick={(row, event) => {
+              if (row.original.kind !== "issue") return;
+              rowLink(paths.issueDetail(row.original.issue.id)).onClick(event);
+            }}
+            onRowAuxClick={(row, event) => {
+              if (row.original.kind !== "issue") return;
+              rowLink(
+                paths.issueDetail(row.original.issue.id),
+              ).onAuxClick(event);
             }}
             renderRow={(row) => {
               if (row.original.kind === "group") {
