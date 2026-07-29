@@ -759,6 +759,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// unchanged — this one is purely additive.
 	r.Get("/api/attachments/{id}/signed-download", h.DownloadAttachmentWithCapability)
 
+	// Avatar serving. Public for the same reason as the capability download
+	// above: the auth cookie is SameSite=Strict, so an auth-gated URL cannot
+	// be a native <img src> from Desktop / mobile webview or a split-origin
+	// self-hosted web app. The HMAC signature in the path is the credential.
+	// It covers the storage key, only image keys resolve, and the object must
+	// be avatar-class — see server/internal/handler/avatar.go (MUL-5393 /
+	// #6024).
+	r.Get("/api/avatars/{sig}/*", h.ServeAvatar)
+
 	// Auth (public) — per-IP rate limiting.
 	if rdb == nil {
 		slog.Warn("rate limiting disabled: REDIS_URL not configured")

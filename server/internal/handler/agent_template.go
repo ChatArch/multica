@@ -456,7 +456,7 @@ func (h *Handler) CreateAgentFromTemplate(w http.ResponseWriter, r *http.Request
 	if req.Instructions != nil {
 		instructions = *req.Instructions
 	}
-	avatarURL := newAgentAvatar(req.AvatarURL)
+	avatarURL := h.newAgentAvatar(req.AvatarURL)
 
 	agent, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:        wsUUID,
@@ -585,7 +585,7 @@ func (h *Handler) CreateAgentFromTemplate(w http.ResponseWriter, r *http.Request
 		agent, _ = h.Queries.GetAgent(r.Context(), agent.ID)
 	}
 
-	resp := agentToResponse(agent)
+	resp := h.agentToResponse(agent)
 	// Templates attach skills via AddAgentSkill above, so the freshly built
 	// AgentResponse must reload them — otherwise the create response (and
 	// the agent:created broadcast) would tell clients the agent has no

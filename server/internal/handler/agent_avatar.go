@@ -24,9 +24,9 @@ func randomAgentEmojiAvatar() string {
 	return agentEmojiAvatarPrefix + agentEmojiAvatars[index.Int64()]
 }
 
-func newAgentAvatar(avatarURL *string) pgtype.Text {
+func (h *Handler) newAgentAvatar(avatarURL *string) pgtype.Text {
 	if avatarURL != nil && strings.TrimSpace(*avatarURL) != "" {
-		return pgtype.Text{String: *avatarURL, Valid: true}
+		return pgtype.Text{String: h.normalizeStoredAvatarURL(*avatarURL), Valid: true}
 	}
 	return pgtype.Text{String: randomAgentEmojiAvatar(), Valid: true}
 }

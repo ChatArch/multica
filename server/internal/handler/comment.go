@@ -1117,11 +1117,11 @@ func commentAgentTriggerReason(trigger commentAgentTrigger) string {
 	}
 }
 
-func commentAgentTriggerToResponse(trigger commentAgentTrigger) CommentTriggerAgentResponse {
+func (h *Handler) commentAgentTriggerToResponse(trigger commentAgentTrigger) CommentTriggerAgentResponse {
 	return CommentTriggerAgentResponse{
 		ID:        uuidToString(trigger.Agent.ID),
 		Name:      trigger.Agent.Name,
-		AvatarURL: textToPtr(trigger.Agent.AvatarUrl),
+		AvatarURL: h.resolveAvatarURLPtr(textToPtr(trigger.Agent.AvatarUrl)),
 		Source:    string(trigger.Source),
 		Reason:    commentAgentTriggerReason(trigger),
 	}
@@ -1210,7 +1210,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		Blocked: commentBlockedTargetOutcomes(targets),
 	}
 	for _, trigger := range triggers {
-		resp.Agents = append(resp.Agents, commentAgentTriggerToResponse(trigger))
+		resp.Agents = append(resp.Agents, h.commentAgentTriggerToResponse(trigger))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
