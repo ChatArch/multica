@@ -1727,7 +1727,7 @@ export function StudioFooter({
 }) {
   const { t } = useT("agents");
   return (
-    <div className="sticky bottom-0 mt-8 flex items-center justify-between gap-3 border-t bg-background/95 px-5 py-3 backdrop-blur">
+    <div className="pe-chat-launcher sticky bottom-0 mt-8 flex items-center justify-between gap-3 border-t bg-background/95 py-3 pl-5 backdrop-blur">
       {error ? (
         <p
           role="alert"

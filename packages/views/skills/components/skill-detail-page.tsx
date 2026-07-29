@@ -1094,7 +1094,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         <div
           role="status"
           aria-live="polite"
-          className="flex shrink-0 flex-wrap items-center gap-2 border-t bg-muted/30 px-4 py-2 sm:px-6"
+          className="pe-chat-launcher flex shrink-0 flex-wrap items-center gap-2 border-t bg-muted/30 py-2 pl-4 sm:pl-6"
         >
           {isDirty ? (
             <>
