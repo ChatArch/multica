@@ -67,6 +67,7 @@ import {
   TableCell,
   TableRow,
 } from "@multica/ui/components/ui/table";
+import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -137,8 +138,12 @@ import {
   type IssueTableDisplayRow,
 } from "./table-view-model";
 import type { ChildProgress } from "./list-row";
-import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
+import { ListLoadMoreFooter } from "./list-load-more-footer";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+
+// Enough placeholder rows to cover a typical viewport; the virtualizer only
+// mounts what fits, so overshooting costs nothing.
+const SKELETON_ROW_COUNT = 12;
 
 const SELECT_COLUMN_ID = "__select";
 const ADD_COLUMN_ID = "__add";
@@ -1072,6 +1077,12 @@ function IssueTableBodyCell({
     meta.editingCellKey,
     meta.setEditingCellKey,
   );
+  // Placeholder rows go through the ordinary cell renderer so they inherit the
+  // real column widths, pinning and borders — the grid is already correct
+  // before any data arrives, so the rows swap in without shifting anything.
+  if (row.original.kind === "skeleton") {
+    return <Skeleton className="h-3.5 w-full" />;
+  }
   if (row.original.kind !== "issue") return null;
   const issueRow = row.original;
   const issue = issueRow.issue;
@@ -1772,9 +1783,8 @@ export function TableView({
         result.push({
           kind: "load_more",
           key: `${registered ? "loading" : "activate"}:${key}`,
-          label: t(($) => $.table.loading_branch),
-          loading: registered,
-          autoLoad: !registered,
+          state: registered ? "loading" : "has_more",
+          total: 0,
           onLoad: registered
             ? undefined
             : () => activateServerBranch(groupKey, parentId, ancestorIds),
@@ -1785,8 +1795,8 @@ export function TableView({
         result.push({
           kind: "load_more",
           key: `loading:${key}`,
-          label: t(($) => $.table.loading_branch),
-          loading: true,
+          state: "loading",
+          total: 0,
         });
       }
       for (const row of data.rows) {
@@ -1815,8 +1825,8 @@ export function TableView({
         result.push({
           kind: "load_more",
           key: `retry:${key}`,
-          label: t(($) => $.table.load_more_failed_retry),
-          loading: false,
+          state: "error",
+          total: data.total,
           onLoad: () => retryServerBranch(key),
         });
       } else if (data.nextCursor) {
@@ -1824,10 +1834,19 @@ export function TableView({
         result.push({
           kind: "load_more",
           key: `more:${key}:${nextCursor}`,
-          label: t(($) => $.table.load_more),
-          loading: data.loading,
-          autoLoad: true,
+          state: data.loading ? "loading" : "has_more",
+          total: data.total,
           onLoad: () => loadNextServerBranchPage(key, nextCursor),
+        });
+      } else if (data.rows.length > 0) {
+        // Reaching the end is only worth marking on a branch that paginated;
+        // the footer applies that rule, so the row is pushed unconditionally
+        // and carries the total for it to judge by.
+        result.push({
+          kind: "load_more",
+          key: `end:${key}`,
+          state: "end",
+          total: data.total,
         });
       }
     };
@@ -1855,27 +1874,40 @@ export function TableView({
       result.push({
         kind: "load_more",
         key: "loading:groups",
-        label: t(($) => $.table.loading_branch),
-        loading: true,
+        state: "loading",
+        total: 0,
       });
     } else if (usesServerGrouping && serverGroupsError) {
       result.push({
         kind: "load_more",
         key: "retry:groups",
-        label: t(($) => $.table.load_failed_retry),
-        loading: false,
+        state: "error",
+        total: 0,
         onLoad: () => void refetchServerGroups(),
       });
     } else if (usesServerGrouping && hasNextServerGroupPage) {
       result.push({
         kind: "load_more",
         key: "more:groups",
-        label: t(($) => $.table.load_more),
-        loading: fetchingNextServerGroupPage,
-        autoLoad: true,
+        state: fetchingNextServerGroupPage ? "loading" : "has_more",
+        total: 0,
         onLoad: () => void fetchNextServerGroupPage(),
       });
     }
+
+    // Nothing has landed yet and something is still in flight: show the grid
+    // filled with placeholders instead of one "Loading…" line, which reads as
+    // an empty table more than a loading one.
+    const isColdLoad =
+      !result.some((row) => row.kind === "issue") &&
+      result.some((row) => row.kind === "load_more" && row.state === "loading");
+    if (isColdLoad) {
+      return Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => ({
+        kind: "skeleton" as const,
+        key: `skeleton:${index}`,
+      }));
+    }
+
     return result;
   }, [
     collapsedGroupSet,
@@ -2391,32 +2423,27 @@ export function TableView({
                   <TableRow className="hover:bg-transparent">
                     <TableCell
                       colSpan={table.getVisibleLeafColumns().length}
-                      className="relative h-9 px-4 py-1"
+                      className="p-0"
                     >
-                      {loadMoreRow.autoLoad &&
-                        loadMoreRow.onLoad &&
-                        !loadMoreRow.loading && (
-                        <InfiniteScrollSentinel
-                          onVisible={loadMoreRow.onLoad}
-                          loading={false}
-                          rootMargin="240px"
-                          className="absolute inset-y-0 left-0 w-px"
+                      {/* The same footer Board / List / Swimlane end their
+                        * columns with. Hand-rolling it here had left the table
+                        * as the one surface where a failed page read as muted
+                        * body text rather than an error, and where reaching the
+                        * end of a paginated branch said nothing at all. The row
+                        * only supplies the cell it lives in. */}
+                      <div className="sticky left-0 w-full">
+                        <ListLoadMoreFooter
+                          hasMore={
+                            loadMoreRow.state === "loading" ||
+                            loadMoreRow.state === "has_more"
+                          }
+                          isLoading={loadMoreRow.state === "loading"}
+                          total={loadMoreRow.total}
+                          onLoadMore={() => loadMoreRow.onLoad?.()}
+                          isError={loadMoreRow.state === "error"}
+                          onRetry={loadMoreRow.onLoad}
                         />
-                      )}
-                      <button
-                        type="button"
-                        disabled={loadMoreRow.loading || !loadMoreRow.onLoad}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          loadMoreRow.onLoad?.();
-                        }}
-                        className="sticky left-4 flex items-center gap-2 text-xs text-muted-foreground enabled:hover:text-foreground disabled:cursor-default"
-                      >
-                        {loadMoreRow.loading && (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        )}
-                        {loadMoreRow.label}
-                      </button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
