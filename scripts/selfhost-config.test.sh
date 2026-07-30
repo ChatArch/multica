@@ -225,7 +225,7 @@ chmod +x "$stub_dir/docker" "$stub_dir/curl"
 recipe_dir="$tmp_dir/recipe"
 mkdir -p "$recipe_dir/scripts"
 cp Makefile .env.example docker-compose.selfhost.yml docker-compose.selfhost.build.yml "$recipe_dir/"
-cp scripts/selfhost-wait.sh scripts/selfhost-preflight.sh "$recipe_dir/scripts/"
+cp scripts/selfhost-wait.sh "$recipe_dir/scripts/"
 
 record="$tmp_dir/published"
 curl_log="$tmp_dir/probed"
@@ -299,11 +299,9 @@ run_recipe selfhost '' 'BACKEND_PORT=9300' '' >/dev/null
 require_consistent 'BACKEND_PORT from the environment' 9300
 
 # The env file stays authoritative for values it does set, so an environment
-# PORT is ignored — but it must be reported rather than silently dropped.
-env_ignored_output="$(run_recipe selfhost '' 'PORT=9500' '')"
+# PORT loses to it — and the probe must follow whatever Compose then published.
+run_recipe selfhost '' 'PORT=9500' '' >/dev/null
 require_consistent 'PORT from the environment is overridden by .env' 8080
-require_config "$env_ignored_output" 'resolves to 8080 from PORT (.env)'
-require_config "$env_ignored_output" 'PORT=9500 (environment)'
 
 # Defaults stay 8080/3000.
 run_recipe selfhost '' '' '' >/dev/null
@@ -317,144 +315,59 @@ fi
 run_recipe selfhost-build 's/^PORT=8080/PORT=9400/' '' '' >/dev/null
 require_consistent 'selfhost-build with PORT edited' 9400
 
-# ---------------------------------------------------------------------------
-# The preflight must name exactly one winner
-#
-# Only one input along BACKEND_PORT -> API_PORT -> SERVER_PORT -> PORT can take
-# effect, so reporting must resolve the winner first. Claiming several aliases
-# each "win" is wrong, and staying silent because a *different* alias took
-# precedence hides exactly the configuration the user needs to know about.
-# ---------------------------------------------------------------------------
-
-require_absent() {
-  local label=$1 output=$2 unexpected=$3
-
-  if grep -Fq "$unexpected" <<<"$output"; then
-    echo "[$label] output must not contain:"
-    echo "  $unexpected"
-    echo "Observed:"
-    echo "$output"
-    exit 1
-  fi
-}
-
-# Every alias set at once: only BACKEND_PORT can win, and the rest must be
-# listed as unused rather than each claiming to be the winner.
-all_aliases_output="$(
-  run_recipe selfhost \
-    's/^PORT=8080/PORT=9000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/;s/^# API_PORT=8080/API_PORT=7000/;s/^# SERVER_PORT=8080/SERVER_PORT=6000/' \
-    '' ''
-)"
+# Every alias at once: BACKEND_PORT wins, and the probe follows it.
+run_recipe selfhost \
+  's/^PORT=8080/PORT=9000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/;s/^# API_PORT=8080/API_PORT=7000/;s/^# SERVER_PORT=8080/SERVER_PORT=6000/' \
+  '' '' >/dev/null
 require_consistent 'every alias set at once' 8000
-require_config "$all_aliases_output" 'resolves to 8000 from BACKEND_PORT (.env)'
-require_config "$all_aliases_output" 'API_PORT=7000 (.env)'
-require_config "$all_aliases_output" 'SERVER_PORT=6000 (.env)'
-require_config "$all_aliases_output" 'PORT=9000 (.env)'
-require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 7000'
-require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 6000'
-require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 9000'
-if [ "$(grep -c 'the backend host port resolves to' <<<"$all_aliases_output")" != "1" ]; then
-  echo "the preflight must name exactly one winning input:"
-  echo "$all_aliases_output"
-  exit 1
-fi
 
-# Cross-alias shadowing: a higher-priority alias in the env file silently beat a
-# lower-priority alias from the shell, because only same-named variables were
-# compared. It must be reported.
-cross_alias_output="$(
-  run_recipe selfhost \
-    's/^PORT=8080/PORT=8000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/' \
-    'API_PORT=7000' ''
-)"
+# A higher-priority alias in the env file beats a lower-priority one from the
+# shell.
+run_recipe selfhost \
+  's/^PORT=8080/PORT=8000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/' \
+  'API_PORT=7000' '' >/dev/null
 require_consistent 'env-file BACKEND_PORT over shell API_PORT' 8000
-require_config "$cross_alias_output" 'resolves to 8000 from BACKEND_PORT (.env)'
-require_config "$cross_alias_output" 'API_PORT=7000 (environment)'
-
-# A redundant alias that carries the winning value changes nothing the user can
-# see, so it must not be reported.
-redundant_output="$(
-  run_recipe selfhost \
-    's/^PORT=8080/PORT=9000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=9000/' '' ''
-)"
-require_consistent 'redundant alias with the same value' 9000
-require_absent 'redundant alias with the same value' "$redundant_output" 'Set but unused'
-
-preflight_output="$(run_recipe selfhost '' 'FRONTEND_PORT=3100' '')"
-require_config "$preflight_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
 
 # ---------------------------------------------------------------------------
-# Explicit empty assignments
+# Make command-line variables
 #
-# `BACKEND_PORT=` in the env file is a distinct input from an absent one: make
-# lets it override the same variable from the environment, and it drops out of
-# the alias chain instead of setting a port. Reading existence off the value made
-# the preflight name the shadowed environment value as the winner — the opposite
-# of what actually started up.
+# A command-line assignment outranks both the env file and the environment, and
+# it is a third origin that no re-derivation of the port got right. Since the
+# recipe now asks Compose, the probe follows whatever actually got published.
 # ---------------------------------------------------------------------------
 
-# The winner the preflight reports, so it can be checked against reality.
-reported_backend_winner() {
-  local output=$1 reported
-  reported=$(sed -n 's/.*backend host port resolves to \([0-9][0-9]*\) .*/\1/p' <<<"$output" | head -n 1)
-  if [ -z "$reported" ]; then
-    reported=$(sed -n 's/.*backend host port resolves to the \([0-9][0-9]*\) default.*/\1/p' <<<"$output" | head -n 1)
-  fi
-  printf '%s' "$reported"
-}
+# Command-line high-priority alias over a low-priority alias in the env file.
+run_recipe selfhost 's/^# API_PORT=8080/API_PORT=7000/' '' 'BACKEND_PORT=9000' >/dev/null
+require_consistent 'command-line BACKEND_PORT over env-file API_PORT' 9000
 
-require_reported_winner() {
-  local label=$1 output=$2 expected=$3 reported
-  reported=$(reported_backend_winner "$output")
+# Env-file high-priority alias over a low-priority alias on the command line.
+run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=9100/' '' 'SERVER_PORT=6000' >/dev/null
+require_consistent 'env-file BACKEND_PORT over command-line SERVER_PORT' 9100
 
-  if [ "$reported" != "$expected" ]; then
-    echo "[$label] the preflight reported a different winner than the stack uses"
-    echo "  reported:  ${reported:-<none>}"
-    echo "  actual:    $expected"
-    echo "Observed:"
-    echo "$output"
-    exit 1
-  fi
-}
+# An explicit empty value on the command line drops out of the chain.
+run_recipe selfhost '' '' 'BACKEND_PORT=' >/dev/null
+require_consistent 'command-line BACKEND_PORT= falls through to PORT' 8080
 
-# An empty alias in the env file shadows the environment and does not win, so the
-# chain must fall through to PORT — and the shadowed input must be listed.
-empty_alias_output="$(
-  run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'BACKEND_PORT=9000' ''
-)"
+# ---------------------------------------------------------------------------
+# Explicit empty assignments in the env file
+#
+# `BACKEND_PORT=` is a distinct input from an absent one: make lets it override
+# the same variable from the environment, and it drops out of the alias chain
+# instead of setting a port. Compose treats the exported empty value the same
+# way, so the two agree.
+# ---------------------------------------------------------------------------
+
+run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'BACKEND_PORT=9000' '' >/dev/null
 require_consistent 'empty BACKEND_PORT in .env over shell BACKEND_PORT' 8080
-require_reported_winner 'empty BACKEND_PORT in .env' "$empty_alias_output" 8080
-require_config "$empty_alias_output" 'resolves to 8080 from PORT (.env)'
-require_config "$empty_alias_output" 'BACKEND_PORT=9000 (environment)'
-require_absent 'empty BACKEND_PORT in .env' "$empty_alias_output" 'resolves to 9000'
 
-# Emptying every link of the chain falls back to the documented default, and the
-# shadowed environment value is still reported.
-all_empty_output="$(
-  run_recipe selfhost 's/^PORT=8080/PORT=/;s/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'PORT=9000' ''
-)"
+run_recipe selfhost 's/^PORT=8080/PORT=/;s/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'PORT=9000' '' >/dev/null
 require_consistent 'every chain variable emptied in .env' 8080
-require_reported_winner 'every chain variable emptied in .env' "$all_empty_output" 8080
-require_config "$all_empty_output" 'resolves to the 8080 default'
-require_config "$all_empty_output" 'PORT=9000 (environment)'
 
-# Same for the frontend, which has no aliases: an empty assignment shadows the
-# environment and Compose falls back to 3000.
-empty_frontend_output="$(
-  run_recipe selfhost 's/^FRONTEND_PORT=3000/FRONTEND_PORT=/' 'FRONTEND_PORT=3100' ''
-)"
+run_recipe selfhost 's/^FRONTEND_PORT=3000/FRONTEND_PORT=/' 'FRONTEND_PORT=3100' '' >/dev/null
 if [ "$(published_port frontend)" != "3000" ]; then
   echo "an empty FRONTEND_PORT in .env must fall back to 3000, got $(published_port frontend)"
   exit 1
 fi
-require_config "$empty_frontend_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
-require_config "$empty_frontend_output" 'resolves to the 3000 default'
-
-# A clean default run must stay quiet.
-quiet_output="$(run_recipe selfhost '' '' '')"
-for noise in 'Set but unused' 'is ignored' 'resolves to'; do
-  require_absent 'default configuration' "$quiet_output" "$noise"
-done
 
 # The recipes must delegate instead of re-deriving the port.
 for expected_call in 'bash scripts/selfhost-wait.sh official' 'bash scripts/selfhost-wait.sh build'; do
@@ -470,47 +383,66 @@ if grep -n 'localhost:$${PORT' Makefile; then
 fi
 
 # ---------------------------------------------------------------------------
-# The backend port alias chain must be identical on every boundary
+# The backend port alias chain, and Compose's own source precedence
 #
 #   BACKEND_PORT -> API_PORT -> SERVER_PORT -> PORT -> 8080
 #
-# Exercised through the direct Compose path, because Makefile normalises all
+# Exercised through the direct Compose path, because the Makefile normalises all
 # four into PORT before a recipe ever runs — so a recipe-only test cannot see a
-# gap here. scripts/install.sh matters just as much: it derives its health-check
-# port from this chain and then runs docker-compose.selfhost.yml, so if the two
-# disagree the installer probes a port Compose never published. That is the
-# original #6145 defect on the installer path.
+# gap here.
+#
+# This is also where Compose's precedence is pinned against the real binary: the
+# calling environment outranks the env file. Both installers relied on their own
+# .env-only derivation and so probed a port Compose never published (#6145);
+# they now ask `docker compose port` instead, which is asserted end to end in
+# scripts/install.test.sh and scripts/install.ps1.test.ps1. Those suites run on
+# agents without a Docker CLI, so the ground truth for precedence lives here.
 # ---------------------------------------------------------------------------
 
-# The installer's resolver, extracted rather than sourced: install.sh ends with
-# an unguarded `main "$@"`.
-installer_port_lib="$tmp_dir/installer-ports.sh"
-sed -n '/^env_file_value()/,/^selfhost_frontend_port() {$/p' scripts/install.sh >"$installer_port_lib"
-printf '%s\n' '  env_file_value "${1:-.env}" "FRONTEND_PORT" "3000"' '}' >>"$installer_port_lib"
-# shellcheck disable=SC1090
-. "$installer_port_lib"
+# Neither installer may reconstruct the port from the env file again.
+for installer in scripts/install.sh scripts/install.ps1; do
+  if grep -nE '(selfhost_backend_port|selfhost_frontend_port|Get-SelfHostBackendPort|Get-SelfHostFrontendPort)' "$installer"; then
+    echo "$installer must not re-derive host ports from .env."
+    echo "Read the published port from Compose, as scripts/selfhost-wait.sh does."
+    exit 1
+  fi
+done
+for installer_call in \
+  'compose_published_port backend 8080' \
+  'compose_published_port frontend 3000'; do
+  if ! grep -Fq "$installer_call" scripts/install.sh; then
+    echo "scripts/install.sh must read the published port from Compose: $installer_call"
+    exit 1
+  fi
+done
+for installer_call in \
+  'Get-ComposePublishedPort -Service "backend" -ContainerPort 8080' \
+  'Get-ComposePublishedPort -Service "frontend" -ContainerPort 3000'; do
+  if ! grep -Fq "$installer_call" scripts/install.ps1; then
+    echo "scripts/install.ps1 must read the published port from Compose: $installer_call"
+    exit 1
+  fi
+done
 
-if [ "$(selfhost_backend_port /dev/null)" != "8080" ]; then
-  echo "failed to extract the installer port resolver from scripts/install.sh"
-  exit 1
-fi
-
-compose_published_backend_port() {
-  docker compose --env-file "$1" -f docker-compose.selfhost.yml config --format json |
+compose_published_ports() {
+  local env_file=$1
+  shift
+  env "$@" docker compose --env-file "$env_file" -f docker-compose.selfhost.yml config --format json |
     node -e '
 let raw = "";
 process.stdin.on("data", (chunk) => (raw += chunk));
 process.stdin.on("end", () => {
   const config = JSON.parse(raw);
-  console.log(config.services.backend.ports[0].published);
+  console.log(config.services.backend.ports[0].published + " " + config.services.frontend.ports[0].published);
 });
 '
 }
 
-# Each case: label, sed script applied to .env.example, expected host port.
-# .env.example ships PORT=8080 with every alias commented out.
-while IFS='|' read -r case_label case_mutation case_expected; do
+# Each case: label, sed applied to .env.example, ambient env, expected backend,
+# expected frontend. .env.example ships PORT=8080 with every alias commented out.
+while IFS='|' read -r case_label case_mutation case_ambient case_backend case_frontend; do
   [ -n "$case_label" ] || continue
+
   case_env="$tmp_dir/.env.alias"
   if [ -n "$case_mutation" ]; then
     sed "$case_mutation" .env.example >"$case_env"
@@ -518,33 +450,38 @@ while IFS='|' read -r case_label case_mutation case_expected; do
     cp .env.example "$case_env"
   fi
 
-  compose_port=$(compose_published_backend_port "$case_env")
-  installer_port=$(selfhost_backend_port "$case_env")
+  # Unset every port variable first so the agent's own environment cannot leak.
+  read -r observed_backend observed_frontend < <(
+    compose_published_ports "$case_env" \
+      -u PORT -u BACKEND_PORT -u API_PORT -u SERVER_PORT -u FRONTEND_PORT \
+      ${case_ambient:+"$case_ambient"}
+  )
 
-  if [ "$compose_port" != "$case_expected" ] || [ "$installer_port" != "$case_expected" ]; then
-    echo "[$case_label] backend port chain disagreement"
-    echo "  expected:            $case_expected"
-    echo "  compose published:   $compose_port"
-    echo "  installer resolved:  $installer_port"
-    echo "(scripts/install.sh health-checks its value against the port Compose"
-    echo " published, so these two must always agree.)"
+  if [ "$observed_backend" != "$case_backend" ] || [ "$observed_frontend" != "$case_frontend" ]; then
+    echo "[$case_label] Compose published an unexpected host port"
+    echo "  expected: backend=$case_backend frontend=$case_frontend"
+    echo "  observed: backend=$observed_backend frontend=$observed_frontend"
     exit 1
   fi
 done <<'CASES'
-defaults||8080
-PORT only|s/^PORT=8080/PORT=9100/|9100
-SERVER_PORT overrides PORT|s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9200
-API_PORT overrides SERVER_PORT|s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9300
-BACKEND_PORT overrides all|s/^# BACKEND_PORT=8080/BACKEND_PORT=9400/;s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9400
+defaults|||8080|3000
+PORT only|s/^PORT=8080/PORT=9100/||9100|3000
+SERVER_PORT overrides PORT|s/^# SERVER_PORT=8080/SERVER_PORT=9200/||9200|3000
+API_PORT overrides SERVER_PORT|s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/||9300|3000
+BACKEND_PORT overrides all|s/^# BACKEND_PORT=8080/BACKEND_PORT=9400/;s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/||9400|3000
+ambient PORT beats the env file|s/^PORT=8080/PORT=9100/|PORT=9500|9500|3000
+ambient BACKEND_PORT beats the env file|s/^PORT=8080/PORT=9100/|BACKEND_PORT=9600|9600|3000
+ambient API_PORT beats the env file|s/^PORT=8080/PORT=9100/|API_PORT=9700|9700|3000
+ambient SERVER_PORT beats the env file|s/^PORT=8080/PORT=9100/|SERVER_PORT=9800|9800|3000
+ambient FRONTEND_PORT beats the env file|s/^FRONTEND_PORT=3000/FRONTEND_PORT=3100/|FRONTEND_PORT=3200|8080|3200
 CASES
 
-# Every alias must also be reported when the env file shadows it.
+# An env-file alias beats the same alias from the environment, and the probe
+# follows whatever Compose published either way.
 for shadowed_alias in BACKEND_PORT API_PORT SERVER_PORT; do
-  alias_output="$(
-    run_recipe selfhost "s/^# ${shadowed_alias}=8080/${shadowed_alias}=8080/" \
-      "${shadowed_alias}=9600" ''
-  )"
-  require_config "$alias_output" "${shadowed_alias}=9600 (environment)"
+  run_recipe selfhost "s/^# ${shadowed_alias}=8080/${shadowed_alias}=9700/" \
+    "${shadowed_alias}=9600" '' >/dev/null
+  require_consistent "env-file ${shadowed_alias} over the same shell variable" 9700
 done
 
 echo "self-host env derivation ok"
