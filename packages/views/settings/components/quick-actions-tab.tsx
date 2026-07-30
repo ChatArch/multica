@@ -281,7 +281,7 @@ export function QuickActionsTab() {
             </div>
           ) : filtered.length === 0 ? (
             <div className="px-4 py-12 text-center">
-              <Zap className="mx-auto size-6 text-muted-foreground/60" />
+              <Zap className="mx-auto size-6 text-faint-foreground" />
               <p className="mt-3 text-body font-medium">
                 {query
                   ? t(($) => $.quick_actions.no_results)
