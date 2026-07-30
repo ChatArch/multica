@@ -231,6 +231,23 @@ func TestEnsureSkillFrontmatterKeepsPolicyKeysWhenSurgicalRewriteFails(t *testin
 	}
 }
 
+// lookupPath resolves a dotted key path through nested frontmatter mappings,
+// returning nil when any segment is missing.
+func lookupPath(fm map[string]any, path string) any {
+	var cur any = fm
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil
+		}
+	}
+	return cur
+}
+
 // Keeping the anchor alive is not enough: a document can express another
 // setting by *reusing* the name's value, and then renaming the anchored node
 // silently rewrites that setting too. Here `disable-model-invocation` is an
@@ -246,18 +263,24 @@ func TestEnsureSkillFrontmatterKeepsAliasedValuesWhenNameIsRenamed(t *testing.T)
 	cases := []struct {
 		name    string
 		content string
+		// alsoAliased names further keys whose resolved value must still be
+		// the anchor's original "true" — asserting the invariant on every
+		// alias, not only the one that happens to gate visibility.
+		alsoAliased []string
 	}{
 		{
 			name:    "alias carries the policy value",
 			content: "---\nname: &shared \"true\"\ndisable-model-invocation: *shared\ncustom-key: kept\n---\n\nbody\n",
 		},
 		{
-			name:    "alias nested inside another mapping",
-			content: "---\nname: &shared \"true\"\nmeta:\n  inner: *shared\ndisable-model-invocation: *shared\n---\n\nbody\n",
+			name:        "alias nested inside another mapping",
+			content:     "---\nname: &shared \"true\"\nmeta:\n  inner: *shared\ndisable-model-invocation: *shared\n---\n\nbody\n",
+			alsoAliased: []string{"meta.inner"},
 		},
 		{
-			name:    "two aliases of the same anchor",
-			content: "---\nname: &shared \"true\"\ndisable-model-invocation: *shared\nother: *shared\n---\n\nbody\n",
+			name:        "two aliases of the same anchor",
+			content:     "---\nname: &shared \"true\"\ndisable-model-invocation: *shared\nother: *shared\n---\n\nbody\n",
+			alsoAliased: []string{"other"},
 		},
 	}
 
@@ -287,8 +310,69 @@ func TestEnsureSkillFrontmatterKeepsAliasedValuesWhenNameIsRenamed(t *testing.T)
 			if _, stillAliased := fm["disable-model-invocation"]; !stillAliased {
 				t.Errorf("disable-model-invocation disappeared\noutput:\n%s", got)
 			}
+			// Every other alias of the same anchor must also hold its
+			// pre-rename value, not just the one gating visibility.
+			for _, path := range tc.alsoAliased {
+				if v := lookupPath(fm, path); v != "true" {
+					t.Errorf("aliased %s = %#v, want %q\noutput:\n%s", path, v, "true", got)
+				}
+			}
 			if strings.Contains(got, "*shared") || strings.Contains(got, "&shared") {
 				t.Errorf("anchor/alias survived instead of being materialized\noutput:\n%s", got)
+			}
+		})
+	}
+}
+
+// Whether a name exists is a question about the parsed document, not about how
+// the key happens to be spelled. A lexical scan only recognizes a bare `name:`
+// with a value on the same line, so a quoted key or an empty value read as
+// "nameless" and got a second `name` injected above them.
+//
+// The result is a duplicate mapping key, which strict loaders reject outright:
+// the skill does not merely carry the wrong name, it fails to load at all.
+func TestEnsureSkillFrontmatterRecognizesQuotedAndEmptyNameKeys(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "double quoted key",
+			content: "---\n\"name\": upstream\ndisable-model-invocation: true\ncustom-key: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "single quoted key",
+			content: "---\n'name': upstream\ndisable-model-invocation: true\ncustom-key: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "key present with no value",
+			content: "---\nname:\ndisable-model-invocation: true\ncustom-key: kept\n---\n\nbody\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parseFrontmatter(t, tc.content)
+
+			got := ensureSkillFrontmatter(tc.content, "my-slug", "")
+
+			// parseFrontmatter fails the test on a duplicate `name`, which is
+			// the exact symptom this guards.
+			fm := parseFrontmatter(t, got)
+			if name, _ := fm["name"].(string); name != "my-slug" {
+				t.Errorf("name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+			}
+			if fm["disable-model-invocation"] != true {
+				t.Errorf("disable-model-invocation = %#v, want true\noutput:\n%s", fm["disable-model-invocation"], got)
+			}
+			if custom, _ := fm["custom-key"].(string); custom != "kept" {
+				t.Errorf("custom-key = %#v, want %q\noutput:\n%s", fm["custom-key"], "kept", got)
+			}
+			if !skillDisablesModelInvocation(got) {
+				t.Errorf("written skill no longer reads as hidden:\n%s", got)
 			}
 		})
 	}

@@ -449,10 +449,14 @@ func ensureSkillFrontmatter(content, slug, description string) string {
 	if !ok {
 		return synthesizeFrontmatter(content, slug, description)
 	}
-	// Frontmatter exists and has a parseable name. If it's valid YAML, keep the
-	// block and force `name` to the slug.
-	if hasFrontmatterName(content[fmStart:]) {
-		if isFrontmatterValidYAML(content) {
+	if isFrontmatterValidYAML(content) {
+		// The parser, not the spelling, decides whether a name exists. A
+		// lexical scan only recognizes a bare `name:` with a value on the same
+		// line, so `"name": x` and a valueless `name:` read as nameless and
+		// earn an injected second `name` — a duplicate mapping key that strict
+		// loaders reject outright, leaving the skill unloadable rather than
+		// merely misnamed.
+		if frontmatterHasNameKey(content) {
 			if rewritten, verified := setFrontmatterName(content, fmStart, slug); verified {
 				return rewritten
 			}
@@ -466,21 +470,53 @@ func ensureSkillFrontmatter(content, slug, description string) string {
 			if rebuilt, ok := renameFrontmatterNameViaNode(content, slug); ok {
 				return rebuilt
 			}
+			_, body, _ := frontmatterParts(content)
+			return synthesizeFrontmatter(body, slug, description)
 		}
-		// Frontmatter has a name but the YAML is invalid (e.g. unquoted
-		// colon in the description). Strip and re-synthesize so runtimes
-		// like Codex don't hard-reject the whole skill at load time.
-		// frontmatterParts returns the full content as the body when it
-		// can't find a closing delimiter, so the malformed block is kept
-		// rather than silently dropped.
+		// No name key at all, confirmed by the parser rather than inferred.
+		// Inject one as the first key and keep the rest verbatim (including
+		// `description`, body, and any runtime-specific keys the import path
+		// preserved).
+		return content[:fmStart] + "name: " + slug + "\n" + content[fmStart:]
+	}
+
+	// Invalid YAML: there is no parse to consult, so fall back to the lexical
+	// scan. A block with a name is stripped and re-synthesized so runtimes like
+	// Codex don't hard-reject the whole skill at load time; frontmatterParts
+	// returns the full content as the body when it can't find a closing
+	// delimiter, so the malformed block is kept rather than silently dropped.
+	if hasFrontmatterName(content[fmStart:]) {
 		_, body, _ := frontmatterParts(content)
 		return synthesizeFrontmatter(body, slug, description)
 	}
-	// Frontmatter exists but lacks a parseable `name`. Inject one as the
-	// first key of the existing block and keep the rest verbatim (including
-	// `description`, body, and any runtime-specific keys the import path
-	// preserved).
 	return content[:fmStart] + "name: " + slug + "\n" + content[fmStart:]
+}
+
+// frontmatterHasNameKey reports whether content's frontmatter parses as a
+// mapping carrying a top-level `name` key, whatever its spelling or value.
+//
+// Quoting is syntax, not identity: `"name":` and `name:` are the same key, and
+// a key with an empty value is still the key. Only nesting makes a difference —
+// `metadata:\n  name: x` has no top-level name, so one still has to be added.
+func frontmatterHasNameKey(content string) bool {
+	fmBody, _, ok := frontmatterParts(content)
+	if !ok {
+		return false
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmBody), &doc); err != nil {
+		return false
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false
+	}
+	mapping := doc.Content[0]
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "name" {
+			return true
+		}
+	}
+	return false
 }
 
 // synthesizeFrontmatter produces a SKILL.md body with a YAML frontmatter block
