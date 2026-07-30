@@ -1444,6 +1444,12 @@ var ErrChatQuickActionsNotResumable = errors.New("chat quick actions: session no
 // chat:quick_actions event will not match (MUL-5149).
 var ErrChatQuickActionsStale = errors.New("chat quick actions: refresh target is stale")
 
+// ErrChatQuickActionsBusy signals the session already has work in flight — a
+// running turn about to change the latest reply, or another regenerate pass —
+// so a new refresh is refused to avoid a stale-target supplement or a duplicate
+// quota-spending pass (MUL-5149).
+var ErrChatQuickActionsBusy = errors.New("chat quick actions: session busy")
+
 // EnqueueChatTask creates a task-owned input batch for a chat session. Channel
 // media makes the task deferred until binding completes or its durable fallback
 // deadline expires; other chat tasks are queued immediately. Unlike issue
@@ -1679,6 +1685,24 @@ func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSessio
 		// the client rolls back and re-offers refresh on the new turn (MUL-5149).
 		if target.ID != expectedMessageID {
 			return ErrChatQuickActionsStale
+		}
+		// Refuse while the session already has work in flight (MUL-5149 review
+		// §1/§2). Two races this closes, both under the same session lock as the
+		// enqueue so neither can slip a sibling insert past it:
+		//   1. A normal turn is queued/running but its assistant row hasn't
+		//      landed, so the latest-persisted check above still passes on the
+		//      OLD turn. That turn will change the reply and advance the session
+		//      pointer before this regen claims, leaving the suggestions built
+		//      from the newer context but attached to the older turn.
+		//   2. A second concurrent refresh of the same turn would just enqueue a
+		//      duplicate pass and double-spend quota — the button being disabled
+		//      on one client can't stop another.
+		busy, berr := qtx.HasActiveChatTaskForSession(ctx, chatSession.ID)
+		if berr != nil {
+			return fmt.Errorf("check active chat task: %w", berr)
+		}
+		if busy {
+			return ErrChatQuickActionsBusy
 		}
 		created, cerr := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
 			AgentID:           chatSession.AgentID,
@@ -3562,13 +3586,14 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	return &task, nil
 }
 
-// resolveFailedRegenerateQuickActions clears a refresh's client-side pending
-// spinner after the regeneration task itself failed before it could supplement
-// (MUL-5149). It loads the target turn the refresh was aimed at and re-broadcasts
-// that turn's current (unchanged) quick actions via chat:quick_actions, which
-// resolves the pending marker on every client — leaving the old suggestions in
-// place rather than stranding the user on a spinner. Best-effort: a lookup miss
-// just leaves the client's own skeleton-timeout fallback to clear it.
+// resolveFailedRegenerateQuickActions resolves a refresh whose regeneration
+// task failed before it could deliver suggestions (MUL-5149). It loads the
+// target turn the refresh was aimed at and broadcasts a FAILED
+// chat:quick_actions carrying that turn's current (unchanged) pills — which
+// resolves the pending marker on every client AND flags the failure so the UI
+// shows a "couldn't refresh" notice instead of stopping the spinner on
+// unchanged content as if it had succeeded. Best-effort: a lookup miss just
+// leaves the client's own timeout fallback to clear the marker.
 func (s *TaskService) resolveFailedRegenerateQuickActions(ctx context.Context, task db.AgentTaskQueue) {
 	if !task.RegenerateQuickActionsFor.Valid {
 		return
@@ -3581,8 +3606,8 @@ func (s *TaskService) resolveFailedRegenerateQuickActions(ctx context.Context, t
 	}
 	// Empty raw parses to no actions, so SupplementChatQuickActions re-broadcasts
 	// the target's existing pills (GetChatMessageByTaskAssistant) and resolves the
-	// marker without overwriting anything.
-	if err := s.SupplementChatQuickActions(ctx, target, ""); err != nil {
+	// marker without overwriting anything; failed=true marks it a failure.
+	if err := s.SupplementChatQuickActions(ctx, target, "", true); err != nil {
 		slog.Warn("regenerate failure: resolve pending marker failed",
 			"task_id", util.UUIDToString(task.ID), "error", err)
 	}

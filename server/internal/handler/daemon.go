@@ -2959,7 +2959,7 @@ func (h *Handler) SupplementTaskQuickActions(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.TaskService.SupplementChatQuickActions(r.Context(), task, req.Raw); err != nil {
+	if err := h.TaskService.SupplementChatQuickActions(r.Context(), task, req.Raw, false); err != nil {
 		slog.Warn("supplement task quick actions failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

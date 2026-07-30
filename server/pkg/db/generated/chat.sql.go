@@ -869,6 +869,29 @@ func (q *Queries) GetPendingChatTask(ctx context.Context, chatSessionID pgtype.U
 	return i, err
 }
 
+const hasActiveChatTaskForSession = `-- name: HasActiveChatTaskForSession :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+) AS has_active
+`
+
+// True while ANY task — a normal user turn OR a background quick-actions
+// regenerate — is in flight for the session (contrast GetPendingChatTask, which
+// hides regenerate passes from the UI). A quick-actions refresh is refused when
+// this is true: a running turn is about to change the latest reply, so the
+// target we'd resume is already stale even before its assistant row lands; and a
+// second concurrent regenerate would double-spend quota on the same turn. Read
+// inside the same session lock as the enqueue so it cannot race a sibling insert
+// (MUL-5149 review §1/§2).
+func (q *Queries) HasActiveChatTaskForSession(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveChatTaskForSession, chatSessionID)
+	var has_active bool
+	err := row.Scan(&has_active)
+	return has_active, err
+}
+
 const hasPendingChatTasksByCreator = `-- name: HasPendingChatTasksByCreator :one
 SELECT EXISTS (
   SELECT 1

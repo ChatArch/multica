@@ -35,6 +35,27 @@ export interface ChatQuickAction {
 export interface ChatQuickActionsPendingState {
   message_id: string;
   task_id: string;
+  /**
+   * Absolute epoch-ms deadline after which a client gives up waiting for the
+   * chat:quick_actions supplement and clears this marker. Stored on the marker
+   * (not as a component timer) so switching chat surfaces — which unmounts and
+   * remounts the timeout hook — resumes the SAME deadline instead of re-arming
+   * a fresh window each time (MUL-5149 review).
+   */
+  expires_at: number;
+}
+
+/**
+ * Client-only signal (never persisted, never fetched) that an explicit refresh's
+ * background regeneration FAILED — the daemon suggestion pass never completed, so
+ * the turn's pills are unchanged. Set by the realtime layer off a failed
+ * chat:quick_actions and consumed once by a view to toast "couldn't refresh"
+ * before clearing itself. `at` is a per-event nonce so a second failure re-fires
+ * even when the message_id repeats (MUL-5149 review).
+ */
+export interface ChatQuickActionsFailureState {
+  message_id: string;
+  at: number;
 }
 
 /** Preview of a session's most recent message, for the IM-style list. */

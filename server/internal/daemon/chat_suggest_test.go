@@ -19,7 +19,10 @@ func TestRunChatSuggestPassReturnsTrimmedOutputAndResumesSession(t *testing.T) {
 	}
 	d := &Daemon{logger: slog.Default()}
 
-	raw, usage := d.runChatSuggestPass(context.Background(), backend, agent.ExecOptions{Model: "m1"}, "sess-1", slog.Default())
+	raw, usage, ok := d.runChatSuggestPass(context.Background(), backend, agent.ExecOptions{Model: "m1"}, "sess-1", slog.Default())
+	if !ok {
+		t.Fatal("a completed pass must report ok=true")
+	}
 	if raw != `[{"label":"Next","prompt":"Do the next thing"}]` {
 		t.Fatalf("raw = %q", raw)
 	}
@@ -43,14 +46,14 @@ func TestRunChatSuggestPassSoftFailsOnErrorAndNonCompletion(t *testing.T) {
 	d := &Daemon{logger: slog.Default()}
 
 	failedStart := &fakeBackend{errors: []error{context.DeadlineExceeded}, results: []agent.Result{{}}}
-	if raw, _ := d.runChatSuggestPass(context.Background(), failedStart, agent.ExecOptions{}, "sess-1", slog.Default()); raw != "" {
-		t.Fatalf("start failure must degrade to no suggestions, got %q", raw)
+	if raw, _, ok := d.runChatSuggestPass(context.Background(), failedStart, agent.ExecOptions{}, "sess-1", slog.Default()); raw != "" || ok {
+		t.Fatalf("start failure must report ok=false and no suggestions, got raw=%q ok=%v", raw, ok)
 	}
 
 	notCompleted := &fakeBackend{results: []agent.Result{{Status: "timeout", Error: "slow", Usage: map[string]agent.TokenUsage{"m": {InputTokens: 1}}}}}
-	raw, usage := d.runChatSuggestPass(context.Background(), notCompleted, agent.ExecOptions{}, "sess-1", slog.Default())
-	if raw != "" {
-		t.Fatalf("non-completed result must degrade to no suggestions, got %q", raw)
+	raw, usage, ok := d.runChatSuggestPass(context.Background(), notCompleted, agent.ExecOptions{}, "sess-1", slog.Default())
+	if raw != "" || ok {
+		t.Fatalf("non-completed result must report ok=false and no suggestions, got raw=%q ok=%v", raw, ok)
 	}
 	if usage["m"].InputTokens != 1 {
 		t.Fatalf("tokens burned by a failed pass must still be reported, got %+v", usage)

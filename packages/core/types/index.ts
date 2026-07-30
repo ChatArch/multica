@@ -100,6 +100,7 @@ export type {
   ChatMessage,
   ChatQuickAction,
   ChatQuickActionsPendingState,
+  ChatQuickActionsFailureState,
   ChatMessagesPage,
   ChatPendingTask,
   PendingChatTaskItem,

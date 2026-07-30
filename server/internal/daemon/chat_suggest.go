@@ -65,7 +65,7 @@ func (d *Daemon) chatSuggestJob(task Task, backend agent.Backend, opts agent.Exe
 			d.chatSuggestCancels.CompareAndDelete(task.ChatSessionID, handle)
 		}()
 
-		raw, usage := d.runChatSuggestPass(ctx, backend, opts, providerSessionID, taskLog)
+		raw, usage, _ := d.runChatSuggestPass(ctx, backend, opts, providerSessionID, taskLog)
 		if ctx.Err() != nil {
 			// A newer turn on this session cancelled us: its user message
 			// supersedes these suggestions. Skip the supplement — the client
@@ -118,17 +118,11 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 		"target_task", shortID(task.RegenerateQuickActionsFor),
 		"resume", opts.ResumeSessionID != "",
 	)
-	raw, usage := d.runChatSuggestPass(ctx, backend, opts, opts.ResumeSessionID, taskLog)
-
-	reportCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	supplementErr := d.client.SupplementTaskQuickActions(reportCtx, task.RegenerateQuickActionsFor, raw)
-	if supplementErr != nil {
-		taskLog.Warn("chat quick-actions regenerate supplement failed", "error", supplementErr)
-	}
+	raw, usage, ok := d.runChatSuggestPass(ctx, backend, opts, opts.ResumeSessionID, taskLog)
 
 	// Report the pass's own token spend on this regenerate task (its own row —
 	// no merge with a main turn, there isn't one). Same shape as chatSuggestJob.
+	// Reported on every outcome — a failed pass still burned tokens.
 	var usageEntries []TaskUsageEntry
 	for model, u := range usage {
 		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 {
@@ -143,12 +137,32 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 			CacheWriteTokens: u.CacheWriteTokens,
 		})
 	}
-	if supplementErr != nil {
+
+	if !ok {
+		// The provider pass itself FAILED (didn't start / didn't complete /
+		// timed out) — distinct from a completed pass that produced no
+		// suggestions. Do NOT supplement: an empty raw would silently rebroadcast
+		// the old pills as if the refresh succeeded. Report failure so FailTask →
+		// resolveFailedRegenerateQuickActions broadcasts a FAILED
+		// chat:quick_actions and the user gets feedback (MUL-5149 review §3).
+		return TaskResult{
+			Status:        "blocked",
+			FailureReason: "quick_actions_generation_failed",
+			Usage:         usageEntries,
+		}, nil
+	}
+
+	// Generation succeeded (raw may be an empty list — a genuine "no new
+	// suggestions" that keeps the existing pills). Supplement the target turn.
+	reportCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := d.client.SupplementTaskQuickActions(reportCtx, task.RegenerateQuickActionsFor, raw); err != nil {
 		// The supplement never landed, so no chat:quick_actions resolved the
 		// client's refresh spinner. Report failure (never retried, writes no
 		// visible turn — see FailTask's regenerate gates) so the server converges
 		// the marker via resolveFailedRegenerateQuickActions instead of leaving
 		// the client to its own timeout (MUL-5149).
+		taskLog.Warn("chat quick-actions regenerate supplement failed", "error", err)
 		return TaskResult{
 			Status:        "blocked",
 			FailureReason: "quick_actions_supplement_failed",
@@ -160,9 +174,11 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 
 // runChatSuggestPass runs one extra provider turn on the just-finished chat
 // session and returns its raw text output (the JSON array, hopefully — the
-// server parses leniently and treats garbage as "no suggestions"). Best-effort
-// by design: every failure path returns "" and the turn proceeds without
-// suggestions.
+// server parses leniently and treats garbage as "no suggestions"). ok is false
+// only when the pass itself FAILED (didn't start, didn't complete, or timed
+// out), distinct from a pass that completed and simply produced no suggestions
+// (ok=true, possibly empty raw). The automatic pass is best-effort and ignores
+// ok; the explicit-refresh caller uses it to surface failure feedback (MUL-5149).
 //
 // The pass deliberately reuses the main turn's backend and exec options so it
 // lands on the same provider, model, and workdir; only the resume pointer,
@@ -173,7 +189,7 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 // new session file) keep the suggestion exchange in the session history the
 // next user turn resumes. The prompt's leading line instructs the model to
 // never surface it.
-func (d *Daemon) runChatSuggestPass(ctx context.Context, backend agent.Backend, opts agent.ExecOptions, sessionID string, taskLog *slog.Logger) (raw string, usage map[string]agent.TokenUsage) {
+func (d *Daemon) runChatSuggestPass(ctx context.Context, backend agent.Backend, opts agent.ExecOptions, sessionID string, taskLog *slog.Logger) (raw string, usage map[string]agent.TokenUsage, ok bool) {
 	suggestCtx, cancel := context.WithTimeout(ctx, chatSuggestTimeout)
 	defer cancel()
 
@@ -186,7 +202,7 @@ func (d *Daemon) runChatSuggestPass(ctx context.Context, backend agent.Backend, 
 	session, err := backend.Execute(suggestCtx, chatSuggestPrompt, opts)
 	if err != nil {
 		taskLog.Warn("chat suggest pass failed to start", "error", err)
-		return "", nil
+		return "", nil, false
 	}
 
 	// Drain and discard the message stream: backends block on an undrained
@@ -206,15 +222,15 @@ func (d *Daemon) runChatSuggestPass(ctx context.Context, backend agent.Backend, 
 				"status", result.Status,
 				"error", result.Error,
 			)
-			return "", result.Usage
+			return "", result.Usage, false
 		}
 		taskLog.Debug("chat suggest pass finished",
 			"duration", time.Since(start).Round(time.Second).String(),
 			"output_bytes", len(result.Output),
 		)
-		return strings.TrimSpace(result.Output), result.Usage
+		return strings.TrimSpace(result.Output), result.Usage, true
 	case <-suggestCtx.Done():
 		taskLog.Warn("chat suggest pass timed out or was cancelled", "timeout", chatSuggestTimeout.String())
-		return "", nil
+		return "", nil, false
 	}
 }

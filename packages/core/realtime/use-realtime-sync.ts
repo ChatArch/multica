@@ -48,7 +48,12 @@ import {
   type SystemNotificationPayload,
 } from "../platform/system-notification";
 import type { Workspace } from "../types/workspace";
-import { chatKeys, mergeTaskMessagesBySeq, sortChatSessions } from "../chat/queries";
+import {
+  chatKeys,
+  mergeTaskMessagesBySeq,
+  sortChatSessions,
+  QUICK_ACTIONS_PENDING_TIMEOUT_MS,
+} from "../chat/queries";
 import { useChatStore } from "../chat";
 import { resolvePostAuthDestination, useHasOnboarded } from "../paths";
 import type {
@@ -88,6 +93,7 @@ import type {
   ChatDonePayload,
   ChatQuickActionsPayload,
   ChatQuickActionsPendingState,
+  ChatQuickActionsFailureState,
   ChatCancelFinalizedPayload,
   ChatMessage,
   ChatPendingTask,
@@ -177,7 +183,11 @@ export function applyChatDoneToCache(
   qc.setQueryData<ChatQuickActionsPendingState | null>(
     chatKeys.quickActionsPending(sessionId),
     payload.quick_actions_pending === true && messageId
-      ? { message_id: messageId, task_id: taskId }
+      ? {
+          message_id: messageId,
+          task_id: taskId,
+          expires_at: Date.now() + QUICK_ACTIONS_PENDING_TIMEOUT_MS,
+        }
       : null,
   );
   // Authoritative refetch reconciles redaction / migrations / clients
@@ -191,6 +201,12 @@ export function applyChatDoneToCache(
  * message's quick_actions in both message caches and resolve the pending
  * placeholder. An empty/missing list is terminal ("no suggestions this
  * turn") — the placeholder still resolves.
+ *
+ * `payload.failed` marks a resolution whose regeneration failed: the carried
+ * actions are the turn's UNCHANGED prior pills, so the patch is a no-op, but a
+ * failure signal is raised for a view to toast — otherwise an explicit refresh
+ * that failed would look identical to one that succeeded with the same
+ * suggestions (MUL-5149 review).
  */
 export async function applyChatQuickActionsToCache(
   qc: QueryClient,
@@ -239,6 +255,15 @@ export async function applyChatQuickActionsToCache(
     (current) =>
       current && current.message_id !== payload.message_id ? current : null,
   );
+  // Raise a one-shot failure signal on an explicit refresh whose regeneration
+  // failed. A view consumes it to toast and clears it; the `at` nonce keeps a
+  // repeat failure on the same turn from being deduped away.
+  if (payload.failed === true) {
+    qc.setQueryData<ChatQuickActionsFailureState | null>(
+      chatKeys.quickActionsFailure(sessionId),
+      { message_id: payload.message_id, at: Date.now() },
+    );
+  }
 }
 
 function patchLatestChatMessagePage(

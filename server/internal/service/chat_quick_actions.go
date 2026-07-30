@@ -208,7 +208,11 @@ func chatQuickActionsPending(result []byte, msg *db.ChatMessage) bool {
 // turn that never wrote an assistant row (no_response, channel empty-drop)
 // returns silently — no client is waiting in that case, because the pending
 // flag is only ever raised for a written ordinary message.
-func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.AgentTaskQueue, raw string) error {
+//
+// failed marks the broadcast as a failure resolution (an explicit refresh whose
+// regeneration failed): the pills stay unchanged but the client shows a
+// "couldn't refresh" notice instead of treating them as freshly generated.
+func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.AgentTaskQueue, raw string, failed bool) error {
 	if !task.ChatSessionID.Valid {
 		return nil
 	}
@@ -248,6 +252,7 @@ func (s *TaskService) SupplementChatQuickActions(ctx context.Context, task db.Ag
 		TaskID:        util.UUIDToString(task.ID),
 		MessageID:     util.UUIDToString(msg.ID),
 		QuickActions:  []protocol.ChatQuickAction{},
+		Failed:        failed,
 	}
 	_ = json.Unmarshal(msg.QuickActions, &payload.QuickActions)
 	s.Bus.Publish(events.Event{

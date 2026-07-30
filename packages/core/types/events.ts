@@ -397,6 +397,14 @@ export interface ChatQuickActionsPayload {
   task_id: string;
   message_id: string;
   quick_actions?: import("./chat").ChatQuickAction[];
+  /**
+   * The regeneration behind an explicit refresh failed: the actions carried
+   * here are the turn's UNCHANGED prior pills, sent only to resolve the pending
+   * spinner. Clients surface a "couldn't refresh" notice rather than treating
+   * them as freshly generated. Absent/false on the normal success path and on
+   * older servers.
+   */
+  failed?: boolean;
 }
 
 /**

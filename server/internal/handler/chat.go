@@ -973,6 +973,11 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 			// view is stale (a newer reply arrived). 409 → the client rolls back
 			// its optimistic marker and re-offers refresh on the new turn.
 			writeError(w, http.StatusConflict, "a newer reply arrived — refresh it instead")
+		case errors.Is(err, service.ErrChatQuickActionsBusy):
+			// A turn or another refresh is already running for this session; the
+			// result would be stale or a duplicate. 409 → the client rolls back
+			// and can refresh once the session settles.
+			writeError(w, http.StatusConflict, "still working — try refreshing in a moment")
 		case errors.Is(err, service.ErrChatQuickActionsNoTurn):
 			writeError(w, http.StatusConflict, "no assistant reply to refresh yet")
 		case errors.Is(err, service.ErrChatQuickActionsNotResumable):

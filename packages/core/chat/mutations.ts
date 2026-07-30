@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
-import { chatKeys, sortChatSessions } from "./queries";
+import { chatKeys, sortChatSessions, QUICK_ACTIONS_PENDING_TIMEOUT_MS } from "./queries";
 import { createLogger } from "../logger";
 import type {
   ChatSession,
@@ -398,7 +398,11 @@ export function useRegenerateChatQuickActions() {
       // matches on message_id).
       qc.setQueryData<ChatQuickActionsPendingState | null>(
         chatKeys.quickActionsPending(sessionId),
-        { message_id: messageId, task_id: "" },
+        {
+          message_id: messageId,
+          task_id: "",
+          expires_at: Date.now() + QUICK_ACTIONS_PENDING_TIMEOUT_MS,
+        },
       );
       return { previous, sessionId };
     },

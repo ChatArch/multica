@@ -141,6 +141,13 @@ type ChatQuickActionsPayload struct {
 	TaskID        string            `json:"task_id"`
 	MessageID     string            `json:"message_id"`
 	QuickActions  []ChatQuickAction `json:"quick_actions"`
+	// Failed marks a supplement that resolves the client's refresh spinner
+	// because the regeneration FAILED (the provider pass or its delivery), not
+	// because it produced new suggestions. QuickActions then carries the turn's
+	// unchanged pills; the client shows a "couldn't refresh" notice instead of
+	// treating unchanged content as a silent success (MUL-5149). Omitted (false)
+	// on the normal success path and for the automatic best-effort pass.
+	Failed bool `json:"failed,omitempty"`
 }
 
 // TaskMessagePayload represents a single agent execution message (tool call, text, etc.)
