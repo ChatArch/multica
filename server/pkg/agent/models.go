@@ -1725,12 +1725,15 @@ func isOpenclawIdentifier(s string) bool {
 // line in `codebuddy --help` output.
 var codebuddyModelRe = regexp.MustCompile(`--model\s*<[^>]+>\s*.*?Currently supported:\s*\(([^)]+)\)`)
 
-// discoverCodebuddyModels runs `codebuddy --help` and extracts the
-// supported model list from its output. Falls back to a static list
-// when the binary is missing or the output cannot be parsed.
-// It runs `codebuddy --help` AT MOST ONCE per call and derives both the model
-// catalog and the per-model effort catalog from that single capture, so a slow
-// or failing --help cannot be paid for twice inside one model-list request.
+// discoverCodebuddyModels runs `codebuddy --help` and extracts the supported
+// model list from its output, falling back to a static list when the binary is
+// missing or the output cannot be parsed.
+//
+// It runs `--help` AT MOST ONCE per call: the single capture feeds both the
+// model catalog and the per-model effort catalog, and the fallback paths skip
+// the effort pass entirely. A slow or failing --help therefore cannot be paid
+// for twice inside one model-list request, which would exceed the server's 60s
+// running timeout and cost the user even the fallback list (MUL-5549).
 func discoverCodebuddyModels(ctx context.Context, executablePath string) (Catalog, error) {
 	if executablePath == "" {
 		executablePath = "codebuddy"

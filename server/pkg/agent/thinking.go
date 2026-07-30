@@ -454,9 +454,16 @@ var codebuddyEffortLabel = map[string]string{
 
 var codebuddyStaticEffortFallback = []string{"low", "medium", "high", "xhigh"}
 
-// codebuddyHelpCache caches the raw --help output so both model discovery
-// (models.go) and effort discovery avoid redundant slow CLI invocations.
-// CodeBuddy's --help takes ~30s; calling it twice on cold start wastes ~30s.
+// codebuddyHelpCache memoises the raw --help output across discovery rounds:
+// CodeBuddy's --help can take ~30s, so re-running it for every model-list
+// request would be painful.
+//
+// It is NOT what keeps a single request down to one invocation. That is
+// structural: discoverCodebuddyModels captures the help text once and hands the
+// string to the model and effort parsers, and its failure paths skip the effort
+// pass entirely (MUL-5549). Relying on the cache for that would be wrong — a
+// failed --help is deliberately not cached, so the second caller would re-run
+// the full 35s timeout.
 var (
 	codebuddyHelpMu    sync.Mutex
 	codebuddyHelpStore = map[string]codebuddyHelpEntry{}
@@ -469,9 +476,14 @@ type codebuddyHelpEntry struct {
 	expiresAt time.Time
 }
 
-// codebuddyHelpOutput runs `codebuddy --help` (cached for codebuddyHelpTTL).
-// Both discoverCodebuddyModels and codebuddyEffortSuperset call this so a
-// single cold invocation feeds both.
+// codebuddyHelpOutput runs `codebuddy --help` (cached for codebuddyHelpTTL) and
+// returns "" when the command could not be run.
+//
+// discoverCodebuddyModels is its only caller. The effort parser deliberately
+// takes an already-captured string instead of calling this itself, so one
+// discovery round can never pay the 35s timeout twice (MUL-5549). Keep it that
+// way: a new caller here reintroduces that bug on the failure path, where
+// nothing is cached to absorb the second run.
 func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	if executablePath == "" {
 		executablePath = "codebuddy"
