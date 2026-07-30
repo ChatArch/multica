@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	skillpkg "github.com/multica-ai/multica/server/internal/skill"
 	"github.com/multica-ai/multica/server/internal/util"
 	"gopkg.in/yaml.v3"
 )
@@ -69,6 +70,44 @@ func TestBuiltinSkillsConformToTemplate(t *testing.T) {
 				if strings.Contains(lower, "eval") || strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, "_test.md") {
 					t.Errorf("supporting file %q looks like an eval/test; evals belong in _test.go, not the shipped skill payload", f.Path)
 				}
+			}
+		})
+	}
+}
+
+// TestBuiltinSkillsCarryFrontmatterDescription is the regression guard for
+// MUL-5529: loadBuiltinSkill used to set only Name and Content, so every
+// built-in skill travelled to the daemon with an empty Description and the
+// runtime brief's `## Skills` list rendered it as a bare name (writeSkills only
+// appends "— description" when one exists). Workspace skills, whose description
+// comes from a database column, were listed with theirs — so the platform's own
+// skills were the only ones a model could not route by reading the brief, and
+// on a runtime without native SKILL.md discovery nothing else supplied it.
+//
+// Asserting equality with the frontmatter (rather than just non-emptiness)
+// keeps the two descriptions from drifting: the same string has to serve the
+// brief listing and the runtime's own frontmatter-driven index.
+func TestBuiltinSkillsCarryFrontmatterDescription(t *testing.T) {
+	skills := loadBuiltinSkills()
+	if len(skills) == 0 {
+		t.Fatal("no built-in skills loaded; embed or layout is broken")
+	}
+
+	for _, skill := range skills {
+		t.Run(skill.Name, func(t *testing.T) {
+			if strings.TrimSpace(skill.Description) == "" {
+				t.Fatal("Description is empty; the brief lists this skill as a bare name and nothing tells the model when to load it")
+			}
+
+			fmName, fmDesc := skillpkg.ParseSkillFrontmatter(skill.Content)
+			if want := strings.TrimSpace(fmDesc); skill.Description != want {
+				t.Errorf("Description = %q, want the frontmatter description %q", skill.Description, want)
+			}
+			// The brief lists skill.Name while a native-discovery runtime keys on
+			// the frontmatter name. If they diverge, the model reads about a skill
+			// under one name and can only invoke it under another.
+			if fmName != skill.Name {
+				t.Errorf("frontmatter name %q does not match the skill directory %q", fmName, skill.Name)
 			}
 		})
 	}

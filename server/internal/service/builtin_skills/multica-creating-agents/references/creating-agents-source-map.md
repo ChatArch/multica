@@ -136,8 +136,9 @@ only.
 
 | Contract | Line | Behavior |
 |---|---|---|
-| `go:embed builtin_skills` | 10–11 | skills embedded at compile time |
-| `loadBuiltinSkill` | 45 | reads `<name>/SKILL.md` (47) + walks sibling files into `Files` (56–68) |
+| `go:embed builtin_skills` | 12–13 | skills embedded at compile time |
+| `loadBuiltinSkill` | 47 | reads `<name>/SKILL.md` (49) + walks sibling files into `Files` (70–84) |
+| `Name` / `Description` | 66–67 | `Name` is the directory slug; `Description` is parsed out of the SKILL.md frontmatter, so built-ins are listed with a description in the runtime brief exactly like workspace skills (MUL-5529) |
 
 ## Persisted columns — `server/pkg/db/generated/agent.sql.go`
 

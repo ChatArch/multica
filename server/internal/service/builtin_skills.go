@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"path"
 	"strings"
+
+	skillpkg "github.com/multica-ai/multica/server/internal/skill"
 )
 
 //go:embed builtin_skills
@@ -50,7 +52,19 @@ func loadBuiltinSkill(name string) (AgentSkillData, bool) {
 		// than ship an empty skill.
 		return AgentSkillData{}, false
 	}
-	skill := AgentSkillData{Name: name, Content: string(content)}
+	// The description is the routing signal: it is what a model reads when
+	// deciding whether a skill matches the task at hand. Workspace skills carry
+	// it in a database column, so the runtime brief's `## Skills` list renders
+	// them as "name — description" (see writeSkills). Built-in skills keep theirs
+	// in the SKILL.md frontmatter, so read it out here — otherwise they reach the
+	// brief as a row of bare names and, on runtimes without native skill
+	// discovery, nothing tells the model which one to open (MUL-5529).
+	//
+	// Name stays the directory name, not the frontmatter name: it is the slug
+	// writeSkillFiles lays down on disk, and the multica- prefix invariant is
+	// enforced against it.
+	_, description := skillpkg.ParseSkillFrontmatter(string(content))
+	skill := AgentSkillData{Name: name, Description: strings.TrimSpace(description), Content: string(content)}
 	// Any other file in the directory becomes a supporting file, preserving
 	// its relative path so subdirectories (e.g. rules/styling.md) survive.
 	_ = fs.WalkDir(builtinSkillsFS, dir, func(p string, d fs.DirEntry, walkErr error) error {

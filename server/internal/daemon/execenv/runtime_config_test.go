@@ -1744,3 +1744,28 @@ func TestBriefByteIdenticalAcrossRunsForEveryKind(t *testing.T) {
 		})
 	}
 }
+
+// TestBriefSkillsListRendersDescriptions pins the render half of MUL-5529: a
+// skill carrying a description is listed with it, and one without degrades to a
+// bare name. The bare form is the fallback for a malformed skill, never the
+// normal case — for a provider that has no native SKILL.md discovery this list
+// is the only place a model learns which skill matches the task, so a missing
+// description makes the skill effectively unroutable.
+func TestBriefSkillsListRendersDescriptions(t *testing.T) {
+	t.Parallel()
+
+	out := buildMetaSkillContent("claude", TaskContextForEnv{
+		IssueID: "issue-1",
+		AgentSkills: []SkillContextForEnv{
+			{Name: "multica-mentioning", Description: "Use when a comment needs to @mention someone.", Content: "---\nname: multica-mentioning\n---\n\nbody"},
+			{Name: "multica-undocumented", Content: "---\nname: multica-undocumented\n---\n\nbody"},
+		},
+	})
+
+	if !strings.Contains(out, "- **multica-mentioning** — Use when a comment needs to @mention someone.\n") {
+		t.Errorf("described skill is not listed with its description\n---\n%s", out)
+	}
+	if !strings.Contains(out, "- **multica-undocumented**\n") {
+		t.Errorf("skill without a description is not listed at all\n---\n%s", out)
+	}
+}

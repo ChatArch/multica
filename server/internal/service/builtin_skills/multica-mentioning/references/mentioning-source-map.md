@@ -24,7 +24,7 @@ a pointer.
 | `mention://all/all` parses to `{all, all}` | `server/internal/util/mention_test.go:47-50` |
 | `mention://agent/<uuid>` parses; label may contain `[brackets]` | `server/internal/util/mention_test.go:13-35` |
 | plain text with no `mention://` parses to `nil` | `server/internal/util/mention_test.go:57-60` |
-| Skill eval: a name where a UUID belongs (`mention://member/Alice`) parses to `nil`; a bare `@name` parses to `nil`; a real UUID parses; `@all` → `{all, all}`; a **wrong** type with a real UUID still parses (points at the wrong entity) | `server/internal/service/builtin_skills_test.go:101-157` |
+| Skill eval: a name where a UUID belongs (`mention://member/Alice`) parses to `nil`; a bare `@name` parses to `nil`; a real UUID parses; `@all` → `{all, all}`; a **wrong** type with a real UUID still parses (points at the wrong entity) | `server/internal/service/builtin_skills_test.go:186-242` |
 
 ## What each mention type enqueues
 
