@@ -361,7 +361,14 @@ export function createBuiltinCommandSuggestion(
             editor
               .chain()
               .focus()
-              .insertContentAt({ from: range.from, to: range.to }, content)
+              // contentType: "markdown" is load-bearing. Without it Tiptap
+              // inserts the string as literal TEXT, so the server-rendered
+              // `[@Name](mention://agent/…)` never becomes a mention node —
+              // it serialises back out with the brackets escaped
+              // (`\[@Name\](…)`) and renders as raw markup in the thread.
+              .insertContentAt({ from: range.from, to: range.to }, content, {
+                contentType: "markdown",
+              })
               .run();
             window.getSelection()?.collapseToEnd();
           })

@@ -248,6 +248,7 @@
     "section_quick_actions": "快捷操作",
     "quick_actions_more": "显示其余 {{count}} 条",
     "quick_action_runs_as": "由 {{name}} 执行",
+    "quick_action_ran_via": "由 {{name}} 执行",
     "quick_action_target_fallback": "该 Agent",
     "quick_action_queued": "{{name}} 已开始处理",
     "quick_action_coalesced": "已加入 {{name}} 当前的任务",

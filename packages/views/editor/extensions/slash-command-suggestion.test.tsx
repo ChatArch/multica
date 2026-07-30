@@ -508,12 +508,16 @@ describe("builtin `/` menu — async quick action rendering", () => {
   // Minimal editor stand-in: enough ProseMirror surface for the command to
   // read the range text and issue its chain.
   function fakeEditor(text: string) {
-    const calls: { from: number; to: number; content: string }[] = [];
+    const calls: { from: number; to: number; content: string; contentType?: string }[] = [];
     let docText = text;
     const chain = {
       focus: () => chain,
-      insertContentAt: (range: { from: number; to: number }, content: string) => {
-        calls.push({ from: range.from, to: range.to, content });
+      insertContentAt: (
+        range: { from: number; to: number },
+        content: string,
+        opts?: { contentType?: string },
+      ) => {
+        calls.push({ from: range.from, to: range.to, content, contentType: opts?.contentType });
         return chain;
       },
       insertContent: (content: string) => {
@@ -580,7 +584,13 @@ describe("builtin `/` menu — async quick action rendering", () => {
       await Promise.resolve();
     });
 
-    expect(calls).toEqual([{ from: 0, to: 7, content: "rendered body" }]);
+    // contentType must be "markdown": inserted as a plain string, the
+    // server-rendered `[@Name](mention://…)` lands as literal text and
+    // serialises back out with escaped brackets, so the mention never becomes
+    // a node and renders as raw markup in the thread.
+    expect(calls).toEqual([
+      { from: 0, to: 7, content: "rendered body", contentType: "markdown" },
+    ]);
   });
 
   it("abandons the insert when the command was edited while the request was open", async () => {
