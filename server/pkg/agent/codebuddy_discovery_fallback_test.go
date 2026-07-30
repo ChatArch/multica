@@ -123,6 +123,59 @@ func TestDiscoverCodebuddyModelsFromACP(t *testing.T) {
 	if len(defaults) != 1 || defaults[0] != "hy3" {
 		t.Errorf("default models = %v, want exactly [hy3] from currentModelId", defaults)
 	}
+
+	// The ACP payload has no vendor field and CodeBuddy's ids are bare, so
+	// without the prefix post-pass every model would land in one unlabelled
+	// group instead of the picker's per-vendor sections.
+	wantProvider := map[string]string{
+		"hy3":                "hunyuan",
+		"glm-5.2":            "zhipu",
+		"kimi-k3-1":          "kimi",
+		"deepseek-v3-2-volc": "deepseek",
+	}
+	for _, m := range catalog.Models {
+		if want := wantProvider[m.ID]; m.Provider != want {
+			t.Errorf("provider(%q) = %q, want %q — the picker groups on this", m.ID, m.Provider, want)
+		}
+	}
+}
+
+// TestCodebuddyModelProviderCoversRealCatalog pins vendor inference against every
+// ID shape CodeBuddy 2.130.0 actually advertises. A miss here is invisible in the
+// backend but collapses the picker into one unlabelled list.
+func TestCodebuddyModelProviderCoversRealCatalog(t *testing.T) {
+	t.Parallel()
+	for id, want := range map[string]string{
+		// Live ACP catalog, all 16 ids.
+		"hy3": "hunyuan", "glm-5.2": "zhipu", "glm-5.1": "zhipu", "glm-5.0": "zhipu",
+		"glm-5.0-turbo": "zhipu", "glm-5v-turbo": "zhipu", "glm-4.7": "zhipu",
+		"minimax-m3": "minimax", "minimax-m2.7": "minimax",
+		"kimi-k3-1": "kimi", "kimi-k2.7": "kimi", "kimi-k2.6": "kimi", "kimi-k2.5": "kimi",
+		"deepseek-v4-pro": "deepseek", "deepseek-v4-flash": "deepseek", "deepseek-v3-2-volc": "deepseek",
+		// Static fallback ids, which must group too.
+		"claude-sonnet-4.6": "anthropic", "claude-opus-4.7": "anthropic",
+		"gemini-3.1-pro": "google", "gpt-5.5": "openai",
+		"deepseek-v3-2-volc-ioa": "deepseek",
+	} {
+		if got := codebuddyModelProvider(id); got != want {
+			t.Errorf("codebuddyModelProvider(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// TestCodebuddyStaticModelsCarryProviders guards the fallback path's grouping:
+// those entries hardcode Provider rather than going through the post-pass, so a
+// new entry added without one would silently break grouping there instead.
+func TestCodebuddyStaticModelsCarryProviders(t *testing.T) {
+	t.Parallel()
+	for _, m := range codebuddyStaticModels() {
+		if m.Provider == "" {
+			t.Errorf("static fallback model %q has no Provider; the picker would not group it", m.ID)
+		}
+		if want := codebuddyModelProvider(m.ID); m.Provider != want {
+			t.Errorf("static fallback %q has Provider %q but prefix inference says %q", m.ID, m.Provider, want)
+		}
+	}
 }
 
 // TestDiscoverCodebuddyModelsACPEffort pins the effort catalog coming out of the

@@ -1762,7 +1762,44 @@ func discoverCodebuddyModels(ctx context.Context, executablePath string) (Catalo
 		}
 		return codebuddyFallbackCatalog(), nil
 	}
+	// Same post-pass Copilot runs: the ACP payload carries no vendor, and
+	// acpModelEntry can only recover one from a `vendor:model` id. CodeBuddy's
+	// ids are bare (`glm-5.2`, `kimi-k3-1`), so without this every model lands
+	// in one unlabelled group instead of the Zhipu / Kimi / DeepSeek sections
+	// the picker renders from Provider.
+	for i := range models {
+		if models[i].Provider == "" {
+			models[i].Provider = codebuddyModelProvider(models[i].ID)
+		}
+	}
 	return Catalog{Models: models}, nil
+}
+
+// codebuddyModelProvider infers a vendor from a CodeBuddy model ID prefix.
+// CodeBuddy aggregates several vendors under its own account, and neither the
+// ACP catalog nor the static fallback carries a vendor field, so the ID prefix
+// is the only signal available for grouping the picker.
+func codebuddyModelProvider(id string) string {
+	switch {
+	case strings.HasPrefix(id, "claude-"):
+		return "anthropic"
+	case strings.HasPrefix(id, "gemini-"):
+		return "google"
+	case strings.HasPrefix(id, "gpt-"):
+		return "openai"
+	case strings.HasPrefix(id, "glm-"):
+		return "zhipu"
+	case strings.HasPrefix(id, "minimax-"):
+		return "minimax"
+	case strings.HasPrefix(id, "kimi-"):
+		return "kimi"
+	case len(id) >= 3 && id[0] == 'h' && id[1] == 'y' && id[2] >= '0' && id[2] <= '9':
+		return "hunyuan"
+	case strings.HasPrefix(id, "deepseek-"):
+		return "deepseek"
+	default:
+		return ""
+	}
 }
 
 // codebuddyFallbackCatalog is the static stand-in for a failed discovery. It
