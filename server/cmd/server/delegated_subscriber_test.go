@@ -260,67 +260,56 @@ func TestUnsubscribeIsDurableAgainstAutoRules(t *testing.T) {
 	}
 }
 
-// TestDeliverToSubscriber_DelegatedTier pins the noise contract. The isChild
-// axis is the important one: a settled CHILD is one of N and must roll up at
-// the barrier (notifyDelegatedSubtreeSettled), while a settled ROOT is the whole
-// delegated job finishing and has nothing above it to roll into. Delivering
-// per-child completion is exactly the fire-on-every-child cascade #4320 reported
-// and MUL-3508 fixed for the child-done fan-out.
+// TestDeliverToSubscriber_DelegatedTier pins the noise contract. The tier drops
+// churn and nothing else: a child FINISHING is real signal, one per piece of work
+// a reviewer has to act on. An earlier cut suppressed those in favour of a
+// synthesized "whole batch finished" roll-up; that machinery is gone (see the
+// MUL-5483 thread), and the tree-level signal comes from the parent's own status
+// transition, which this same rule delivers.
 func TestDeliverToSubscriber_DelegatedTier(t *testing.T) {
 	cases := []struct {
 		name        string
 		reason      string
 		notifType   string
 		issueStatus string
-		isChild     bool
 		want        bool
 	}{
-		{"direct subscriber keeps every event", "creator", "status_changed", "in_progress", true, true},
-		{"direct subscriber keeps child completion", "creator", "status_changed", "done", true, true},
-		{"direct subscriber keeps comments", "assignee", "new_comment", "todo", false, true},
+		{"direct subscriber keeps every event", "creator", "status_changed", "in_progress", true},
+		{"direct subscriber keeps comments", "assignee", "new_comment", "todo", true},
 
-		{"delegated skips routine progress", "delegated", "status_changed", "in_progress", true, false},
-		{"delegated skips backlog parking", "delegated", "status_changed", "backlog", true, false},
-		{"delegated skips comment churn", "delegated", "new_comment", "in_progress", true, false},
-		{"delegated skips assignee churn", "delegated", "assignee_changed", "in_progress", true, false},
-		{"delegated skips date churn", "delegated", "due_date_changed", "in_progress", true, false},
+		{"delegated skips routine progress", "delegated", "status_changed", "in_progress", false},
+		{"delegated skips backlog parking", "delegated", "status_changed", "backlog", false},
+		{"delegated skips todo", "delegated", "status_changed", "todo", false},
+		{"delegated skips comment churn", "delegated", "new_comment", "in_progress", false},
+		{"delegated skips assignee churn", "delegated", "assignee_changed", "in_progress", false},
+		{"delegated skips date churn", "delegated", "due_date_changed", "in_progress", false},
 
-		// Completion on a CHILD rolls up; it must not fire per child.
-		{"delegated defers child review handoff", "delegated", "status_changed", "in_review", true, false},
-		{"delegated defers child completion", "delegated", "status_changed", "done", true, false},
-		{"delegated defers child cancellation", "delegated", "status_changed", "cancelled", true, false},
+		{"delegated gets the review handoff", "delegated", "status_changed", "in_review", true},
+		{"delegated gets completion", "delegated", "status_changed", "done", true},
+		{"delegated gets cancellation", "delegated", "status_changed", "cancelled", true},
+		{"delegated gets blocked", "delegated", "status_changed", "blocked", true},
 
-		// Completion on the ROOT is the delegated job itself finishing.
-		{"delegated gets root review handoff", "delegated", "status_changed", "in_review", false, true},
-		{"delegated gets root completion", "delegated", "status_changed", "done", false, true},
-		{"delegated gets root cancellation", "delegated", "status_changed", "cancelled", false, true},
-
-		// Exceptions stall the work and do not fan out across a healthy tree.
-		{"delegated gets blocked on a child", "delegated", "status_changed", "blocked", true, true},
-		{"delegated gets blocked on the root", "delegated", "status_changed", "blocked", false, true},
-		{"delegated always gets direct mentions", "delegated", "mentioned", "in_progress", true, true},
-		{"delegated always gets failures", "delegated", "task_failed", "in_progress", true, true},
-		{"delegated always gets agent_blocked", "delegated", "agent_blocked", "in_progress", true, true},
+		{"delegated always gets direct mentions", "delegated", "mentioned", "in_progress", true},
+		{"delegated always gets failures", "delegated", "task_failed", "in_progress", true},
+		{"delegated always gets agent_blocked", "delegated", "agent_blocked", "in_progress", true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := deliverToSubscriber(tc.reason, tc.notifType, tc.issueStatus, tc.isChild); got != tc.want {
-				t.Fatalf("deliverToSubscriber(%q, %q, %q, isChild=%v) = %v, want %v",
-					tc.reason, tc.notifType, tc.issueStatus, tc.isChild, got, tc.want)
+			if got := deliverToSubscriber(tc.reason, tc.notifType, tc.issueStatus); got != tc.want {
+				t.Fatalf("deliverToSubscriber(%q, %q, %q) = %v, want %v",
+					tc.reason, tc.notifType, tc.issueStatus, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestDelegatedTier_NotBypassedByParentBubble is the case a unit test of
-// deliverToSubscriber alone cannot catch, and the one that actually occurs: the
-// human directly created the PARENT (reason='creator', full delivery) while
-// their agent filed the children (reason='delegated', reduced). status_changed
-// bubbles from a child to the parent's subscribers, so without propagating the
-// tier decision the bubble re-delivers exactly what the child's tier suppressed
-// — and the noise control does nothing in the only shape it exists for.
-func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
+// TestDelegatedTier_ChildCompletionDeliversExactlyOnce is the case a unit test of
+// deliverToSubscriber alone cannot catch. status_changed bubbles from a child to
+// the parent's subscribers, and the common shape is a human who is BOTH a direct
+// subscriber of the parent and a delegate on the child. They must be told the
+// child finished, and told once — not twice via the bubble, and not zero times.
+func TestDelegatedTier_ChildCompletionDeliversExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
@@ -329,7 +318,7 @@ func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
 	parentID := createTestIssue(t, testWorkspaceID, testUserID)
 	t.Cleanup(func() { cleanupTestIssue(t, parentID) })
 
-	// Human is a DIRECT subscriber of the parent.
+	// Direct on the parent — the human filed the epic themselves.
 	if _, err := queries.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
 		IssueID:  util.MustParseUUID(parentID),
 		UserType: "member",
@@ -344,7 +333,6 @@ func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
 	task := createAgentTaskWithOriginator(t, agentID, runtimeID, util.MustParseUUID(testUserID))
 	childID := createAgentOriginIssue(t, agentID, "agent_create", task, util.MustParseUUID(parentID))
 	publishAgentIssueCreated(bus, childID, agentID)
-
 	if got := subscriberReason(t, queries, childID, "member", testUserID); got != "delegated" {
 		t.Fatalf("child subscription reason = %q, want delegated", got)
 	}
@@ -365,9 +353,8 @@ func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
 	})
 
 	// The new status travels as notifySubscribers' issueStatus argument, not on
-	// the event, so one agent-actored event value serves every transition. The
-	// agent actor matters: notifyIssueSubscribers skips the actor, and a
-	// human-actored event would skip the very recipient under test.
+	// the event. The agent actor matters: notifyIssueSubscribers skips the actor,
+	// and a human-actored event would skip the recipient under test.
 	agentEvent := events.Event{
 		Type:        protocol.EventIssueUpdated,
 		WorkspaceID: testWorkspaceID,
@@ -375,28 +362,19 @@ func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
 		ActorID:     agentID,
 	}
 
-	// Routine forward progress on the child: suppressed on the child AND not
-	// smuggled in through the parent.
+	// Routine progress on the child stays suppressed for the delegate, and the
+	// parent bubble must not smuggle it back in.
 	notifySubscribers(ctx, queries, bus, childID, "in_progress", testWorkspaceID,
 		agentEvent, nil, "status_changed", "info", "child", "", emptyDetails)
 	if n := countInbox(); n != 0 {
-		t.Fatalf("routine child progress reached the inbox %d time(s) — the parent bubble bypassed the delegated tier", n)
+		t.Fatalf("routine child progress reached the inbox %d time(s) — the parent bubble bypassed the tier", n)
 	}
 
-	// Child completion is deferred to the barrier roll-up, so it must not reach
-	// the inbox here either — not directly, and not via the parent.
+	// Completion delivers, exactly once despite two paths to the same person.
 	notifySubscribers(ctx, queries, bus, childID, "in_review", testWorkspaceID,
 		agentEvent, nil, "status_changed", "info", "child", "", emptyDetails)
-	if n := countInbox(); n != 0 {
-		t.Fatalf("child completion reached the inbox %d time(s) — it must roll up at the barrier instead", n)
-	}
-
-	// An exception is the one status that still fires per child: it stalls the
-	// work now and does not fan out across a healthy tree.
-	notifySubscribers(ctx, queries, bus, childID, "blocked", testWorkspaceID,
-		agentEvent, nil, "status_changed", "info", "child", "", emptyDetails)
 	if n := countInbox(); n != 1 {
-		t.Fatalf("expected exactly 1 inbox row for the blocked exception, got %d", n)
+		t.Fatalf("expected exactly 1 inbox row for the child completion, got %d", n)
 	}
 }
 
@@ -405,7 +383,7 @@ func TestDelegatedTier_NotBypassedByParentBubble(t *testing.T) {
 // unrecognized reason must fall back to FULL delivery — silently dropping a
 // user's notifications is the worse failure.
 func TestDeliverToSubscriber_UnknownReasonIsDirect(t *testing.T) {
-	if !deliverToSubscriber("some_future_reason", "new_comment", "in_progress", true) {
+	if !deliverToSubscriber("some_future_reason", "new_comment", "in_progress") {
 		t.Fatal("an unrecognized subscription reason must default to full delivery")
 	}
 }

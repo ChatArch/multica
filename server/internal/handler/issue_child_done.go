@@ -344,14 +344,6 @@ func isTerminalChildStatus(status string) bool {
 // siblingsAreStaged reports whether any child in the set carries an explicit
 // stage. A set with no stages is treated as a single implicit stage.
 func siblingsAreStaged(children []db.Issue) bool {
-	return SiblingsAreStaged(children)
-}
-
-// SiblingsAreStaged is the exported form, so callers outside this package derive
-// "is this a staged sibling set" from the same rule the stage frontier uses
-// instead of re-deciding it (MUL-5483: the delegated subtree roll-up needs it to
-// scope its barrier identity per stage).
-func SiblingsAreStaged(children []db.Issue) bool {
 	for _, c := range children {
 		if c.Stage.Valid {
 			return true
@@ -376,25 +368,9 @@ func SiblingsAreStaged(children []db.Issue) bool {
 //     parked in `backlog`, so they cannot fire out of order; the caller's
 //     idempotency guard collapses any duplicate wake.
 func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
-	return StageBarrierClosedFunc(children, completed, isTerminalChildStatus)
-}
-
-// StageBarrierClosedFunc is stageBarrierClosed with the "finished" predicate
-// supplied by the caller, exported so other packages reuse this exact stage
-// frontier instead of reimplementing it.
-//
-// The predicate is a parameter because two consumers legitimately disagree about
-// what finished means. The child-done system comment asks "did this stage close"
-// and uses isTerminalChildStatus (done/cancelled). The delegated subtree roll-up
-// (cmd/server) asks "does this child still need work" and must also count
-// in_review, since that is where an agent parks completed work — the dominant
-// completion state in this product. Sharing the frontier while parameterizing
-// the predicate keeps stage semantics in one place and lets neither consumer
-// drift from it (MUL-5483 review round 2).
-func StageBarrierClosedFunc(children []db.Issue, completed db.Issue, finished func(string) bool) bool {
 	if !siblingsAreStaged(children) {
 		for _, c := range children {
-			if !finished(c.Status) {
+			if !isTerminalChildStatus(c.Status) {
 				return false
 			}
 		}
@@ -410,7 +386,7 @@ func StageBarrierClosedFunc(children []db.Issue, completed db.Issue, finished fu
 		if !c.Stage.Valid {
 			continue // unstaged children are ignored by the frontier
 		}
-		if c.Stage.Int32 <= s && !finished(c.Status) {
+		if c.Stage.Int32 <= s && !isTerminalChildStatus(c.Status) {
 			return false
 		}
 	}

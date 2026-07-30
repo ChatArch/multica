@@ -6,7 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -230,88 +229,4 @@ func createChildIssue(t *testing.T, workspaceID, creatorID string, parent pgtype
 	}
 	t.Cleanup(func() { cleanupTestIssue(t, issueID) })
 	return issueID
-}
-
-// TestSubtreeSettled_RollsUpOnce covers finding 1 — the barrier the design
-// promised and the first cut never built. An allowlist alone still delivered one
-// inbox row per child reaching a finished state, so a 30-child agent-built tree
-// produced 30 notifications: the exact fire-on-every-child cascade #4320
-// reported. Completion must arrive as ONE signal when the last sibling settles.
-func TestSubtreeSettled_RollsUpOnce(t *testing.T) {
-	ctx := context.Background()
-	queries := db.New(testPool)
-	bus := events.New()
-
-	parentID := createTestIssue(t, testWorkspaceID, testUserID)
-	t.Cleanup(func() { cleanupTestIssue(t, parentID) })
-	children := []string{
-		createChildIssue(t, testWorkspaceID, testUserID, util.MustParseUUID(parentID)),
-		createChildIssue(t, testWorkspaceID, testUserID, util.MustParseUUID(parentID)),
-		createChildIssue(t, testWorkspaceID, testUserID, util.MustParseUUID(parentID)),
-	}
-
-	// The human watches the PARENT as a delegate — an agent built this tree.
-	if _, err := queries.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
-		IssueID: util.MustParseUUID(parentID), UserType: "member",
-		UserID: util.MustParseUUID(testUserID), Reason: "delegated",
-	}); err != nil {
-		t.Fatalf("seed parent subscriber: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM inbox_item WHERE issue_id = $1`, parentID)
-	})
-
-	agentID, _ := firstFixtureAgent(t)
-	agentEvent := events.Event{
-		Type: protocol.EventIssueUpdated, WorkspaceID: testWorkspaceID,
-		ActorType: "agent", ActorID: agentID,
-	}
-
-	rollups := func() int {
-		t.Helper()
-		var n int
-		if err := testPool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM inbox_item WHERE recipient_id=$1 AND issue_id=$2 AND type='subtree_settled'`,
-			testUserID, parentID).Scan(&n); err != nil {
-			t.Fatalf("count roll-ups: %v", err)
-		}
-		return n
-	}
-
-	settle := func(idx int, status string) {
-		t.Helper()
-		if _, err := testPool.Exec(ctx, `UPDATE issue SET status=$2 WHERE id=$1`, children[idx], status); err != nil {
-			t.Fatalf("settle child: %v", err)
-		}
-		child := handler.IssueResponse{
-			ID: children[idx], WorkspaceID: testWorkspaceID, Status: status,
-			ParentIssueID: &parentID,
-		}
-		notifyDelegatedSubtreeSettled(ctx, queries, bus, agentEvent, testWorkspaceID, child, "in_progress")
-	}
-
-	settle(0, "in_review")
-	if n := rollups(); n != 0 {
-		t.Fatalf("rolled up with the barrier still open (2 children unsettled), got %d", n)
-	}
-	settle(1, "done")
-	if n := rollups(); n != 0 {
-		t.Fatalf("rolled up with the barrier still open (1 child unsettled), got %d", n)
-	}
-
-	// Last sibling settles — exactly one signal, no matter how many children.
-	settle(2, "cancelled")
-	if n := rollups(); n != 1 {
-		t.Fatalf("expected exactly 1 roll-up when the last child settled, got %d", n)
-	}
-
-	// A settled -> settled edit must not re-fire it.
-	child := handler.IssueResponse{
-		ID: children[2], WorkspaceID: testWorkspaceID, Status: "done",
-		ParentIssueID: &parentID,
-	}
-	notifyDelegatedSubtreeSettled(ctx, queries, bus, agentEvent, testWorkspaceID, child, "cancelled")
-	if n := rollups(); n != 1 {
-		t.Fatalf("a settled -> settled edit re-fired the roll-up, now %d", n)
-	}
 }

@@ -65,10 +65,6 @@ const TYPE_LABEL: Record<InboxItemType, string> = {
   quick_create_done: "Quick-create done",
   quick_create_failed: "Quick-create failed",
   quick_create_unconfirmed: "Quick-create needs a check",
-  // One roll-up for a whole agent-built sub-tree finishing, delivered instead of
-  // one notification per child. Mirrors $.types.subtree_settled on web
-  // (packages/views/locales/*/inbox.json).
-  subtree_settled: "Sub-issues finished",
 };
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).
