@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -114,6 +116,105 @@ func TestDiscoverCodebuddyModelsRealHelpIsNotFallback(t *testing.T) {
 				t.Fatalf("real and fallback catalogs must stay distinguishable, both have %q", m.ID)
 			}
 		}
+	}
+}
+
+// countingCodebuddyStub writes a codebuddy stub that appends a line to a
+// counter file on every `--help` invocation, so a test can assert how many
+// times the (slow, 35s-capped) command actually ran. helpBody is emitted on
+// stdout for --help; --version always succeeds so runtime registration and the
+// thinking-cache key lookup behave normally.
+func countingCodebuddyStub(t *testing.T, helpBody string, helpExit int) (path, counter string) {
+	t.Helper()
+	dir := t.TempDir()
+	counter = filepath.Join(dir, "help-calls")
+	path = filepath.Join(dir, "codebuddy")
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  --version) echo '2.130.0'; exit 0 ;;\n" +
+		"  --help) echo call >> " + counter + "\n" +
+		"          cat <<'HELPEOF'\n" + helpBody + "\nHELPEOF\n" +
+		"          exit " + itoa(helpExit) + " ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write counting stub: %v", err)
+	}
+	return path, counter
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func helpCallCount(t *testing.T, counter string) int {
+	t.Helper()
+	b, err := os.ReadFile(counter)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("read counter: %v", err)
+	}
+	return len(strings.Fields(string(b)))
+}
+
+// TestListModelsCodebuddyRunsHelpAtMostOnce is the MUL-5549 follow-up: model
+// discovery and effort discovery both read `codebuddy --help`, and the effort
+// pass used to call it independently. That was masked while a failed --help was
+// wrongly memoised; once failures correctly stopped being cached, the failure
+// path ran the 35s command TWICE in one request — past the server's 60s running
+// timeout, so the request timed out and the late report was discarded as stale.
+// The user then got no list at all, not even the fallback.
+//
+// Both paths must therefore run --help exactly once. This goes through the full
+// ListModels entry point, since that is where the second call was introduced.
+func TestListModelsCodebuddyRunsHelpAtMostOnce(t *testing.T) {
+	const realHelp = "Usage: codebuddy [options]\n" +
+		"  --model <model>   Currently supported: (hy3, glm-5.2, kimi-k3-1)\n" +
+		"  --effort <level>  Reasoning effort level (low, medium, high, xhigh)"
+
+	for _, tc := range []struct {
+		name         string
+		helpBody     string
+		helpExit     int
+		wantFallback bool
+	}{
+		{name: "help succeeds", helpBody: realHelp, helpExit: 0},
+		// The original #6180 failure: interpreter missing, exit 127.
+		{name: "help fails", helpBody: "env: node: No such file or directory", helpExit: 127, wantFallback: true},
+		// Help runs but carries no model line (older//unauthenticated CLI).
+		{name: "help unparseable", helpBody: "Usage: codebuddy [options]", helpExit: 0, wantFallback: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, counter := countingCodebuddyStub(t, tc.helpBody, tc.helpExit)
+			resetCodebuddyHelpCache(t, path)
+			// cachedDiscovery and the thinking cache are package globals; clear
+			// both so this case actually executes the stub.
+			modelCacheMu.Lock()
+			delete(modelCache, "codebuddy")
+			modelCacheMu.Unlock()
+			resetThinkingCacheForTests()
+			t.Cleanup(resetThinkingCacheForTests)
+
+			catalog, err := ListModels(context.Background(), "codebuddy", path)
+			if err != nil {
+				t.Fatalf("ListModels(codebuddy): %v", err)
+			}
+			if catalog.Fallback != tc.wantFallback {
+				t.Errorf("Fallback = %v, want %v", catalog.Fallback, tc.wantFallback)
+			}
+			if got := helpCallCount(t, counter); got != 1 {
+				t.Errorf("`codebuddy --help` ran %d times, want exactly 1 — "+
+					"two 35s attempts in one request exceed the server's 60s running timeout", got)
+			}
+			// Whichever path was taken, the picker still gets models and the
+			// thinking picker still gets levels.
+			if len(catalog.Models) == 0 {
+				t.Fatal("expected a non-empty catalog")
+			}
+			if catalog.Models[0].Thinking == nil || len(catalog.Models[0].Thinking.SupportedLevels) == 0 {
+				t.Error("expected effort levels to be annotated on both the real and fallback paths")
+			}
+		})
 	}
 }
 

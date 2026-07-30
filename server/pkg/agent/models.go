@@ -195,13 +195,11 @@ func ListModels(ctx context.Context, providerType, executablePath string) (Catal
 			return discovered(discoverOpenclawAgents(ctx, executablePath))
 		})
 	case "codebuddy":
+		// discoverCodebuddyModels owns the thinking annotation too, so the one
+		// `--help` capture feeds both catalogs. Annotating out here would run
+		// the command a second time (MUL-5549).
 		return cachedDiscovery(providerType, func() (Catalog, error) {
-			catalog, err := discoverCodebuddyModels(ctx, executablePath)
-			if err != nil {
-				return Catalog{}, err
-			}
-			annotateCodebuddyThinking(ctx, catalog.Models, executablePath)
-			return catalog, nil
+			return discoverCodebuddyModels(ctx, executablePath)
 		})
 	case "qwen":
 		// Qwen Code has no account-independent headless model catalog. An
@@ -1730,22 +1728,40 @@ var codebuddyModelRe = regexp.MustCompile(`--model\s*<[^>]+>\s*.*?Currently supp
 // discoverCodebuddyModels runs `codebuddy --help` and extracts the
 // supported model list from its output. Falls back to a static list
 // when the binary is missing or the output cannot be parsed.
+// It runs `codebuddy --help` AT MOST ONCE per call and derives both the model
+// catalog and the per-model effort catalog from that single capture, so a slow
+// or failing --help cannot be paid for twice inside one model-list request.
 func discoverCodebuddyModels(ctx context.Context, executablePath string) (Catalog, error) {
 	if executablePath == "" {
 		executablePath = "codebuddy"
 	}
 	if _, err := exec.LookPath(executablePath); err != nil {
-		return Catalog{Models: codebuddyStaticModels(), Fallback: true}, nil
+		return codebuddyFallbackCatalog(), nil
 	}
 	helpOut := codebuddyHelpOutput(ctx, executablePath)
 	if helpOut == "" {
-		return Catalog{Models: codebuddyStaticModels(), Fallback: true}, nil
+		return codebuddyFallbackCatalog(), nil
 	}
 	models := parseCodebuddyModels(helpOut)
 	if len(models) == 0 {
-		return Catalog{Models: codebuddyStaticModels(), Fallback: true}, nil
+		return codebuddyFallbackCatalog(), nil
 	}
+	annotateCodebuddyThinking(ctx, models, executablePath, helpOut)
 	return Catalog{Models: models}, nil
+}
+
+// codebuddyFallbackCatalog is the static stand-in for a failed discovery.
+//
+// It applies the static effort levels directly instead of shelling out again:
+// whatever broke `--help` for the model catalog (missing binary, missing `node`
+// interpreter, timeout) breaks it for the effort catalog too, and a second 35s
+// attempt inside one request would push past the server's 60s running timeout —
+// costing the user even the fallback list this function exists to provide
+// (MUL-5549).
+func codebuddyFallbackCatalog() Catalog {
+	models := codebuddyStaticModels()
+	applyCodebuddyStaticThinking(models)
+	return Catalog{Models: models, Fallback: true}
 }
 
 // parseCodebuddyModels extracts model IDs from codebuddy --help output.

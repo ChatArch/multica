@@ -511,7 +511,17 @@ func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	return result
 }
 
-func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePath string) {
+// annotateCodebuddyThinking derives the effort catalog from helpOut — the SAME
+// `codebuddy --help` capture the model catalog was parsed from — rather than
+// running the command again.
+//
+// It used to call codebuddyHelpOutput itself. That was free while a failed
+// --help was (wrongly) memoised, but once failures correctly stopped being
+// cached it meant one ListModels could pay the 35s timeout twice, blowing past
+// the server's 60s running timeout and denying the user even the fallback list
+// (MUL-5549). Callers on the failure path skip this entirely and use
+// codebuddyFallbackCatalog, which applies the static levels without exec'ing.
+func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePath, helpOut string) {
 	if executablePath == "" {
 		executablePath = "codebuddy"
 	}
@@ -526,7 +536,20 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 		return
 	}
 
-	levels := codebuddyEffortSuperset(ctx, executablePath)
+	result := codebuddyThinkingByModel(models, codebuddyEffortSuperset(helpOut))
+	thinkingCachePut(key, result)
+
+	for i := range models {
+		if t, ok := result[models[i].ID]; ok && t != nil {
+			models[i].Thinking = t
+		}
+	}
+}
+
+// codebuddyThinkingByModel maps every model onto the shared effort catalog
+// built from levels. CodeBuddy advertises one `--effort` set for the whole CLI,
+// not per model, so every entry gets the same ModelThinking pointer.
+func codebuddyThinkingByModel(models []Model, levels []string) map[string]*ModelThinking {
 	thinkingLevels := make([]ThinkingLevel, 0, len(levels))
 	for _, value := range levels {
 		label, ok := codebuddyEffortLabel[value]
@@ -546,8 +569,14 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 			result[m.ID] = thinking
 		}
 	}
-	thinkingCachePut(key, result)
+	return result
+}
 
+// applyCodebuddyStaticThinking annotates models with the static effort
+// fallback. Used on the discovery-failure path, where re-running --help to
+// discover the real levels would just fail again — slowly.
+func applyCodebuddyStaticThinking(models []Model) {
+	result := codebuddyThinkingByModel(models, codebuddyStaticEffortFallback)
 	for i := range models {
 		if t, ok := result[models[i].ID]; ok && t != nil {
 			models[i].Thinking = t
@@ -555,8 +584,10 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 	}
 }
 
-func codebuddyEffortSuperset(ctx context.Context, executablePath string) []string {
-	helpOut := codebuddyHelpOutput(ctx, executablePath)
+// codebuddyEffortSuperset extracts the `--effort` levels from an already
+// captured `codebuddy --help`, falling back to the static set when the help
+// text carries no parseable effort line.
+func codebuddyEffortSuperset(helpOut string) []string {
 	if helpOut == "" {
 		return append([]string(nil), codebuddyStaticEffortFallback...)
 	}
