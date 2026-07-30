@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -100,12 +101,12 @@ func TestRollupBarrier_EachStageNotifiesOnce(t *testing.T) {
 	if n := rollupCount(t, testUserID, parentID); n != 2 {
 		t.Fatalf("roll-ups = %d, want 2 — the later stage was swallowed by the earlier stage's dedupe slot", n)
 	}
-	keys := map[string]bool{}
+	scopes := map[string]bool{}
 	for _, d := range rollupDetails(t, testUserID, parentID) {
-		keys[d["barrier_key"].(string)] = true
+		scopes[d["barrier_scope"].(string)] = true
 	}
-	if !keys["1"] || !keys["2"] {
-		t.Fatalf("barrier keys = %v, want one per stage", keys)
+	if !scopes["1"] || !scopes["2"] {
+		t.Fatalf("barrier scopes = %v, want one per stage", scopes)
 	}
 }
 
@@ -191,8 +192,14 @@ func TestRollupBarrier_DetailsValuesAreAllStrings(t *testing.T) {
 			t.Fatalf("details[%q] = %#v is not a string — mobile's inbox list parse would fail and render EMPTY", k, v)
 		}
 	}
-	if details[0]["barrier_key"] != "all" {
-		t.Fatalf("barrier_key = %v, want 'all' for an unstaged set", details[0]["barrier_key"])
+	if details[0]["barrier_scope"] != "all" {
+		t.Fatalf("barrier_scope = %v, want 'all' for an unstaged set", details[0]["barrier_scope"])
+	}
+	// barrier_key is barrier_scope plus a digest of the covered children, so it
+	// changes when membership changes. That is what reopens a settled barrier
+	// when a child is added (round 4).
+	if key, _ := details[0]["barrier_key"].(string); !strings.HasPrefix(key, "all:") || len(key) <= len("all:") {
+		t.Fatalf("barrier_key = %q, want 'all:<membership digest>'", key)
 	}
 }
 
@@ -275,14 +282,14 @@ func TestRollupBarrier_ReopenScopedToItsOwnBarrier(t *testing.T) {
 	// Stage 1 reopens: only its own summary is retired.
 	settleAndRoll(t, queries, bus, e, s1, parentID, "in_review", "in_progress")
 
-	keys := map[string]bool{}
+	scopes := map[string]bool{}
 	for _, d := range rollupDetails(t, testUserID, parentID) {
-		keys[d["barrier_key"].(string)] = true
+		scopes[d["barrier_scope"].(string)] = true
 	}
-	if keys["1"] {
+	if scopes["1"] {
 		t.Fatal("reopening stage 1 must retire its own roll-up")
 	}
-	if !keys["2"] {
+	if !scopes["2"] {
 		t.Fatal("reopening stage 1 must NOT retire stage 2's roll-up — it could never be re-sent")
 	}
 }

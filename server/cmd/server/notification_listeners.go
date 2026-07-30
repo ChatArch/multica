@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -477,10 +481,37 @@ func isSettledChildStatus(status string) bool { return settledChildStatuses[stat
 // (backlog -> todo) never archives, so stage 2 was silently swallowed
 // (MUL-5483 review round 3).
 type rollupBarrier struct {
+	// Scope is the stable identity of WHICH barrier: "all" for an unstaged
+	// sibling set, the stage number for a staged one. Archiving targets this.
+	Scope string
+	// Key is Scope plus a hash of the children the barrier covered, and is the
+	// dedupe identity. Deriving it from membership is what makes a barrier
+	// reopen correctly when a child is ADDED to an already-settled tree: a
+	// stable per-barrier key left the old active row occupying the unique slot,
+	// so the next completion was swallowed by ON CONFLICT DO NOTHING and the
+	// user never learned the new work finished (MUL-5483 review round 4).
+	//
+	// Membership-derived means no invalidation hook is required for correctness
+	// on child create, delete, stage move, or re-parent: any of those changes the
+	// hash, so the next close is a different row. Hooks only affect how promptly
+	// an already-delivered summary is retired.
 	Key      string
 	Stage    int32
 	Staged   bool
 	Children []db.Issue
+}
+
+// barrierMembershipKey builds the dedupe identity for a barrier: its scope plus a
+// short digest of the child ids it covers, sorted so the digest does not depend
+// on row order.
+func barrierMembershipKey(scope string, children []db.Issue) string {
+	ids := make([]string, 0, len(children))
+	for _, c := range children {
+		ids = append(ids, util.UUIDToString(c.ID))
+	}
+	sort.Strings(ids)
+	sum := sha256.Sum256([]byte(strings.Join(ids, ",")))
+	return scope + ":" + hex.EncodeToString(sum[:])[:12]
 }
 
 // resolveRollupBarrier returns the barrier `completed` closed, or ok=false when
@@ -488,7 +519,11 @@ type rollupBarrier struct {
 // mirrors StageBarrierClosedFunc).
 func resolveRollupBarrier(siblings []db.Issue, completed db.Issue) (rollupBarrier, bool) {
 	if !handler.SiblingsAreStaged(siblings) {
-		return rollupBarrier{Key: "all", Children: siblings}, true
+		return rollupBarrier{
+			Scope:    "all",
+			Key:      barrierMembershipKey("all", siblings),
+			Children: siblings,
+		}, true
 	}
 	if !completed.Stage.Valid {
 		return rollupBarrier{}, false
@@ -503,8 +538,10 @@ func resolveRollupBarrier(siblings []db.Issue, completed db.Issue) (rollupBarrie
 			members = append(members, c)
 		}
 	}
+	scope := strconv.FormatInt(int64(stage), 10)
 	return rollupBarrier{
-		Key:      strconv.FormatInt(int64(stage), 10),
+		Scope:    scope,
+		Key:      barrierMembershipKey(scope, members),
 		Stage:    stage,
 		Staged:   true,
 		Children: members,
@@ -577,7 +614,7 @@ func notifyDelegatedSubtreeSettled(
 	// barrier's roll-up so a later genuine re-settle can notify again. Scoped to
 	// the barrier so reopening stage 1 does not discard stage 2's summary.
 	if leavingSettled {
-		archiveSubtreeSettledForBarrier(ctx, queries, bus, workspaceID, *child.ParentIssueID, barrier.Key)
+		archiveSubtreeSettledScope(ctx, queries, bus, workspaceID, *child.ParentIssueID, barrier.Scope, "")
 		return
 	}
 	if !handler.StageBarrierClosedFunc(siblings, completed, isSettledChildStatus) {
@@ -605,15 +642,23 @@ func notifyDelegatedSubtreeSettled(
 	// (apps/mobile/data/{schemas,api}.ts, MUL-5483 review round 3).
 	detailsMap := map[string]string{
 		"parent_issue_id": *child.ParentIssueID,
+		"barrier_scope":   barrier.Scope,
 		"barrier_key":     barrier.Key,
 		"child_count":     strconv.Itoa(count),
 	}
 	body := fmt.Sprintf("All %d sub-issues have finished.", count)
 	if barrier.Staged {
-		detailsMap["stage"] = barrier.Key
-		body = fmt.Sprintf("Stage %s is complete — %d sub-issues finished.", barrier.Key, count)
+		detailsMap["stage"] = barrier.Scope
+		body = fmt.Sprintf("Stage %s is complete — %d sub-issues finished.", barrier.Scope, count)
 	}
 	details, _ := json.Marshal(detailsMap)
+
+	// Retire summaries for this barrier from an EARLIER membership before writing
+	// the current one, so the inbox never shows two contradictory counts for the
+	// same barrier. keep_key excludes the row we are about to write, leaving a
+	// concurrent close of the identical membership to the unique index rather
+	// than archiving and re-inserting it.
+	archiveSubtreeSettledScope(ctx, queries, bus, workspaceID, *child.ParentIssueID, barrier.Scope, barrier.Key)
 
 	for _, subID := range recipients {
 		if subID == e.ActorID {
@@ -687,25 +732,72 @@ func delegatedRollupRecipients(
 	return out
 }
 
-// archiveSubtreeSettledForBarrier retires one barrier's roll-up so a reopened
-// barrier that finishes again notifies again. Best-effort, and it tells affected
-// clients to self-heal — mirroring archiveStaleTaskFailedInbox.
-func archiveSubtreeSettledForBarrier(
+// retireReopenedParentRollup retires the parent's summary for the barrier a
+// newly created child joins, because that summary claimed the batch was done and
+// it no longer is.
+//
+// Only the barrier the child actually belongs to is retired: a new stage-3 child
+// says nothing about whether stage 1 finished. A child with no stage inside a
+// staged set participates in no barrier, so it retires nothing — matching
+// StageBarrierClosedFunc, which ignores unstaged children in a staged set.
+func retireReopenedParentRollup(
+	ctx context.Context,
+	queries *db.Queries,
+	bus *events.Bus,
+	workspaceID string,
+	issue handler.IssueResponse,
+) {
+	if issue.ParentIssueID == nil || *issue.ParentIssueID == "" {
+		return
+	}
+	parentID := parseUUID(*issue.ParentIssueID)
+	siblings, err := queries.ListChildIssues(ctx, parentID)
+	if err != nil {
+		slog.Error("subtree roll-up: failed to list siblings on child create",
+			"parent_id", *issue.ParentIssueID, "error", err)
+		return
+	}
+	var created db.Issue
+	found := false
+	for _, sib := range siblings {
+		if util.UUIDToString(sib.ID) == issue.ID {
+			created, found = sib, true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	barrier, ok := resolveRollupBarrier(siblings, created)
+	if !ok {
+		return
+	}
+	archiveSubtreeSettledScope(ctx, queries, bus, workspaceID, *issue.ParentIssueID, barrier.Scope, "")
+}
+
+// archiveSubtreeSettledScope retires the active roll-ups for one barrier of a
+// parent, keeping the row whose key is keepKey (pass "" to retire all). Used when
+// a barrier reopens, when a new child joins it, and to drop superseded summaries
+// before writing a fresh one. Best-effort, and it tells affected clients to
+// self-heal — mirroring archiveStaleTaskFailedInbox.
+func archiveSubtreeSettledScope(
 	ctx context.Context,
 	queries *db.Queries,
 	bus *events.Bus,
 	workspaceID string,
 	parentIssueID string,
-	barrierKey string,
+	barrierScope string,
+	keepKey string,
 ) {
-	rows, err := queries.ArchiveSubtreeSettledForBarrier(ctx, db.ArchiveSubtreeSettledForBarrierParams{
-		WorkspaceID: parseUUID(workspaceID),
-		IssueID:     parseUUID(parentIssueID),
-		BarrierKey:  barrierKey,
+	rows, err := queries.ArchiveSubtreeSettledScope(ctx, db.ArchiveSubtreeSettledScopeParams{
+		WorkspaceID:  parseUUID(workspaceID),
+		IssueID:      parseUUID(parentIssueID),
+		BarrierScope: barrierScope,
+		KeepKey:      keepKey,
 	})
 	if err != nil {
-		slog.Error("subtree roll-up: archive on reopen failed",
-			"parent_id", parentIssueID, "barrier_key", barrierKey, "error", err)
+		slog.Error("subtree roll-up: archive failed",
+			"parent_id", parentIssueID, "barrier_scope", barrierScope, "error", err)
 		return
 	}
 	if len(rows) == 0 {
@@ -926,6 +1018,17 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 		if !ok {
 			return
 		}
+
+		// A new child REOPENS its parent's barrier: whatever "this batch is
+		// finished" summary is sitting in the inbox is now false. Retiring it
+		// here makes the inbox honest immediately rather than only when the new
+		// child finishes (MUL-5483 review round 4).
+		//
+		// Correctness of the NEXT roll-up does not depend on this hook — the
+		// dedupe key is derived from barrier membership, so the new child already
+		// produces a different key. This is about not leaving a stale count on
+		// screen in the meantime.
+		retireReopenedParentRollup(ctx, queries, bus, e.WorkspaceID, issue)
 
 		// Track who already got notified to avoid duplicates
 		skip := map[string]bool{e.ActorID: true}

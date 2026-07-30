@@ -35,7 +35,10 @@ describe("inbox wire contract", () => {
       // Every value is a string. A number here drops the whole list.
       details: {
         parent_issue_id: "issue-parent",
-        barrier_key: "1",
+        // barrier_scope is the stable "which barrier"; barrier_key adds a digest
+        // of the children it covered so a membership change reopens it.
+        barrier_scope: "1",
+        barrier_key: "1:9f2c4ab71e05",
         child_count: "3",
         stage: "1",
       },

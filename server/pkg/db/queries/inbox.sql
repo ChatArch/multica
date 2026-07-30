@@ -156,16 +156,28 @@ ON CONFLICT (recipient_type, recipient_id, issue_id, (details ->> 'barrier_key')
 DO NOTHING
 RETURNING *;
 
--- name: ArchiveSubtreeSettledForBarrier :many
--- Retire the roll-up for ONE barrier of a parent, freeing its uniqueness slot so
--- a genuine re-settle of that barrier notifies again. Scoped to the barrier
--- rather than the whole parent: reopening a stage-1 child must not silently
--- discard the stage-2 summary, which would then never be re-sent (no further
--- transition INTO settled would occur for already-finished stage-2 children).
+-- name: ArchiveSubtreeSettledScope :many
+-- Retire the active roll-ups for ONE barrier of a parent, optionally keeping the
+-- one whose barrier_key matches @keep_key.
+--
+-- Keyed on barrier_SCOPE ('all', or the stage number) rather than barrier_key,
+-- because a barrier's membership changes over its life: barrier_key embeds a
+-- hash of the children it covered, so retiring "this barrier's summary" cannot
+-- be expressed as an exact key match.
+--
+--   * keep_key = '' retires everything for the barrier — used when it reopens
+--     (a child leaves a settled status) or when a new child joins it.
+--   * keep_key = the row about to be written retires only SUPERSEDED summaries,
+--     so the inbox never holds two contradictory counts for the same barrier,
+--     while a concurrent close of the identical membership is left for the
+--     unique index to dedupe instead of being archived and re-inserted.
+--
+-- Scoped to one barrier so reopening stage 1 never discards stage 2's summary.
 UPDATE inbox_item SET archived = true
 WHERE workspace_id = $1
   AND issue_id = $2
   AND type = 'subtree_settled'
-  AND details ->> 'barrier_key' = sqlc.arg('barrier_key')::text
+  AND details ->> 'barrier_scope' = sqlc.arg('barrier_scope')::text
+  AND details ->> 'barrier_key' <> sqlc.arg('keep_key')::text
   AND archived = false
 RETURNING recipient_type, recipient_id;

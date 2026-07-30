@@ -157,41 +157,59 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 	return i, err
 }
 
-const archiveSubtreeSettledForBarrier = `-- name: ArchiveSubtreeSettledForBarrier :many
+const archiveSubtreeSettledScope = `-- name: ArchiveSubtreeSettledScope :many
 UPDATE inbox_item SET archived = true
 WHERE workspace_id = $1
   AND issue_id = $2
   AND type = 'subtree_settled'
-  AND details ->> 'barrier_key' = $3::text
+  AND details ->> 'barrier_scope' = $3::text
+  AND details ->> 'barrier_key' <> $4::text
   AND archived = false
 RETURNING recipient_type, recipient_id
 `
 
-type ArchiveSubtreeSettledForBarrierParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	BarrierKey  string      `json:"barrier_key"`
+type ArchiveSubtreeSettledScopeParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	BarrierScope string      `json:"barrier_scope"`
+	KeepKey      string      `json:"keep_key"`
 }
 
-type ArchiveSubtreeSettledForBarrierRow struct {
+type ArchiveSubtreeSettledScopeRow struct {
 	RecipientType string      `json:"recipient_type"`
 	RecipientID   pgtype.UUID `json:"recipient_id"`
 }
 
-// Retire the roll-up for ONE barrier of a parent, freeing its uniqueness slot so
-// a genuine re-settle of that barrier notifies again. Scoped to the barrier
-// rather than the whole parent: reopening a stage-1 child must not silently
-// discard the stage-2 summary, which would then never be re-sent (no further
-// transition INTO settled would occur for already-finished stage-2 children).
-func (q *Queries) ArchiveSubtreeSettledForBarrier(ctx context.Context, arg ArchiveSubtreeSettledForBarrierParams) ([]ArchiveSubtreeSettledForBarrierRow, error) {
-	rows, err := q.db.Query(ctx, archiveSubtreeSettledForBarrier, arg.WorkspaceID, arg.IssueID, arg.BarrierKey)
+// Retire the active roll-ups for ONE barrier of a parent, optionally keeping the
+// one whose barrier_key matches @keep_key.
+//
+// Keyed on barrier_SCOPE ('all', or the stage number) rather than barrier_key,
+// because a barrier's membership changes over its life: barrier_key embeds a
+// hash of the children it covered, so retiring "this barrier's summary" cannot
+// be expressed as an exact key match.
+//
+//   - keep_key = ” retires everything for the barrier — used when it reopens
+//     (a child leaves a settled status) or when a new child joins it.
+//   - keep_key = the row about to be written retires only SUPERSEDED summaries,
+//     so the inbox never holds two contradictory counts for the same barrier,
+//     while a concurrent close of the identical membership is left for the
+//     unique index to dedupe instead of being archived and re-inserted.
+//
+// Scoped to one barrier so reopening stage 1 never discards stage 2's summary.
+func (q *Queries) ArchiveSubtreeSettledScope(ctx context.Context, arg ArchiveSubtreeSettledScopeParams) ([]ArchiveSubtreeSettledScopeRow, error) {
+	rows, err := q.db.Query(ctx, archiveSubtreeSettledScope,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.BarrierScope,
+		arg.KeepKey,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ArchiveSubtreeSettledForBarrierRow{}
+	items := []ArchiveSubtreeSettledScopeRow{}
 	for rows.Next() {
-		var i ArchiveSubtreeSettledForBarrierRow
+		var i ArchiveSubtreeSettledScopeRow
 		if err := rows.Scan(&i.RecipientType, &i.RecipientID); err != nil {
 			return nil, err
 		}
