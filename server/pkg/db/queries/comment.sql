@@ -1,11 +1,21 @@
 -- name: ListCommentsForIssue :many
--- All comments for an issue in chronological order, capped at $3 (DB safety
--- net). Issue p99 is ~30 comments, max ever observed in prod is ~1.1k, so
--- the handler-side cap of 2000 is purely defensive.
-SELECT * FROM comment
-WHERE issue_id = $1 AND workspace_id = $2
-ORDER BY created_at ASC, id ASC
-LIMIT $3;
+-- The NEWEST $3 comments for an issue, returned in chronological order.
+--
+-- Same shape and same reason as ListActivitiesForIssue: the inner query takes
+-- the window with the keyset ordering so the cap discards the OLDEST rows, and
+-- the outer query restores the ascending contract callers rely on. Backed by
+-- idx_comment_issue_keyset (migration 068).
+--
+-- The cap is still purely defensive here — issue p99 is ~30 comments and the max
+-- ever observed in prod is ~1.1k — but "defensive" is not a reason to drop the
+-- newest rows when it does fire (MUL-5492).
+SELECT * FROM (
+    SELECT * FROM comment
+    WHERE issue_id = $1 AND workspace_id = $2
+    ORDER BY created_at DESC, id DESC
+    LIMIT $3
+) AS recent
+ORDER BY created_at ASC, id ASC;
 
 -- name: ListCommentsSinceForIssue :many
 -- Comments created strictly after $3 in chronological order, capped at $4.

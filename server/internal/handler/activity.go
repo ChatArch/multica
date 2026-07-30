@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -45,13 +47,98 @@ type TimelineEntry struct {
 // data-shape rationale (#1929).
 const timelineHardCap = 2000
 
+// timelineProbeLimit reads one row past the cap so "we hit the cap" can be
+// distinguished from "the issue happens to have exactly timelineHardCap rows".
+// Without the probe row an issue sitting exactly on the boundary would be
+// reported as truncated and would drag the other list's window down with it.
+const timelineProbeLimit = timelineHardCap + 1
+
+// Truncation is signalled with response headers rather than body fields because
+// the unpaginated response is a bare JSON array (TimelineEntriesSchema =
+// z.array(TimelineEntrySchema) in packages/core/api/schemas.ts) with nowhere to
+// put a flag. Headers are additive: existing clients keep validating, and a
+// future "load earlier" affordance has the floor it needs to resume from.
+//
+// Exported so the CORS layer can reference the same identifiers
+// (corsExposedHeaders in server/cmd/server/router.go). A custom response header
+// is invisible to browser JS unless it is explicitly exposed, so a rename here
+// that did not reach the CORS list would silently switch the signal back off.
+const (
+	HeaderTimelineTruncated  = "X-Timeline-Truncated"
+	HeaderTimelineWindowFrom = "X-Timeline-Window-From"
+)
+
+// timelineKey is the (created_at, id) tuple the timeline is ordered by. It
+// mirrors the keyset tuple in ListCommentsForIssue / ListActivitiesForIssue so a
+// window floor computed here means exactly what it means in SQL. Comparisons use
+// the real timestamp and the raw UUID bytes (Postgres orders uuid bytewise)
+// rather than the formatted strings on TimelineEntry, which are second-precision
+// RFC3339 and would collapse sub-second ordering.
+type timelineKey struct {
+	At time.Time
+	ID pgtype.UUID
+}
+
+// before reports whether k sorts strictly before other in ascending order.
+func (k timelineKey) before(other timelineKey) bool {
+	if !k.At.Equal(other.At) {
+		return k.At.Before(other.At)
+	}
+	return bytes.Compare(k.ID.Bytes[:], other.ID.Bytes[:]) < 0
+}
+
+func commentKey(c db.Comment) timelineKey {
+	return timelineKey{At: c.CreatedAt.Time, ID: c.ID}
+}
+
+func activityKey(a db.ActivityLog) timelineKey {
+	return timelineKey{At: a.CreatedAt.Time, ID: a.ID}
+}
+
+// takeNewest trims a timelineProbeLimit read down to timelineHardCap and returns
+// the window floor when the probe row proved older rows exist. rows must be
+// ascending; the floor is the oldest row actually kept.
+func takeNewest[T any](rows []T, key func(T) timelineKey) ([]T, *timelineKey) {
+	if len(rows) <= timelineHardCap {
+		return rows, nil
+	}
+	kept := rows[len(rows)-timelineHardCap:]
+	floor := key(kept[0])
+	return kept, &floor
+}
+
+// clampFrom drops ascending rows older than floor.
+func clampFrom[T any](rows []T, floor timelineKey, key func(T) timelineKey) []T {
+	for i, row := range rows {
+		if !key(row).before(floor) {
+			return rows[i:]
+		}
+	}
+	return nil
+}
+
+// newerFloor returns whichever floor is later, treating nil as "no floor".
+func newerFloor(a, b *timelineKey) *timelineKey {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case a.before(*b):
+		return b
+	default:
+		return a
+	}
+}
+
 // timelinePaginatedResponse mirrors the wrapper shape produced by the prior
 // cursor-paginated ListTimeline (#2128). It is preserved as a backward-compat
 // surface for installed Desktop builds and stale Web bundles between #2128 and
 // #1929 that send `?limit=`/`?before=`/`?after=`/`?around=` and parse the
 // response with the old TimelinePageSchema (entries + cursors). Cursors are
-// always nil and `has_more_*` are always false: the new server returns the
-// whole timeline in one shot.
+// always nil and `has_more_after` is always false: the new server returns the
+// whole timeline in one shot. `has_more_before` is now truthful — it reports the
+// hard-cap clamp — instead of being hardcoded false.
 type timelinePaginatedResponse struct {
 	Entries       []TimelineEntry `json:"entries"`
 	NextCursor    *string         `json:"next_cursor"`
@@ -67,7 +154,7 @@ type timelinePaginatedResponse struct {
 //   - No pagination params → flat ASC `TimelineEntry[]`. Matches the legacy
 //     desktop contract (Multica.app ≤ v0.2.25) and the new client.
 //   - Any of `limit` / `before` / `after` / `around` present → wrapped object
-//     with DESC entries + null cursors + has_more_*=false. Matches what a
+//     with DESC entries + null cursors + has_more_after=false. Matches what a
 //     stale v0.2.26+ build expects when it parses the response with
 //     TimelinePageSchema; cursor-walking is now a no-op so the client just
 //     sees a single full page.
@@ -76,6 +163,9 @@ type timelinePaginatedResponse struct {
 // Time-based pagination was removed because it split reply threads at page
 // boundaries, and at observed data sizes (p99 ~30 comments per issue) the
 // cursor machinery was pure overhead.
+//
+// When the hard cap fires the timeline is a window of the NEWEST entries, and
+// the response says so via the X-Timeline-* headers (MUL-5492).
 func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
@@ -87,7 +177,7 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
-		Limit:       timelineHardCap,
+		Limit:       timelineProbeLimit,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
@@ -95,7 +185,7 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	activities, err := h.Queries.ListActivitiesForIssue(ctx, db.ListActivitiesForIssueParams{
 		IssueID: issue.ID,
-		Limit:   timelineHardCap,
+		Limit:   timelineProbeLimit,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list activities")
@@ -106,12 +196,40 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	wantWrapped := q.Get("limit") != "" || q.Get("before") != "" ||
 		q.Get("after") != "" || q.Get("around") != ""
 
+	// Each query independently returned the newest timelineHardCap rows of its
+	// own table, so each has its own window floor. Merging two windows with
+	// different floors yields a timeline that looks continuous but, below the
+	// higher floor, contains only one of the two kinds — e.g. comments with no
+	// interleaved activity at all. That is strictly worse than a timeline that
+	// visibly stops, because nothing about it looks wrong.
+	//
+	// Activity is machine-paced and comments are human-paced, so in practice
+	// activity hits its cap first and it is the activity floor that wins. Clamp
+	// both lists to the newest floor so the window returned is a contiguous,
+	// correctly interleaved slice of the timeline with no partial region.
+	comments, commentFloor := takeNewest(comments, commentKey)
+	activities, activityFloor := takeNewest(activities, activityKey)
+	floor := newerFloor(commentFloor, activityFloor)
+	if floor != nil {
+		comments = clampFrom(comments, *floor, commentKey)
+		activities = clampFrom(activities, *floor, activityKey)
+
+		w.Header().Set(HeaderTimelineTruncated, "true")
+		// Formatted with the same helper as TimelineEntry.CreatedAt so a client
+		// can compare the floor against entry timestamps directly, without
+		// having to normalize two different offset representations.
+		w.Header().Set(HeaderTimelineWindowFrom, timestampToString(pgtype.Timestamptz{Time: floor.At, Valid: true}))
+	}
+
 	if wantWrapped {
 		entries := h.mergeTimeline(r, comments, activities, false)
 		if entries == nil {
 			entries = []TimelineEntry{}
 		}
-		resp := timelinePaginatedResponse{Entries: entries}
+		resp := timelinePaginatedResponse{
+			Entries:       entries,
+			HasMoreBefore: floor != nil,
+		}
 		// `around=<id>`: locate the anchor in the DESC slice so the legacy
 		// client can scroll-to-highlight without a follow-up request.
 		if anchor := q.Get("around"); anchor != "" {
