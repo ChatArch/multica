@@ -2922,13 +2922,18 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 	// Self-heal a pinned executable path an in-place upgrade deleted (MUL-4486).
 	entry, _ = d.resolveAgentEntry(ctx, rt.Provider, entry)
 
-	models, err := agent.ListModels(ctx, rt.Provider, entry.Path)
+	catalog, err := agent.ListModels(ctx, rt.Provider, entry.Path)
 	if err != nil {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
 			"error":  err.Error(),
 		})
 		return
+	}
+	models := catalog.Models
+	if catalog.Fallback {
+		d.logger.Warn("model discovery fell back to a static catalog; reporting it as non-authoritative",
+			"runtime_id", rt.ID, "provider", rt.Provider, "path", entry.Path, "count", len(models))
 	}
 
 	// Wire format matches handler.ModelEntry. Use a struct (not
@@ -2993,6 +2998,10 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		"status":    "completed",
 		"models":    wire,
 		"supported": agent.ModelSelectionSupported(rt.Provider),
+		// Additive field: the models are still worth rendering, but the server
+		// must not persist them as this runtime's real catalog (MUL-5549).
+		// Older servers ignore it and keep the previous behaviour.
+		"fallback": catalog.Fallback,
 	})
 }
 

@@ -975,7 +975,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
           </Button>
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-          <AlertCircle className="h-8 w-8 text-muted-foreground/40" />
+          <AlertCircle className="h-8 w-8 text-faint-foreground" />
           <p className="text-body font-medium">{t(($) => $.detail.not_found.title)}</p>
           <p className="max-w-xs text-caption text-muted-foreground">
             {error instanceof Error ? error.message : t(($) => $.detail.not_found.fallback)}

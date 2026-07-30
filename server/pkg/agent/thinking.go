@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -453,9 +454,16 @@ var codebuddyEffortLabel = map[string]string{
 
 var codebuddyStaticEffortFallback = []string{"low", "medium", "high", "xhigh"}
 
-// codebuddyHelpCache caches the raw --help output so both model discovery
-// (models.go) and effort discovery avoid redundant slow CLI invocations.
-// CodeBuddy's --help takes ~30s; calling it twice on cold start wastes ~30s.
+// codebuddyHelpCache memoises the raw --help output across discovery rounds:
+// CodeBuddy's --help can take ~30s, so re-running it for every model-list
+// request would be painful.
+//
+// It is NOT what keeps a single request down to one invocation. That is
+// structural: discoverCodebuddyModels captures the help text once and hands the
+// string to the model and effort parsers, and its failure paths skip the effort
+// pass entirely (MUL-5549). Relying on the cache for that would be wrong — a
+// failed --help is deliberately not cached, so the second caller would re-run
+// the full 35s timeout.
 var (
 	codebuddyHelpMu    sync.Mutex
 	codebuddyHelpStore = map[string]codebuddyHelpEntry{}
@@ -468,9 +476,14 @@ type codebuddyHelpEntry struct {
 	expiresAt time.Time
 }
 
-// codebuddyHelpOutput runs `codebuddy --help` (cached for codebuddyHelpTTL).
-// Both discoverCodebuddyModels and codebuddyEffortSuperset call this so a
-// single cold invocation feeds both.
+// codebuddyHelpOutput runs `codebuddy --help` (cached for codebuddyHelpTTL) and
+// returns "" when the command could not be run.
+//
+// discoverCodebuddyModels is its only caller. The effort parser deliberately
+// takes an already-captured string instead of calling this itself, so one
+// discovery round can never pay the 35s timeout twice (MUL-5549). Keep it that
+// way: a new caller here reintroduces that bug on the failure path, where
+// nothing is cached to absorb the second run.
 func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	if executablePath == "" {
 		executablePath = "codebuddy"
@@ -487,7 +500,19 @@ func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, executablePath, "--help")
 	hideAgentWindow(cmd)
-	out, _ := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// A non-zero exit or a timeout means this is not usable help text, and
+		// CombinedOutput folds stderr in, so the failure message itself would
+		// be returned as if it were help. The canonical case: `codebuddy` is a
+		// `#!/usr/bin/env node` script installed under nvm, and a GUI-launched
+		// daemon does not inherit the interactive PATH, so the shebang fails
+		// and the "output" is `env: node: No such file or directory`. Returning
+		// that made every parser here silently fall back, and caching it pinned
+		// the failure for codebuddyHelpTTL (MUL-5549).
+		slog.Debug("codebuddy --help failed", "path", executablePath, "error", err)
+		return ""
+	}
 	result := string(out)
 
 	if result != "" {
@@ -498,7 +523,17 @@ func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	return result
 }
 
-func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePath string) {
+// annotateCodebuddyThinking derives the effort catalog from helpOut — the SAME
+// `codebuddy --help` capture the model catalog was parsed from — rather than
+// running the command again.
+//
+// It used to call codebuddyHelpOutput itself. That was free while a failed
+// --help was (wrongly) memoised, but once failures correctly stopped being
+// cached it meant one ListModels could pay the 35s timeout twice, blowing past
+// the server's 60s running timeout and denying the user even the fallback list
+// (MUL-5549). Callers on the failure path skip this entirely and use
+// codebuddyFallbackCatalog, which applies the static levels without exec'ing.
+func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePath, helpOut string) {
 	if executablePath == "" {
 		executablePath = "codebuddy"
 	}
@@ -513,7 +548,20 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 		return
 	}
 
-	levels := codebuddyEffortSuperset(ctx, executablePath)
+	result := codebuddyThinkingByModel(models, codebuddyEffortSuperset(helpOut))
+	thinkingCachePut(key, result)
+
+	for i := range models {
+		if t, ok := result[models[i].ID]; ok && t != nil {
+			models[i].Thinking = t
+		}
+	}
+}
+
+// codebuddyThinkingByModel maps every model onto the shared effort catalog
+// built from levels. CodeBuddy advertises one `--effort` set for the whole CLI,
+// not per model, so every entry gets the same ModelThinking pointer.
+func codebuddyThinkingByModel(models []Model, levels []string) map[string]*ModelThinking {
 	thinkingLevels := make([]ThinkingLevel, 0, len(levels))
 	for _, value := range levels {
 		label, ok := codebuddyEffortLabel[value]
@@ -533,8 +581,14 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 			result[m.ID] = thinking
 		}
 	}
-	thinkingCachePut(key, result)
+	return result
+}
 
+// applyCodebuddyStaticThinking annotates models with the static effort
+// fallback. Used on the discovery-failure path, where re-running --help to
+// discover the real levels would just fail again — slowly.
+func applyCodebuddyStaticThinking(models []Model) {
+	result := codebuddyThinkingByModel(models, codebuddyStaticEffortFallback)
 	for i := range models {
 		if t, ok := result[models[i].ID]; ok && t != nil {
 			models[i].Thinking = t
@@ -542,8 +596,10 @@ func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePa
 	}
 }
 
-func codebuddyEffortSuperset(ctx context.Context, executablePath string) []string {
-	helpOut := codebuddyHelpOutput(ctx, executablePath)
+// codebuddyEffortSuperset extracts the `--effort` levels from an already
+// captured `codebuddy --help`, falling back to the static set when the help
+// text carries no parseable effort line.
+func codebuddyEffortSuperset(helpOut string) []string {
 	if helpOut == "" {
 		return append([]string(nil), codebuddyStaticEffortFallback...)
 	}
@@ -613,10 +669,11 @@ func ValidateThinkingLevel(ctx context.Context, providerType, executablePath, mo
 	if model == "" && providerType == "codex" {
 		return false, nil
 	}
-	models, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModels(ctx, providerType, executablePath)
 	if err != nil {
 		return false, err
 	}
+	models := catalog.Models
 	target := model
 	if target == "" {
 		// Default model = the entry the catalog marks as Default. If no
@@ -664,11 +721,11 @@ func ValidateServiceTier(ctx context.Context, providerType, executablePath, mode
 	if providerType != "codex" || model == "" {
 		return false, nil
 	}
-	models, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModels(ctx, providerType, executablePath)
 	if err != nil {
 		return false, err
 	}
-	for _, m := range models {
+	for _, m := range catalog.Models {
 		if m.ID != model {
 			continue
 		}
