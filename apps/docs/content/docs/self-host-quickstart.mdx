@@ -244,19 +244,81 @@ docker compose -f docker-compose.selfhost.yml up -d
 curl -fsS http://localhost:8080/readyz
 ```
 
+Two ways to upgrade a Docker Compose install. On an existing install they produce the **same result** — the `selfhost` target in the `Makefile` runs the same `docker compose pull` + `up -d`, and additionally creates `.env` when it is missing and waits on `/health` before printing a status summary. Pick whichever you prefer:
+
+```bash
+cd multica
+git pull
+make selfhost
+```
+
+```bash
+cd multica
+git pull
+docker compose -f docker-compose.selfhost.yml pull
+docker compose -f docker-compose.selfhost.yml up -d
+```
+
+### What `git pull` actually does
+
+`git pull` updates **`docker-compose.selfhost.yml` itself** — new environment variables, new services, changed healthchecks. It is **not** how you get a new Multica version.
+
+The version you end up running is resolved by `docker compose pull`, which asks GHCR what the tag points at right now. A checkout that is months out of date will still pull today's `latest` images; conversely, `git pull` alone changes nothing until you pull images and recreate the containers.
+
+<Callout type="warning">
+**If you pinned `MULTICA_IMAGE_TAG`, neither command upgrades anything.** Both images resolve as `${MULTICA_IMAGE_TAG:-latest}` (`docker-compose.selfhost.yml:42`, `:125`), and `.env.example` ships `MULTICA_IMAGE_TAG=latest`. If your `.env` pins an exact release, `pull` just re-fetches that same tag and you stay on the old version — no error, no warning. Check before you upgrade:
+
+```bash
+grep MULTICA_IMAGE_TAG .env
+# MULTICA_IMAGE_TAG=v0.4.5   ← pinned: edit to `latest` (or the release you want) first
+```
+</Callout>
+
+### Your `.env` is not overwritten
+
+`make selfhost` only generates `.env` when the file is **missing**. Re-running it on an existing install leaves your `JWT_SECRET`, Postgres password, email settings, and `FRONTEND_ORIGIN` exactly as they were.
+
+### Back up Postgres first
+
+Migrations are forward-only, so take a dump before upgrading a deployment you care about:
+
+```bash
+docker compose -f docker-compose.selfhost.yml exec -T postgres \
+  pg_dump -U multica multica > multica-backup.sql && gzip multica-backup.sql
+```
+
+<Callout type="warning">
+**Do not pipe `pg_dump` straight into `gzip`.** A shell reports the exit status of the *last* command in a pipeline, so `pg_dump … | gzip > backup.sql.gz` exits `0` even when the dump failed — leaving a perfectly valid 20-byte archive containing nothing. Redirecting to a file first makes `pg_dump`'s own exit status the one that counts, and `&&` only compresses a dump that actually succeeded.
+</Callout>
+
+Use your own `POSTGRES_USER` / `POSTGRES_DB` from `.env` if you changed them from the `multica` defaults. Data lives in the named volume `multica_pgdata`, which survives `docker compose down` — but not `down -v`.
+
+### Migrations run themselves
+
+As in [Step 1](#1-pull-the-project-and-start-the-backend), the backend container runs `./migrate up` on startup (`docker/entrypoint.sh`) before serving traffic. There is no separate upgrade command — bringing up the new image *is* the migration step. Watch it happen:
+
+```bash
+docker compose -f docker-compose.selfhost.yml logs -f backend
+```
+
 Migrations run automatically when the backend starts; migrations that backfill historical data (such as 103) complete the backfill automatically too. In rare cases the automatic backfill fails with `refusing to drop legacy daily rollups` — see [Troubleshooting](/troubleshooting#migration-103-blocks-an-upgrade).
 
-Two prerequisites before upgrading:
+### Verify with `/readyz`, not `/health`
 
-- If `.env` pins `MULTICA_IMAGE_TAG` to a specific version, `pull` will not fetch new images and the instance stays on the pinned version.
-- Back up the database first:
+`/health` is a **liveness** probe — it returns `{"status":"ok"}` as long as the process is up, including when migrations failed. `/readyz` (`server/cmd/server/router.go:680`; `/healthz` is an alias) checks the database and the applied migration set, so it is the one that catches a bad upgrade:
 
-  ```bash
-  docker compose -f docker-compose.selfhost.yml exec -T postgres \
-    pg_dump -U multica multica > multica-backup.sql && gzip multica-backup.sql
-  ```
+```bash
+curl -s localhost:8080/readyz
+# {"status":"ok","checks":{"db":"ok","migrations":"ok"}}
+```
 
-  A pipeline reports only the last command's exit code, and a failed `pg_dump` would still produce a normal-looking empty archive — so the command writes the file first and compresses it only on success.
+Anything other than HTTP 200 with both checks `ok` means the new version did not finish migrating — check the backend logs before sending traffic at it.
+
+### Kubernetes
+
+Helm has its own upgrade path: set `images.backend.tag` / `images.frontend.tag` to the release you want in your values file, then `helm upgrade`. Changing the tag changes the pod spec, so Kubernetes pulls the new image and rolls the Deployments — this is the reliable route.
+
+`kubectl -n multica rollout restart` is **not** an upgrade on its own. The chart ships `pullPolicy: IfNotPresent` (`deploy/helm/multica/values.yaml`), so a node that already has that tag cached reuses the old image and the restart silently changes nothing — the same class of trap as a pinned `MULTICA_IMAGE_TAG`. If you want to track a floating tag that way, set `images.backend.pullPolicy` / `images.frontend.pullPolicy` to `Always` first. See the [Self-hosting guide](https://github.com/multica-ai/multica/blob/main/SELF_HOSTING.md#kubernetes-deployment-alternative).
 
 <Callout type="warning">
 `docker compose down` keeps `pgdata` and `backend_uploads`. Adding `-v` deletes these volumes, including the database; do not run `docker compose down -v` unless you intend to wipe the instance.

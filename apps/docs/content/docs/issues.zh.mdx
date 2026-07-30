@@ -52,6 +52,8 @@ Issue 是 Multica 中安排工作的基本单位：一项功能、一个 bug、�
 
 状态之间没有固定流转，成员和智能体都可以直接修改。
 
+把 issue 分配给智能体后，智能体开工时应把状态从 `backlog` / `todo` 推到 `in_progress`，交付后再推到 `in_review`。这些状态变更由智能体在运行中通过 Multica CLI 显式写入——task 开始或完成时，服务端不会自动改 issue 状态（下面两个系统例外除外）。`done` 通常留给人工确认，或由集成完成（例如带关闭意图的 PR 合并）。
+
 <Callout type="info">
 两个变化由系统执行：
 

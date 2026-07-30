@@ -37,6 +37,8 @@ GitHub 集成只读取安装时授权的仓库，不会提交代码、评论或 
 | PR 侧栏 | 在 issue 详情中显示关联的 pull request。 |
 | Co-authored-by | 在智能体创建的 commit 中加入 `Co-authored-by: multica-agent <github@multica.ai>`。 |
 | 自动关联 PR | 从 PR 的分支名、标题和正文中识别 issue 编号。 |
+| **PR 卡片 → CI 与可合并性** | 对每个关联的 PR，Multica 从 GitHub API 拉取一份经鉴权的快照，把它的 **CI 状态**和**可合并性**镜像到卡片上（见下方 **PR 卡片展示什么**）。 |
+
 
 
 ## 让 PR 关联到 issue

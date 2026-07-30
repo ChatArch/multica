@@ -36,6 +36,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 添加本地目录的界面只在 Desktop 中提供，因为浏览器不能选择电脑上的文件夹。
 
+<Callout type="warning">
+**这是逃生舱，不是更方便的默认项。** `local_directory` 是给那些"不得不这么开发"的人准备的 —— 典型是一个 checkout 就几十 GB 的游戏项目，不可能每来一条任务就重新 clone 一份。
+
+如果你的目录只是一个能正常 clone 的普通 git 仓库，**请用 `github_repo`**：它默认走 worktree 模式，同一个仓库上的任务可以无限并发。选 `local_directory` 意味着这个目录上的任务从此**只能一条一条串行跑**。先看上面的两种资源对照再决定。
+</Callout>
+
+
 1. 确认 Desktop 的本地守护进程在线。
 2. 打开项目的 **资源**。
 3. 选择"添加本地目录"，再选择要使用的文件夹。

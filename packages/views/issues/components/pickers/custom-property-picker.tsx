@@ -42,10 +42,14 @@ export function CustomPropertyValueEditor({
   issue,
   property,
   defaultOpen = false,
+  open,
+  onOpenChange,
 }: {
   issue: Issue;
   property: IssueProperty;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const setProperty = useSetIssueProperty();
   const unsetProperty = useUnsetIssueProperty();
@@ -58,6 +62,8 @@ export function CustomPropertyValueEditor({
       property={property}
       value={value}
       defaultOpen={defaultOpen}
+      open={open}
+      onOpenChange={onOpenChange}
       onChange={(next) => {
         if (next === undefined) {
           unsetProperty.mutate(
@@ -149,7 +155,7 @@ export function CustomPropertyValueInput({
         triggerRender={triggerRender}
         footer={clearFooter}
       >
-        <p className="px-2 py-1.5 text-xs text-muted-foreground">
+        <p className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.pickers.custom_property.archived_hint)}
         </p>
       </PropertyPicker>
@@ -458,7 +464,7 @@ export function CustomPropertyValueDisplay({
           {selected.map((option) => (
             <span
               key={option.id}
-              className="inline-flex max-w-32 items-center gap-1 rounded-full border border-surface-border px-1.5 py-px text-[11px]"
+              className="inline-flex max-w-32 items-center gap-1 rounded-full border border-surface-border px-1.5 py-px text-micro"
             >
               <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: option.color }} />
               <span className="truncate">{option.name}</span>

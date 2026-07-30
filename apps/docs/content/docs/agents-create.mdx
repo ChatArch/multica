@@ -108,7 +108,7 @@ Editing configuration does not change tasks already running. Later tasks use the
 Environment variables suit limited-privilege credentials the agent needs at run time, such as a read-only API key or a single-scope token.
 
 <Callout type="warning">
-`custom_env` values are stored in the Multica server database — they are not "stays on this machine" data. Regular agent list and detail endpoints never return plaintext; only workspace `owner`s and `admin`s can unlock and modify values, and every read or change leaves an audit record. A running agent cannot call the admin endpoints to read another agent's variables.
+**`custom_env` values are stored in plaintext in the Multica server database** — they are not "stays on this machine" data. Agent list and detail endpoints no longer return any env values, only an opaque count; only workspace `owner`s and `admin`s can unlock and modify values, and every read or change leaves an audit record. A running agent cannot call the admin endpoints to read another agent's variables.
 </Callout>
 
 Do not use production database admin passwords or other high-value long-lived credentials.

@@ -259,8 +259,10 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
 
-	var outputMu sync.Mutex
-	var output strings.Builder
+	// Hermes streams interim narration and the final answer as the same
+	// agent_message_chunk type; the tracker keeps only the post-tool-call block
+	// for Result.Output while retaining the full text for error detection.
+	var deliverable acpDeliverableTracker
 	// streamingCurrentTurn gates all session updates so that history
 	// replay (Hermes sends full prior-turn transcripts on session/resume,
 	// and may flush queued chunks before our session/prompt response
@@ -289,11 +291,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			if !streamingCurrentTurn.Load() {
 				return
 			}
-			if msg.Type == MessageText {
-				outputMu.Lock()
-				output.WriteString(msg.Content)
-				outputMu.Unlock()
-			}
+			deliverable.observe(msg)
 			trySend(msgCh, msg)
 		},
 		onPromptDone: func(result hermesPromptResult) {
@@ -341,6 +339,10 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		finalStatus := "completed"
 		var finalError string
 		var sessionID string
+		// Set when the ACP runtime refuses the session we asked to
+		// resume. Only that is curable by starting a fresh session, so
+		// handshake/network failures below must leave it false.
+		var resumeRejected bool
 		effectiveModel := strings.TrimSpace(opts.Model)
 		// The model id the runtime reports as current right after
 		// session/new or session/resume. Used to skip a redundant
@@ -429,6 +431,8 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 		c.sessionID = sessionID
 		b.cfg.Logger.Info("hermes session created", "session_id", sessionID)
+		// Mid-flight pin: daemon PinTaskSession keys off MessageStatus+SessionID.
+		trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 
 		// 3. If the caller picked a model (via agent.model from the
 		// UI dropdown), ask hermes to switch the session to it
@@ -471,12 +475,14 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 						"session_id", sessionID,
 					)
 					sessionID = ""
+					resumeRejected = true
 				}
 				resCh <- Result{
-					Status:     finalStatus,
-					Error:      finalError,
-					DurationMs: time.Since(startTime).Milliseconds(),
-					SessionID:  sessionID,
+					Status:         finalStatus,
+					Error:          finalError,
+					DurationMs:     time.Since(startTime).Milliseconds(),
+					SessionID:      sessionID,
+					ResumeRejected: resumeRejected,
 				}
 				return
 			}
@@ -528,6 +534,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 						"session_id", sessionID,
 					)
 					sessionID = ""
+					resumeRejected = true
 				}
 			}
 		} else {
@@ -579,9 +586,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 		streamingCurrentTurn.Store(false)
 
-		outputMu.Lock()
-		finalOutput := output.String()
-		outputMu.Unlock()
+		finalOutput, providerErrorOutput := deliverable.result()
 
 		// Hermes reports stopReason=end_turn even when the upstream
 		// LLM call ultimately fails (HTTP 429 rate-limit, expired
@@ -591,7 +596,9 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// warning), the agent text stream contains the synthetic
 		// "API call failed after N retries..." turn the adapter
 		// injects on give-up, or there's no output to fall back on.
-		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, finalOutput, providerErr)
+		// It reads the full text stream, not the deliverable, so a
+		// give-up turn that lands before a tool call stays visible.
+		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
 		// Build usage map.
 		c.usageMu.Lock()
@@ -608,12 +615,13 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 
 		resCh <- Result{
-			Status:     finalStatus,
-			Output:     finalOutput,
-			Error:      finalError,
-			DurationMs: duration.Milliseconds(),
-			SessionID:  sessionID,
-			Usage:      usageMap,
+			Status:         finalStatus,
+			Output:         finalOutput,
+			Error:          finalError,
+			DurationMs:     duration.Milliseconds(),
+			SessionID:      sessionID,
+			ResumeRejected: resumeRejected,
+			Usage:          usageMap,
 		}
 	}()
 
@@ -674,6 +682,11 @@ func waitForHermesPipeDrain(readerDone, stderrDone <-chan struct{}, timeout time
 type hermesPromptResult struct {
 	stopReason string
 	usage      TokenUsage
+	// modelID is the model the agent actually billed this turn against, as
+	// reported on `result._meta.modelId`. Empty for agents that don't report
+	// it. Backends use it to attribute usage when the session handshake
+	// didn't surface a model id (see grok.go).
+	modelID string
 }
 
 type hermesClient struct {
@@ -1099,6 +1112,7 @@ func (c *hermesClient) extractPromptResult(data json.RawMessage) {
 	var resp struct {
 		StopReason string          `json:"stopReason"`
 		Usage      json.RawMessage `json:"usage"`
+		Meta       json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return
@@ -1106,14 +1120,76 @@ func (c *hermesClient) extractPromptResult(data json.RawMessage) {
 
 	pr := hermesPromptResult{
 		stopReason: resp.StopReason,
+		modelID:    parseACPModelIDFromMeta(resp.Meta),
 	}
 	if len(resp.Usage) > 0 && string(resp.Usage) != "null" {
 		pr.usage = parseACPTokenUsage(resp.Usage)
+	}
+	// Prefer the standard top-level ACP `usage` field when present. Some
+	// agents (notably xAI Grok Build) put per-turn metering only under
+	// result._meta — either as `_meta.usage` or as flat token counters on
+	// `_meta` itself. Without this fallback, tasks complete with an empty
+	// usage map and Multica's Usage/cost dashboards stay at zero.
+	if !acpTokenUsagePresent(pr.usage) {
+		if metaUsage := parseACPTokenUsageFromMeta(resp.Meta); acpTokenUsagePresent(metaUsage) {
+			pr.usage = metaUsage
+		}
 	}
 
 	if c.onPromptDone != nil {
 		c.onPromptDone(pr)
 	}
+}
+
+// acpTokenUsagePresent reports whether any token counter is non-zero.
+func acpTokenUsagePresent(u TokenUsage) bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
+}
+
+// parseACPTokenUsageFromMeta extracts token usage from an ACP result `_meta`
+// object. Grok Build returns shapes like:
+//
+//	{"inputTokens":…,"outputTokens":…,"cachedReadTokens":…,"usage":{…}}
+//
+// Prefer the nested `usage` object when it carries counters; otherwise parse
+// the flat `_meta` fields with the same alias rules as top-level usage.
+func parseACPTokenUsageFromMeta(meta json.RawMessage) TokenUsage {
+	if len(meta) == 0 || string(meta) == "null" {
+		return TokenUsage{}
+	}
+	var envelope struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(meta, &envelope); err == nil {
+		if len(envelope.Usage) > 0 && string(envelope.Usage) != "null" {
+			if u := parseACPTokenUsage(envelope.Usage); acpTokenUsagePresent(u) {
+				return u
+			}
+		}
+	}
+	return parseACPTokenUsage(meta)
+}
+
+// parseACPModelIDFromMeta pulls the model id off an ACP result `_meta`
+// object. Grok Build stamps every turn with `_meta.modelId`, which is the
+// only authoritative statement of what the turn was billed against — the
+// session handshake reports a model id on `session/new` but NOT on
+// `session/load`, so a resumed session has no other source.
+func parseACPModelIDFromMeta(meta json.RawMessage) string {
+	if len(meta) == 0 || string(meta) == "null" {
+		return ""
+	}
+	var r struct {
+		ModelID      string `json:"modelId"`
+		ModelIDSnake string `json:"model_id"`
+	}
+	if err := json.Unmarshal(meta, &r); err != nil {
+		return ""
+	}
+	if id := strings.TrimSpace(r.ModelID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(r.ModelIDSnake)
 }
 
 func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
@@ -1590,6 +1666,9 @@ func (c *hermesClient) handleUsageUpdate(data json.RawMessage) {
 	if usage.CacheWriteTokens > c.usage.CacheWriteTokens {
 		c.usage.CacheWriteTokens = usage.CacheWriteTokens
 	}
+	if usage.CostUSDTicks > c.usage.CostUSDTicks {
+		c.usage.CostUSDTicks = usage.CostUSDTicks
+	}
 	c.usageMu.Unlock()
 }
 
@@ -1601,7 +1680,7 @@ func parseACPTokenUsage(data json.RawMessage) TokenUsage {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return TokenUsage{}
 	}
-	return TokenUsage{
+	usage := TokenUsage{
 		InputTokens:  acpUsageInt64(fields, "inputTokens", "input_tokens"),
 		OutputTokens: acpUsageInt64(fields, "outputTokens", "output_tokens"),
 		CacheReadTokens: acpUsageInt64(fields,
@@ -1617,7 +1696,42 @@ func parseACPTokenUsage(data json.RawMessage) TokenUsage {
 			"cache_write_tokens",
 			"cache_creation_input_tokens",
 		),
+		// The provider's own price for this turn, already inclusive of
+		// request-level pricing rules we cannot reconstruct from token
+		// counts (see TokenUsage.CostUSDTicks).
+		CostUSDTicks: acpUsageInt64(fields, "costUsdTicks", "cost_usd_ticks"),
 	}
+	return excludeACPCachedInput(usage, acpUsageInt64(fields, "totalTokens", "total_tokens"))
+}
+
+// excludeACPCachedInput re-buckets a usage record whose `inputTokens` already
+// contains `cachedReadTokens`, so the persisted buckets stay mutually
+// exclusive and dashboard cost math does not charge the cached prefix twice
+// (same normalization codex.go applies via codexUncachedInputTokens).
+//
+// ACP does not specify whether cached reads are counted inside inputTokens.
+// Grok Build counts them inside: a real `grok 0.2.106` turn reports
+// inputTokens=12929, cachedReadTokens=10880, outputTokens=29,
+// totalTokens=12958 — i.e. total == input + output, so the cached prefix is
+// counted once, within input. The same payload's costUsdTicks=75360000
+// ($0.007536) matches exactly (12929-10880) uncached input + 10880 cached
+// read + 29 output at xAI's published grok-4.5 rates, confirming how xAI
+// bills it. Kept raw, that turn is priced as if 12929 tokens were uncached —
+// ~4x the real spend on a cache-heavy turn.
+//
+// `totalTokens` is the only self-describing signal available, so the
+// re-bucketing only happens when it is present and equals input + output.
+// Agents that report exclusive buckets (total == input + cached + output) or
+// omit totalTokens keep their counters untouched.
+func excludeACPCachedInput(usage TokenUsage, totalTokens int64) TokenUsage {
+	if totalTokens <= 0 || usage.CacheReadTokens <= 0 || usage.CacheReadTokens > usage.InputTokens {
+		return usage
+	}
+	if totalTokens != usage.InputTokens+usage.OutputTokens {
+		return usage
+	}
+	usage.InputTokens -= usage.CacheReadTokens
+	return usage
 }
 
 func acpUsageInt64(fields map[string]json.RawMessage, names ...string) int64 {
@@ -2077,6 +2191,13 @@ type acpProviderErrorSniffer struct {
 	lines    []string // captured error lines, bounded
 	seen     map[string]bool
 	terminal bool // sticky: at least one line matched acpTerminalErrorRe
+	// echoJSON tracks an incomplete structured payload from a Python
+	// INFO/DEBUG root-logger record. The JSON scanner state is persisted
+	// across Write calls so only actual payload continuations are skipped.
+	echoJSON     bool
+	echoDepth    int
+	echoInString bool
+	echoEscaped  bool
 }
 
 // acpErrorHeaderRe matches the first line of an API-error block.
@@ -2107,6 +2228,33 @@ var acpAgentOutputTerminalRe = regexp.MustCompile(`API call failed after \d+ ret
 
 const acpMaxErrorLines = 8
 
+// acpLogRecordPrefixRe matches the start of a Python `logging` record that
+// Hermes writes to stderr: "YYYY-MM-DD HH:MM:SS[,mmm] [LEVEL] logger: ...".
+// Capture groups are level, logger, and payload. Matching every logger is
+// important because a non-root ERROR record also ends a preceding root INFO
+// record and must remain visible to the provider-error matchers.
+var acpLogRecordPrefixRe = regexp.MustCompile(
+	`^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:,[0-9]+)? \[([A-Z]+)\] ([A-Za-z0-9_.-]+):\s*(.*)$`,
+)
+
+// acpEchoLogLevels are the Python root-logger levels Hermes uses purely to
+// echo conversation and tool data to stderr. Those records are arbitrary
+// payload, never a provider error, even when they embed strings such as
+// "❌", "Error:", "HTTP 429", or "API call failed". ERROR / WARNING /
+// CRITICAL records are real diagnostics and must still be matched.
+var acpEchoLogLevels = map[string]bool{"INFO": true, "DEBUG": true}
+
+// acpMaxErrorLineLen bounds the length of the persisted provider-error
+// summary. Genuine ACP provider-error lines are short (an error header plus
+// a one-line "Error: ..." detail — see TestHermesProviderErrorSniffer, ~150
+// bytes), but an oversized echo that slips past the log-record filter could
+// otherwise store tens of KB. This bound is applied only when BUILDING the
+// stored message, never as a precondition for *classifying* a line as an
+// error: a real provider failure whose single line happens to exceed this
+// length must still fail the run, not be silently dropped (GitHub
+// multica#5862 — do not gate matching on length).
+const acpMaxErrorLineLen = 4096
+
 // newACPProviderErrorSniffer returns a sniffer that tags its messages
 // with the given provider name (e.g. "hermes", "kimi") so failure
 // strings make it obvious which runtime produced the error.
@@ -2132,10 +2280,41 @@ func (s *acpProviderErrorSniffer) Write(p []byte) (int, error) {
 	complete = string(data[:nl])
 	s.remains = append(s.remains[:0], data[nl+1:]...)
 
-	for _, line := range strings.Split(complete, "\n") {
-		line = strings.TrimSpace(line)
+	for _, rawLine := range strings.Split(complete, "\n") {
+		rawLine = strings.TrimSuffix(rawLine, "\r")
+		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
+		}
+		// INFO/DEBUG root records are conversation/tool echoes and never
+		// reach the error matchers. When their payload is structured JSON,
+		// track brace depth across physical lines and skip only until that
+		// JSON closes. A complete single-line echo therefore cannot hide a
+		// following bare provider error. Any Python logger prefix also
+		// starts a new record, so non-root ERROR diagnostics remain visible
+		// (GitHub multica#5862).
+		if m := acpLogRecordPrefixRe.FindStringSubmatch(line); m != nil {
+			s.resetEchoJSON()
+			if acpEchoLogLevels[m[1]] && m[2] == "root" {
+				s.startEchoJSON(m[3])
+				continue
+			}
+		} else if s.echoJSON {
+			// A strong, unindented provider-error header is a new bare
+			// error block even if a malformed echo never closed. Indented
+			// error-looking text remains part of the structured echo. This
+			// also applies when the echo was truncated inside a JSON string:
+			// an unescaped physical newline is not valid inside that string.
+			indented := rawLine[0] == ' ' || rawLine[0] == '\t'
+			bareError := strings.HasPrefix(line, "⚠️") ||
+				strings.HasPrefix(line, "❌") ||
+				strings.HasPrefix(line, "[ERROR]")
+			if !indented && bareError && acpErrorHeaderRe.MatchString(line) {
+				s.resetEchoJSON()
+			} else {
+				s.consumeEchoJSON(rawLine)
+				continue
+			}
 		}
 		if !(acpErrorHeaderRe.MatchString(line) || acpErrorDetailRe.MatchString(line)) {
 			continue
@@ -2153,6 +2332,55 @@ func (s *acpProviderErrorSniffer) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+func (s *acpProviderErrorSniffer) startEchoJSON(payload string) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || (payload[0] != '{' && payload[0] != '[') {
+		return
+	}
+	s.echoJSON = true
+	s.consumeEchoJSON(payload)
+}
+
+// consumeEchoJSON tracks only structural JSON bytes. It avoids buffering
+// arbitrary conversation/tool payloads while still recognizing their exact
+// multi-line boundary, including braces inside quoted strings.
+func (s *acpProviderErrorSniffer) consumeEchoJSON(fragment string) {
+	for i := 0; i < len(fragment); i++ {
+		switch {
+		case s.echoEscaped:
+			s.echoEscaped = false
+		case s.echoInString:
+			switch fragment[i] {
+			case '\\':
+				s.echoEscaped = true
+			case '"':
+				s.echoInString = false
+			}
+		default:
+			switch fragment[i] {
+			case '"':
+				s.echoInString = true
+			case '{', '[':
+				s.echoDepth++
+			case '}', ']':
+				if s.echoDepth > 0 {
+					s.echoDepth--
+				}
+			}
+		}
+	}
+	if s.echoDepth == 0 {
+		s.resetEchoJSON()
+	}
+}
+
+func (s *acpProviderErrorSniffer) resetEchoJSON() {
+	s.echoJSON = false
+	s.echoDepth = 0
+	s.echoInString = false
+	s.echoEscaped = false
 }
 
 // message returns a single-line summary suitable for the task
@@ -2195,16 +2423,27 @@ func (s *acpProviderErrorSniffer) messageLocked() string {
 		if m := acpErrorDetailRe.FindStringSubmatch(line); m != nil {
 			detail := strings.TrimSpace(m[1])
 			if detail != "" {
-				return prefix + detail
+				return acpTruncateError(prefix + detail)
 			}
 		}
 	}
 	for _, line := range s.lines {
 		if acpErrorHeaderRe.MatchString(line) {
-			return prefix + line
+			return acpTruncateError(prefix + line)
 		}
 	}
 	return ""
+}
+
+// acpTruncateError bounds a persisted provider-error summary to
+// acpMaxErrorLineLen bytes on a valid UTF-8 boundary, marking any cut.
+// Classification already happened by the time this runs; it only limits
+// how much of an oversized message is stored, never whether a run fails.
+func acpTruncateError(msg string) string {
+	if len(msg) <= acpMaxErrorLineLen {
+		return msg
+	}
+	return strings.ToValidUTF8(msg[:acpMaxErrorLineLen], "") + "…(truncated)"
 }
 
 // promoteACPResultOnProviderError flips finalStatus to "failed" if

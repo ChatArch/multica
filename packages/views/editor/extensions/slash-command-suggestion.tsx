@@ -20,6 +20,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 
 const MAX_ITEMS = 20;
 
@@ -109,7 +110,7 @@ export const SlashCommandList = forwardRef<
   if (items.length === 0) {
     if (hideOnEmpty) return null;
     return (
-      <div className="rounded-md border bg-popover p-2 text-xs text-muted-foreground shadow-md">
+      <div className="rounded-md border bg-popover p-2 text-caption text-muted-foreground shadow-md">
         {t(($) =>
           query.trim()
             ? $.slash_command.no_results
@@ -140,7 +141,7 @@ export const SlashCommandList = forwardRef<
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
-            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-xs transition-colors ${
+            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-caption transition-colors ${
               selectedIndex === index ? "bg-accent" : "hover:bg-accent/50"
             }`}
             onClick={() => selectItem(index)}
@@ -202,6 +203,9 @@ export function createSlashCommandSuggestion(qc: QueryClient): Omit<
   return {
     char: "/",
     pluginKey,
+    // Only open over a `/` the user actually typed, so a pasted path
+    // (`/usr/local/bin`) never opens the skill picker (MUL-5429).
+    shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
     items: ({ query }) => buildItems(qc, query),
     command: ({ editor, range, props }) => {
       const nodeAfter = editor.view.state.selection.$to.nodeAfter;
@@ -273,6 +277,9 @@ export function createBuiltinCommandSuggestion(): Omit<
   return {
     char: "/",
     pluginKey,
+    // Only open over a `/` the user actually typed, so a pasted path
+    // (`/usr/local/bin`) never opens the command menu (MUL-5429).
+    shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
     items: ({ query }) => buildBuiltinCommandItems(query),
     command: ({ editor, range, props }) => {
       // Insert the plain-text prefix (e.g. "/note ") rather than a rich node,

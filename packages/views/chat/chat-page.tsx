@@ -149,6 +149,15 @@ export function ChatPage() {
     setComposingNew(true);
   };
 
+  const changeProjectContext = (projectId: string | null) => {
+    if (projectId === c.activeProjectId) return;
+    c.handleProjectChange(projectId);
+    // Removing a project stays in the current conversation. Choosing a
+    // project for an existing conversation starts a clean session, and mobile
+    // must remain in the compose pane after activeSessionId is cleared.
+    if (!c.currentSession || projectId !== null) setComposingNew(true);
+  };
+
   // URL → new chat: `?agent=<id>` is the deep link used by "DM" entry points
   // (e.g. the agent detail page) to land on a fresh compose bound to that
   // agent. The permission-filtered agent list loads async, so the intent is
@@ -192,7 +201,7 @@ export function ChatPage() {
   const listHeader = (
     <PageHeader className="justify-between">
       <div className="flex items-center gap-2">
-        <h1 className="text-sm font-semibold">{t(($) => $.page.title)}</h1>
+        <h1 className="text-body font-semibold">{t(($) => $.page.title)}</h1>
       </div>
       {newChatButton}
     </PageHeader>
@@ -214,8 +223,10 @@ export function ChatPage() {
   // banner + input. Identical composition to the floating window's body, so a
   // brand-new chat (no active session) shows the agent-aware empty state + input.
   // No compose-box agent selector — the agent is fixed when the chat starts.
+  // `@container`: the conversation column's gutter (CHAT_GUTTER) widens with
+  // THIS pane, which the user resizes independently of the browser window.
   const conversation = (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="flex flex-1 flex-col min-h-0 @container">
       {c.currentSession && (
         <ChatSessionHeader
           session={c.currentSession}
@@ -252,13 +263,18 @@ export function ChatPage() {
         onSend={c.handleSend}
         restoreDraftRequest={c.restoreDraftRequest}
         onRestoreDraftApplied={c.handleRestoreDraftApplied}
-        onUploadFile={c.handleUploadFile}
+        uploadEnabled={c.uploadEnabled}
         onStop={c.handleStop}
         isRunning={!!c.pendingTaskId}
         disabled={c.isSessionArchived || c.isAgentArchived}
         noAgent={c.noAgent}
         agentArchived={c.isAgentArchived}
         agentName={c.activeAgent?.name}
+        projects={c.projects}
+        projectId={c.activeProjectId}
+        projectContextUnsupported={c.projectContextUnsupported}
+        onProjectChange={changeProjectContext}
+        isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
       />
     </div>
@@ -327,7 +343,7 @@ export function ChatPage() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
               <MessageSquare className="h-10 w-10 text-muted-foreground/30" />
-              <p className="text-sm">{t(($) => $.page.select_prompt)}</p>
+              <p className="text-body">{t(($) => $.page.select_prompt)}</p>
             </div>
           )}
         </div>
