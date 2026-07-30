@@ -421,6 +421,11 @@
     "issues_count_other": "{{count}} 个 issue",
     "chip_agents_working_unknown": "工作中的智能体：—"
   },
+  "filtered_empty": {
+    "title": "没有符合筛选条件的 issue",
+    "hint": "调整或清除筛选条件，就能看到这个视图里的 issue。",
+    "clear_button": "清除筛选"
+  },
   "agent_live": {
     "is_working": "{{name}} 在工作",
     "is_queued": "{{name}} 排队中",

@@ -421,6 +421,11 @@
     "issues_count_other": "issue {{count}}개",
     "chip_agents_working_unknown": "작업 중인 에이전트: —"
   },
+  "filtered_empty": {
+    "title": "필터 조건에 맞는 issue가 없습니다",
+    "hint": "필터를 조정하거나 해제하면 이 보기의 issue가 표시됩니다.",
+    "clear_button": "필터 해제"
+  },
   "agent_live": {
     "is_working": "{{name}} 작업 중",
     "is_queued": "{{name}} 대기 중",

@@ -1,6 +1,5 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -8,19 +7,17 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@multica/ui/components/ui/hover-card";
-import { workspaceWorkingAgentsOptions } from "@multica/core/agents";
-import { useWorkspaceId } from "@multica/core/hooks";
-import type {
-  WorkspaceWorkingAgent,
-  WorkspaceWorkingAgentMineRelation,
-} from "@multica/core/types";
+import { useActorName } from "@multica/core/workspace/hooks";
+import type { WorkingAgentSummary } from "@multica/core/types";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
 import { useT } from "../../i18n";
 
 interface WorkspaceAgentWorkingChipProps {
   value: boolean;
   onToggle: () => void;
-  mineRelation?: WorkspaceWorkingAgentMineRelation;
+  /** Agents working inside the surface this header belongs to, already narrowed
+   *  by its scope and every active filter. `undefined` = not resolved yet. */
+  agents: readonly WorkingAgentSummary[] | undefined;
 }
 
 /**
@@ -39,17 +36,22 @@ export function chipAppearance(
 }
 
 /**
- * Hover body for every surface that reads the working-agents projection —
- * the workspace filter chip here and the sub-issues header chip on issue
- * detail. Shared so a narrowed read and an unnarrowed one describe activity
- * the same way; the only difference between the two is the query's scope.
+ * Hover body for every surface that reads a working-agents projection — the
+ * surface filter chip here and the sub-issues header chip on issue detail.
+ * Shared so a narrowed read and an unnarrowed one describe activity the same
+ * way; the only difference between the two is the projection's scope.
+ *
+ * Identity comes from the workspace agent directory rather than the payload:
+ * the surface projection is a facet of ids and counts, and resolving names
+ * here keeps one definition of an agent's name/avatar across both callers.
  */
 export function WorkingAgentsHoverContent({
   agents,
 }: {
-  agents: readonly WorkspaceWorkingAgent[];
+  agents: readonly WorkingAgentSummary[];
 }) {
   const { t } = useT("issues");
+  const { getActorName, getActorInitials, getActorAvatarUrl } = useActorName();
 
   if (agents.length === 0) {
     return (
@@ -68,14 +70,14 @@ export function WorkingAgentsHoverContent({
         {agents.map((agent) => (
           <div key={agent.id} className="flex items-center gap-2 text-caption">
             <ActorAvatar
-              name={agent.name}
-              initials={agent.name.trim().slice(0, 2).toUpperCase()}
-              avatarUrl={agent.avatar_url ?? undefined}
+              name={getActorName("agent", agent.id)}
+              initials={getActorInitials("agent", agent.id)}
+              avatarUrl={getActorAvatarUrl("agent", agent.id) ?? undefined}
               isAgent
               size="sm"
             />
             <span className="min-w-0 flex-1 truncate font-medium">
-              {agent.name}
+              {getActorName("agent", agent.id)}
             </span>
             <span className="shrink-0 tabular-nums text-muted-foreground">
               {t(($) => $.agent_activity.tasks_count, {
@@ -90,31 +92,35 @@ export function WorkingAgentsHoverContent({
 }
 
 /**
- * Workspace-wide agents-working filter chip.
+ * Agents-working filter chip for an issue surface header.
  *
- * Its data comes from the independent GET /api/working-agents projection, so
- * Table pagination and locally loaded rows can never turn a known count into
- * an indeterminate "—". Issues uses the workspace issue projection; My Issues
- * passes its authenticated relation so the server scopes the count. Clicking
- * the control only toggles view state; the Table controller translates these
- * same returned ids into assignee filters.
+ * The number IS the post-click row count's authority: it counts the agents
+ * working on rows this surface's scope AND active filters would show, resolved
+ * by the surface controller from the server-side `working_agents` facet — the
+ * same compiled query the rows come from. Before MUL-5525 it ran its own
+ * workspace-wide `/api/working-agents` read, so on a project page it could
+ * advertise agents working nowhere near that project and open an empty list.
+ *
+ * `agents === undefined` means the projection has not resolved. The chip then
+ * renders an explicit indeterminate label instead of a number, because "0" and
+ * "not known yet" are different claims.
+ *
+ * Clicking only toggles view state; the controller turns the running-issue set
+ * into the query's `working_issue_ids` filter.
  */
 export function WorkspaceAgentWorkingChip({
   value,
   onToggle,
-  mineRelation,
+  agents,
 }: WorkspaceAgentWorkingChipProps) {
   const { t } = useT("issues");
-  const wsId = useWorkspaceId();
-  const { data: agents = [] } = useQuery(
-    workspaceWorkingAgentsOptions(wsId, "issue", mineRelation),
-  );
-  const agentIds = agents.map((agent) => agent.id);
-  const agentCount = agents.length;
+  const resolved = agents !== undefined;
+  const agentIds = agents?.map((agent) => agent.id) ?? [];
+  const agentCount = agentIds.length;
   const hasAgents = agentCount > 0;
-  const label = t(($) => $.agent_activity.chip_agents_working, {
-    count: agentCount,
-  });
+  const label = resolved
+    ? t(($) => $.agent_activity.chip_agents_working, { count: agentCount })
+    : t(($) => $.agent_activity.chip_agents_working_unknown);
   const appearance = chipAppearance(value, hasAgents);
 
   const trigger = (
@@ -127,7 +133,9 @@ export function WorkspaceAgentWorkingChip({
       aria-label={label}
     >
       {hasAgents && <AgentAvatarStack agentIds={agentIds} size="sm" max={3} />}
-      <span className="tabular-nums md:hidden">{agentCount}</span>
+      <span className="tabular-nums md:hidden">
+        {resolved ? agentCount : "—"}
+      </span>
       <span className="hidden tabular-nums md:inline">{label}</span>
     </Button>
   );
@@ -136,7 +144,7 @@ export function WorkspaceAgentWorkingChip({
     <HoverCard>
       <HoverCardTrigger render={trigger} />
       <HoverCardContent align="end" className="w-72">
-        <WorkingAgentsHoverContent agents={agents} />
+        <WorkingAgentsHoverContent agents={agents ?? []} />
       </HoverCardContent>
     </HoverCard>
   );

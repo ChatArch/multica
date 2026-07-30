@@ -2,40 +2,20 @@
 
 import { cleanup, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceWorkingAgent } from "@multica/core/types";
+import type { WorkingAgentSummary } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 
 const mockState = vi.hoisted(() => ({
-  agents: [] as WorkspaceWorkingAgent[],
-  requestedType: undefined as string | undefined,
-  requestedMineRelation: undefined as string | undefined,
   avatarAgentIds: undefined as readonly string[] | undefined,
   buttonVariant: undefined as string | undefined,
 }));
 
-vi.mock("@multica/core/hooks", () => ({
-  useWorkspaceId: () => "ws-1",
-}));
-
-vi.mock("@multica/core/agents", () => ({
-  workspaceWorkingAgentsOptions: (
-    wsId: string,
-    type?: string,
-    mineRelation?: string,
-  ) => {
-    mockState.requestedType = type;
-    mockState.requestedMineRelation = mineRelation;
-    return {
-      queryKey: [
-        "workspaces",
-        wsId,
-        "working-agents",
-        "list",
-        type ?? "all",
-        mineRelation ? `mine:${mineRelation}` : "workspace",
-      ],
-    };
-  },
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => ({
+    getActorName: (_type: string, id: string) => `Agent ${id}`,
+    getActorInitials: () => "AG",
+    getActorAvatarUrl: () => null,
+  }),
 }));
 
 vi.mock("../../agents/components/agent-avatar-stack", () => ({
@@ -44,17 +24,6 @@ vi.mock("../../agents/components/agent-avatar-stack", () => ({
     return <div data-testid="agent-avatar-stack">{agentIds.length}</div>;
   },
 }));
-
-vi.mock("@tanstack/react-query", async () => {
-  const actual =
-    await vi.importActual<typeof import("@tanstack/react-query")>(
-      "@tanstack/react-query",
-    );
-  return {
-    ...actual,
-    useQuery: () => ({ data: mockState.agents }),
-  };
-});
 
 vi.mock("@multica/ui/components/ui/button", async () => {
   const actual =
@@ -75,39 +44,25 @@ import {
   chipAppearance,
 } from "./workspace-agent-working-chip";
 
-function makeAgent(
-  id: string,
-  runningTaskCount = 1,
-): WorkspaceWorkingAgent {
-  return {
-    id,
-    name: `Agent ${id}`,
-    avatar_url: null,
-    running_task_count: runningTaskCount,
-    issue_ids: [],
-  };
+function makeAgent(id: string, runningTaskCount = 1): WorkingAgentSummary {
+  return { id, running_task_count: runningTaskCount };
 }
 
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
-  mockState.agents = [];
-  mockState.requestedType = undefined;
-  mockState.requestedMineRelation = undefined;
   mockState.avatarAgentIds = undefined;
   mockState.buttonVariant = undefined;
 });
 
 describe("WorkspaceAgentWorkingChip", () => {
-  it("shows every agent returned by the independent workspace API", () => {
-    mockState.agents = [
-      makeAgent("agent-1"),
-      makeAgent("agent-2", 3),
-      makeAgent("agent-3"),
-    ];
-
+  it("counts exactly the agents the surface projection supplies", () => {
     renderWithI18n(
-      <WorkspaceAgentWorkingChip value={false} onToggle={() => {}} />,
+      <WorkspaceAgentWorkingChip
+        value={false}
+        onToggle={() => {}}
+        agents={[makeAgent("agent-1"), makeAgent("agent-2", 3), makeAgent("agent-3")]}
+      />,
     );
 
     expect(
@@ -118,27 +73,15 @@ describe("WorkspaceAgentWorkingChip", () => {
       "agent-2",
       "agent-3",
     ]);
-    expect(mockState.requestedType).toBe("issue");
-    expect(mockState.requestedMineRelation).toBeUndefined();
     expect(mockState.buttonVariant).toBe("brandSubtle");
   });
 
-  it("requests the selected My Issues relation when the header is scoped", () => {
+  // The whole point of MUL-5525: the chip must not invent a count of its own.
+  // A surface whose filters leave no working rows has to read zero even while
+  // other agents are busy elsewhere in the workspace.
+  it("shows a known zero for a surface with no working rows", () => {
     renderWithI18n(
-      <WorkspaceAgentWorkingChip
-        value={false}
-        onToggle={() => {}}
-        mineRelation="involved"
-      />,
-    );
-
-    expect(mockState.requestedType).toBe("issue");
-    expect(mockState.requestedMineRelation).toBe("involved");
-  });
-
-  it("shows a known zero instead of an indeterminate Table value", () => {
-    renderWithI18n(
-      <WorkspaceAgentWorkingChip value={false} onToggle={() => {}} />,
+      <WorkspaceAgentWorkingChip value={false} onToggle={() => {}} agents={[]} />,
     );
 
     expect(
@@ -148,9 +91,24 @@ describe("WorkspaceAgentWorkingChip", () => {
     expect(mockState.buttonVariant).toBe("outline");
   });
 
+  it("renders an indeterminate label while the projection is unresolved", () => {
+    renderWithI18n(
+      <WorkspaceAgentWorkingChip
+        value={false}
+        onToggle={() => {}}
+        agents={undefined}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Agents working: —" }),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("agent-avatar-stack")).toBeNull();
+  });
+
   it("keeps the active filter visually selected after the final agent stops", () => {
     renderWithI18n(
-      <WorkspaceAgentWorkingChip value onToggle={() => {}} />,
+      <WorkspaceAgentWorkingChip value onToggle={() => {}} agents={[]} />,
     );
 
     expect(mockState.buttonVariant).toBe("brand");
