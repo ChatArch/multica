@@ -600,69 +600,39 @@ func frontmatterBodyStart(content string) (int, bool) {
 }
 
 // hasFrontmatterName reports whether the frontmatter body (the slice starting
-// just after the opening `---` line) contains a top-level, non-empty `name`
-// entry before the closing `---`.
+// just after the opening `---` line) contains a top-level `name` key before
+// the closing `---`, whatever its spelling or value.
+//
+// This is the malformed-block twin of frontmatterHasNameKey: it answers the
+// same question for blocks that do not parse, where the caller is choosing
+// between re-synthesizing (name present) and injecting a fresh `name` (name
+// absent). The invariant is key presence, not value presence — `"name":`,
+// `'name':`, and a valueless `name:` are all the key, and injecting a second
+// one above any of them yields a duplicate mapping key that strict loaders
+// reject, leaving the skill unloadable rather than healed (MUL-5529). Reading
+// a plain scalar like `name:value` as the key over-detects, and deliberately
+// so: the block is already unparseable, and re-synthesis is the route that
+// repairs it.
 //
 // Only unindented keys count. An indented `name:` belongs to a nested mapping
-// (`metadata:\n  name: foo`), and treating it as the skill's name would miss
-// that the block has no top-level name at all.
-//
-// This is detection only, and deliberately lexical so it still works on the
-// malformed blocks that route to re-synthesis. It over-reads on purpose: a
-// value continuing onto indented lines counts as a name, so `name:` with the
-// value on the next line is not mistaken for a nameless block (which would get
-// a second top-level `name` injected above it — two keys, which strict loaders
-// reject). Locating the bytes to *replace* is a different problem and belongs
-// to frontmatterNameValueSpan, which asks the YAML parser instead of guessing.
+// (`metadata:\n  name: foo`), so the block still has no top-level name.
 func hasFrontmatterName(fmBody string) bool {
-	_, _, ok := lexicalFrontmatterNameSpan(fmBody)
-	return ok
-}
-
-func lexicalFrontmatterNameSpan(fmBody string) (start, end int, ok bool) {
 	closeIdx := strings.Index(fmBody, "\n---")
 	if closeIdx < 0 {
-		// Missing close — scan everything we have and fall through. The
-		// frontmatter is malformed and OpenCode will reject it anyway, but
-		// detecting an existing name keeps us from layering a second one
-		// on top.
+		// Missing close — scan everything we have. The frontmatter is
+		// malformed and strict runtimes reject it anyway, but detecting an
+		// existing name keeps us from layering a second one on top.
 		closeIdx = len(fmBody)
 	}
-	lines := strings.Split(fmBody[:closeIdx], "\n")
-	offsets := make([]int, len(lines))
-	pos := 0
-	for i, line := range lines {
-		offsets[i] = pos
-		pos += len(line) + 1 // +1 for the newline Split consumed
+	for _, line := range strings.Split(fmBody[:closeIdx], "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "name:") ||
+			strings.HasPrefix(line, `"name":`) ||
+			strings.HasPrefix(line, `'name':`) {
+			return true
+		}
 	}
-
-	for i, line := range lines {
-		if !strings.HasPrefix(line, "name:") {
-			continue
-		}
-		inline := strings.Trim(strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "name:")), `"'`)
-		last := i
-		hasValue := inline != ""
-		for j := i + 1; j < len(lines); j++ {
-			cont := strings.TrimSuffix(lines[j], "\r")
-			if strings.TrimSpace(cont) == "" {
-				// A blank line may sit inside a block scalar, so it does not
-				// end the value — but it only joins the span once a further
-				// indented line proves the value really continued.
-				continue
-			}
-			if !strings.HasPrefix(cont, " ") && !strings.HasPrefix(cont, "\t") {
-				break
-			}
-			last = j
-			hasValue = true
-		}
-		if !hasValue {
-			continue
-		}
-		return offsets[i], offsets[last] + len(lines[last]), true
-	}
-	return 0, 0, false
+	return false
 }
 
 // frontmatterNameValueSpan returns the byte range of the whole top-level `name`

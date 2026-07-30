@@ -33,25 +33,52 @@ func parseFrontmatter(t *testing.T, content string) map[string]any {
 // is not valid YAML (an unquoted `: ` in the description is the canonical case)
 // must be rewritten into a parseable block instead of being shipped as-is, or a
 // strict runtime drops the whole skill on load.
+//
+// The name key's spelling must not change the route: `"name":`, `'name':`, and
+// a valueless `name:` are the same top-level key as a bare `name: x`, so a
+// block carrying any of them already has a name. Misreading them as nameless
+// injects a second `name` above the malformed block — a duplicate mapping key,
+// so the output stays unloadable instead of being healed (MUL-5529).
 func TestEnsureSkillFrontmatterReSynthesizesInvalidYAML(t *testing.T) {
 	t.Parallel()
 
 	const body = "# Heading\n\nReal skill body.\n"
-	// `description: bad: value` is the exact failure mode from the issue: the
-	// second `: ` makes YAML treat the tail as a nested mapping.
-	broken := "---\nname: keep-me\ndescription: bad: value here\n---\n\n" + body
-
-	got := ensureSkillFrontmatter(broken, "my-slug", "DB description: with a colon")
-
-	fm := parseFrontmatter(t, got)
-	if name, _ := fm["name"].(string); name != "my-slug" {
-		t.Errorf("name = %#v, want %q", fm["name"], "my-slug")
+	cases := []struct {
+		name     string
+		nameLine string
+	}{
+		{name: "bare name key", nameLine: "name: keep-me"},
+		{name: "double quoted name key", nameLine: `"name": keep-me`},
+		{name: "single quoted name key", nameLine: `'name': keep-me`},
+		{name: "name key with no value", nameLine: "name:"},
 	}
-	if desc, _ := fm["description"].(string); desc != "DB description: with a colon" {
-		t.Errorf("description = %#v, want the DB description verbatim", fm["description"])
-	}
-	if !strings.Contains(got, "Real skill body.") {
-		t.Errorf("body was dropped during re-synthesis:\n%s", got)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// `description: bad: value here` is the exact failure mode from
+			// the issue: the second `: ` makes YAML treat the tail as a
+			// nested mapping.
+			broken := "---\n" + tc.nameLine + "\ndescription: bad: value here\n---\n\n" + body
+			if isFrontmatterValidYAML(broken) {
+				t.Fatalf("fixture parses; it no longer exercises the malformed branch:\n%s", broken)
+			}
+
+			got := ensureSkillFrontmatter(broken, "my-slug", "DB description: with a colon")
+
+			// parseFrontmatter fails the test on output a strict runtime
+			// would reject — including the duplicate `name` this guards.
+			fm := parseFrontmatter(t, got)
+			if name, _ := fm["name"].(string); name != "my-slug" {
+				t.Errorf("name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+			}
+			if desc, _ := fm["description"].(string); desc != "DB description: with a colon" {
+				t.Errorf("description = %#v, want the DB description verbatim\noutput:\n%s", fm["description"], got)
+			}
+			if !strings.Contains(got, "Real skill body.") {
+				t.Errorf("body was dropped during re-synthesis:\n%s", got)
+			}
+		})
 	}
 }
 
