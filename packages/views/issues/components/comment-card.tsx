@@ -1081,7 +1081,11 @@ function CommentCardImpl({
             ) : (
               <>
                 <div className="pl-10 text-body leading-relaxed text-foreground/85">
-                  {entry.comment_type === "quick_action" ? (
+                  {/* Keyed on the id, never on comment_type: `type` is
+                      client-supplied on the generic comment endpoint, so
+                      keying the collapsed rendering off it would let any
+                      member post a comment whose body is hidden by default. */}
+                  {entry.quick_action_id ? (
                     <QuickActionCommentBody content={entry.content ?? ""} />
                   ) : (
                     <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />

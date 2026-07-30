@@ -1,8 +1,4 @@
-// `quick_action` marks a comment produced by clicking a configured quick
-// action (MUL-5465). It renders as a collapsed one-line card rather than the
-// raw rendered prompt — eight Code Review clicks would otherwise bury the
-// discussion. Downstream switches must keep a `default` branch.
-export type CommentType = "comment" | "status_change" | "progress_update" | "system" | "quick_action";
+export type CommentType = "comment" | "status_change" | "progress_update" | "system";
 
 // `system` is used by platform-generated rows (e.g. the parent-issue
 // child-done notification, MUL-2538). System rows carry a zero UUID for
@@ -34,9 +30,10 @@ export interface Comment {
   resolved_by_type: CommentAuthorType | null;
   resolved_by_id: string | null;
   source_task_id?: string | null;
-  // The quick action that produced this comment; set only when
-  // type === "quick_action" (MUL-5465). Absent when the action was since
-  // deleted, in which case the renderer falls back to a plain comment.
+  // The quick action that produced this comment (MUL-5465). A quick action
+  // posts an ORDINARY comment and marks it with this id; the collapsed card
+  // keys off the id rather than a dedicated `type`, because `type` is
+  // client-supplied on the generic comment endpoint and would be forgeable.
   quick_action_id?: string | null;
   // Per-target result of every explicit @agent / @squad mention in this comment
   // (MUL-4525 §2). Present only on create/edit responses; older servers omit it.

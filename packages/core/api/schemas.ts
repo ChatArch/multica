@@ -556,7 +556,7 @@ export const CommentSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   source_task_id: z.string().nullable().optional(),
-  // Set only on type === "quick_action" rows (MUL-5465).
+  // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
 }).loose();
 

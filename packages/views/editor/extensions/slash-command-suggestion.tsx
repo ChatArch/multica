@@ -334,26 +334,35 @@ export function createBuiltinCommandSuggestion(
         if (!render) return;
         const id = quickActionIdFromItem(props);
 
-        // The "/query" text is deliberately left in place while the request is
-        // in flight. Deleting first meant a failed or slow render destroyed
+        // The "/query" text is deliberately left in place while the request
+        // is in flight. Deleting first meant a failed or slow render destroyed
         // what the user typed with nothing to show for it, and the insert then
         // landed wherever the caret happened to be by the time it resolved.
+        //
+        // Snapshot the EXACT text under the range, not just its shape. A
+        // prefix check ("does it still start with /") passes when the user
+        // rewrote `/review` into `/fix` mid-request, and the stale response
+        // would then overwrite the new command.
+        const originalText = editor.state.doc.textBetween(range.from, range.to);
+
         void render(id)
           .then((content) => {
             if (!content) return;
-            // The document may have changed during the request. Only replace
-            // the original range if it still holds the slash query we started
-            // from; otherwise fall back to the caret so a stale offset can
-            // never overwrite unrelated text the user typed meanwhile.
-            const stillValid =
-              range.to <= editor.state.doc.content.size &&
-              editor.state.doc.textBetween(range.from, range.to).startsWith("/");
-            const chain = editor.chain().focus();
-            if (stillValid) {
-              chain.insertContentAt({ from: range.from, to: range.to }, content).run();
-            } else {
-              chain.insertContent(content).run();
+            const withinDoc = range.to <= editor.state.doc.content.size;
+            const unchanged =
+              withinDoc && editor.state.doc.textBetween(range.from, range.to) === originalText;
+            if (!unchanged) {
+              // The command was edited, moved, or removed while the request
+              // was outstanding. Inserting anywhere now would either clobber
+              // the user's newer text or drop the body in an unrelated spot,
+              // so this pick is simply abandoned.
+              return;
             }
+            editor
+              .chain()
+              .focus()
+              .insertContentAt({ from: range.from, to: range.to }, content)
+              .run();
             window.getSelection()?.collapseToEnd();
           })
           .catch((error: unknown) => {

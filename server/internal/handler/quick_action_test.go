@@ -117,16 +117,17 @@ func TestValidateQuickActionAssignee(t *testing.T) {
 	}
 }
 
-// TestValidateQuickActionPromptRejectsTriggerMentions locks the one-action /
-// one-target invariant (MUL-5465, review finding #3).
+// TestValidateQuickActionPromptRejectsSideEffectMentions locks the
+// one-action / one-reached-party invariant (MUL-5465, review findings #3 and
+// round-two #1).
 //
-// The prompt is appended verbatim to a comment that then runs through the
-// normal mention pipeline, so an agent or squad mention inside it would
-// enqueue a SECOND target beside the configured one — and the sidebar only
-// reports the first outcome, so the extra run would be invisible at the click.
-// Issue and member mentions are harmless (they render as links and enqueue
-// nothing) and stay allowed.
-func TestValidateQuickActionPromptRejectsTriggerMentions(t *testing.T) {
+// The prompt is appended verbatim to a comment that runs through the normal
+// mention pipeline, so every mention inside it acts on every click: agent /
+// squad / all enqueue a second target, and MEMBER creates an inbox
+// notification for that person. Member was allowed in the first pass on the
+// reasoning that it "only renders a link" — notification_listeners.go shows
+// otherwise, so it is refused too. Only issue links reach nobody.
+func TestValidateQuickActionPromptRejectsSideEffectMentions(t *testing.T) {
 	const id = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 	for _, tc := range []struct {
 		name    string
@@ -135,8 +136,8 @@ func TestValidateQuickActionPromptRejectsTriggerMentions(t *testing.T) {
 	}{
 		{"plain prose", "review this code", false},
 		{"an @ that is not mention markup", "ask @someone on the team", false},
-		{"issue mention is a link, not a trigger", "see [MUL-1](mention://issue/" + id + ")", false},
-		{"member mention is a link, not a trigger", "ask [@Jia](mention://member/" + id + ")", false},
+		{"issue mention reaches nobody", "see [MUL-1](mention://issue/" + id + ")", false},
+		{"member mention pings an inbox on every click", "ask [@Jia](mention://member/" + id + ")", true},
 		{"agent mention would enqueue a second target", "also [@Nova](mention://agent/" + id + ")", true},
 		{"squad mention would enqueue a second target", "also [@Core](mention://squad/" + id + ")", true},
 		{"@all would fan out", "[@all](mention://all/all)", true},

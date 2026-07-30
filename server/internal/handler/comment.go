@@ -35,11 +35,11 @@ type CommentResponse struct {
 	ResolvedByType *string `json:"resolved_by_type"`
 	ResolvedByID   *string `json:"resolved_by_id"`
 	SourceTaskID   *string `json:"source_task_id,omitempty"`
-	// QuickActionID is set only on type="quick_action" comments (MUL-5465):
-	// the action that produced this trigger. The timeline renders such a
-	// comment as a collapsed one-line card instead of the raw prompt body.
-	// nil for every other comment, and for a quick-action comment whose action
-	// was since deleted — the renderer falls back to a plain comment.
+	// QuickActionID marks a comment produced by a quick action run (MUL-5465).
+	// The timeline renders those as a collapsed one-line card instead of the
+	// raw prompt body. It is NOT settable through this endpoint — there is no
+	// request field for it — which is exactly why the card keys off this id
+	// rather than a `type` value the client controls.
 	QuickActionID *string              `json:"quick_action_id,omitempty"`
 	Reactions     []ReactionResponse   `json:"reactions"`
 	Attachments   []AttachmentResponse `json:"attachments"`
@@ -1283,6 +1283,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "" {
 		req.Type = "comment"
 	}
+	// Validate rather than letting the DB CHECK reject it: an unknown type
+	// previously surfaced as a 500 on a constraint violation, which reads as a
+	// server fault for what is plainly bad input. This is also the explicit
+	// refusal of a client trying to author a machine-written kind (MUL-5465
+	// review): a member must not be able to post a comment that renders as
+	// something the system generated.
+	if !isClientAuthorableCommentType(req.Type) {
+		writeError(w, http.StatusBadRequest, "invalid comment type")
+		return
+	}
 
 	var parentID pgtype.UUID
 	var parentComment *db.Comment
@@ -1443,6 +1453,19 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, delegationAuthority, suppressAgentIDs)
 
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// clientAuthorableCommentTypes is what POST /comments accepts. `status_change`
+// and `system` are platform-generated narration, so a client claiming them
+// would be forging system output; they are deliberately absent.
+var clientAuthorableCommentTypes = map[string]struct{}{
+	"comment":         {},
+	"progress_update": {},
+}
+
+func isClientAuthorableCommentType(t string) bool {
+	_, ok := clientAuthorableCommentTypes[t]
+	return ok
 }
 
 // noteCommentPrefix marks a comment as a human-only note. A comment whose first

@@ -21,9 +21,9 @@ import (
 // what to say" on an existing issue.
 //
 // Contract highlights:
-//   - Running one is NOT a new dispatch path. It renders the prompt, posts a
-//     `quick_action` comment carrying the target's mention markup, and hands
-//     off to triggerTasksForComment. Permission, attribution, squad routing,
+//   - Running one is NOT a new dispatch path. It renders the prompt, posts an
+//     ordinary comment carrying the target's mention markup (marked with
+//     quick_action_id), and hands off to triggerTasksForComment. Permission, attribution, squad routing,
 //     the execution log, and pending-task coalescing are inherited from the
 //     comment path rather than reimplemented — the MUL-3375 lesson about four
 //     drifting copies of one trigger decision.
@@ -63,21 +63,23 @@ const (
 // open to enabling variables later without touching stored data.
 var quickActionTemplateTokenRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
-// quickActionTriggerMentionRe catches mention markup that would enqueue a
-// target of its own.
+// quickActionSideEffectMentionRe catches mention markup that reaches somebody.
 //
 // The prompt is appended verbatim to a comment that then runs through the
-// normal mention pipeline, so an agent/squad mention inside it enqueues a
-// SECOND target alongside the configured one. That breaks the invariant the
-// whole permission model rests on — "a public action runs exactly the target
-// it was validated against" — and the sidebar only reports the first outcome,
-// so the extra run is invisible at the click. Rejecting at write time keeps
-// one action equal to one target.
+// normal mention pipeline, so a mention inside it acts on every click:
 //
-// Only trigger-capable kinds are refused. `mention://issue/...` and
-// `mention://member/...` render as links and enqueue nothing, so a prompt may
-// legitimately point at an issue or name a person.
-var quickActionTriggerMentionRe = regexp.MustCompile(`mention://(agent|squad|all)/`)
+//   - agent / squad / all -> enqueues a SECOND target beside the configured
+//     one, breaking the invariant the permission model rests on (a public
+//     action runs exactly the target it was validated against). The sidebar
+//     reports only the first outcome, so the extra run is invisible.
+//   - member -> notification_listeners.go adds them to the mention recipients
+//     and creates an inbox item, so a saved prompt pings that person on every
+//     single click. This one was initially allowed on the reasoning that it
+//     "only renders a link"; that was wrong.
+//
+// `mention://issue/...` is the sole exception: it renders as a link and
+// reaches nobody, so a prompt may legitimately point at related work.
+var quickActionSideEffectMentionRe = regexp.MustCompile(`mention://(agent|squad|member|all)/`)
 
 // ---------------------------------------------------------------------------
 // Types
@@ -164,8 +166,8 @@ func validateQuickActionPrompt(raw string) (string, error) {
 	if token := quickActionTemplateTokenRe.FindString(prompt); token != "" {
 		return "", fmt.Errorf("template variables are not supported yet; remove %s — the agent already reads this issue", token)
 	}
-	if quickActionTriggerMentionRe.MatchString(prompt) {
-		return "", fmt.Errorf("the prompt cannot @mention an agent or squad; a quick action runs exactly the one target it is bound to")
+	if quickActionSideEffectMentionRe.MatchString(prompt) {
+		return "", fmt.Errorf("the prompt cannot @mention an agent, squad, or person; a quick action reaches exactly the one target it is bound to (an issue link is fine)")
 	}
 	return prompt, nil
 }
@@ -884,12 +886,16 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 	body := sanitizeNullBytes(buildQuickActionBody(qa, target))
 
 	comment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
-		IssueID:       issue.ID,
-		WorkspaceID:   issue.WorkspaceID,
-		AuthorType:    actorType,
-		AuthorID:      parseUUID(actorID),
-		Content:       body,
-		Type:          "quick_action",
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  actorType,
+		AuthorID:    parseUUID(actorID),
+		Content:     body,
+		// Deliberately an ordinary comment. The collapsed card is driven by
+		// quick_action_id, which no client can set — `type` is client-supplied
+		// on the generic comment endpoint, so a dedicated type value would be
+		// forgeable and would also have cost a CHECK rebuild on a hot table.
+		Type:          "comment",
 		QuickActionID: qa.ID,
 	})
 	if err != nil {

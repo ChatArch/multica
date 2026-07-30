@@ -1,15 +1,23 @@
 -- Quick-action-triggered comments (MUL-5465).
 --
--- A quick action posts a real comment so the trigger stays auditable and rides
--- the existing mention path. It gets its own `type` so the timeline can render
--- it as a collapsed one-line card instead of dumping the rendered prompt into
--- the discussion -- eight Code Review clicks would otherwise bury the thread.
+-- A quick action posts an ORDINARY comment (type stays 'comment') and marks it
+-- with the action that produced it. The timeline renders the collapsed
+-- one-line card off this column, not off a dedicated comment type.
 --
--- quick_action_id points at the action that produced the comment. No FK per
--- repo policy: actions archive rather than delete, and the render path treats
--- an unresolvable id as a plain comment.
-ALTER TABLE comment DROP CONSTRAINT IF EXISTS comment_type_check;
-ALTER TABLE comment ADD CONSTRAINT comment_type_check
-    CHECK (type IN ('comment', 'status_change', 'progress_update', 'system', 'quick_action'));
-
+-- Two reasons it is an id and NOT a new `type` value:
+--
+--   1. Adding a type meant dropping and re-adding comment_type_check, and
+--      re-adding a CHECK takes ACCESS EXCLUSIVE on `comment` while it scans
+--      the whole table. `comment` is one of the hottest tables in the product,
+--      so that is a read/write stall for every deploy. Adding a nullable
+--      column with no default is metadata-only and instant.
+--
+--   2. `type` is client-supplied on the generic POST /comments path, so any
+--      member could post type='quick_action' and have an ordinary comment
+--      render as an action audit record with its body collapsed out of view.
+--      There is no request field for quick_action_id — only the quick-action
+--      run path sets it — so this marker cannot be forged.
+--
+-- No FK per repo policy: actions archive rather than delete, and the render
+-- path treats an unresolvable id as an ordinary comment.
 ALTER TABLE comment ADD COLUMN IF NOT EXISTS quick_action_id UUID;
