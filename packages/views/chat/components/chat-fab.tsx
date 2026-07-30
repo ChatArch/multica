@@ -11,11 +11,13 @@ import {
 } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { createLogger } from "@multica/core/logger";
+import { useShortcut } from "@multica/core/shortcuts";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
+import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
 
 const logger = createLogger("chat.ui");
@@ -25,6 +27,10 @@ export function ChatFab() {
   const wsId = useWorkspaceId();
   const isOpen = useChatStore((s) => s.isOpen);
   const toggle = useChatStore((s) => s.toggle);
+  // The keyboard route to this button is only useful if it's discoverable, so
+  // the tooltip carries the current binding (Settings → Shortcuts can rebind or
+  // clear it, hence the null case).
+  const shortcut = useShortcut("toggleChat");
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   // FAB only needs a boolean "is anything running", and only while the window
   // is closed (when open, ChatWindow owns the detailed pending query). Gating
@@ -69,7 +75,10 @@ export function ChatFab() {
       >
         <MessageCircle className="size-5" />
       </TooltipTrigger>
-      <TooltipContent side="top" sideOffset={10}>{tooltip}</TooltipContent>
+      <TooltipContent side="top" sideOffset={10}>
+        {tooltip}
+        {shortcut ? <ShortcutKeycaps shortcut={shortcut} className="ml-1.5" /> : null}
+      </TooltipContent>
     </Tooltip>
   );
 }

@@ -50,6 +50,7 @@ import {
 import { useChatStore } from "@multica/core/chat";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
+import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
 import { ChatResizeHandles } from "./chat-resize-handles";
@@ -171,14 +172,9 @@ export function ChatWindow() {
   const appForeground = useAppForeground();
   const { restoreDraftRequest, enqueueLocalRestore, handleRestoreDraftApplied } =
     useChatDraftRestore(activeSessionId, isOpen && appForeground);
-  // Nonce handed to ChatInput to pull focus into the compose box when a new
-  // chat starts (⊕ or switching agent). 0 is inert so opening the window on an
-  // existing session never steals focus.
-  const [focusRequest, setFocusRequest] = useState(0);
-  const requestInputFocus = useCallback(
-    () => setFocusRequest((n) => n + 1),
-    [],
-  );
+  // Nonce handed to ChatInput to pull focus into the compose box: when a new
+  // chat starts (⊕ or switching agent), and whenever the window itself opens.
+  const { focusRequest, requestInputFocus } = useChatInputFocus(isOpen);
 
   // Legacy archived sessions (the old soft-archive feature was removed but
   // pre-existing rows with status='archived' may still exist) are excluded
