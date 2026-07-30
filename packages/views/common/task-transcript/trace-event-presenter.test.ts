@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   collapseDiffContext,
+  parseUnifiedDiff,
   stripShellWrapper,
   traceEventCopyText,
   traceEventDefaultExpanded,
@@ -286,5 +287,284 @@ describe("collapseDiffContext", () => {
       { kind: "add" as const, text: "b" },
     ];
     expect(collapseDiffContext(lines)).toEqual(lines);
+  });
+});
+
+// --- Codex multi-file patch payload (GH #6157) -----------------------------
+//
+// The Codex adapter records a file edit as
+// `{ changes: [{ path, kind, diff?, content?, move_path? }], truncated? }`.
+// Before this the presenter only understood a top-level file_path plus
+// old_string/new_string, so a Codex edit fell through to pretty JSON.
+
+describe("parseUnifiedDiff", () => {
+  it("maps a ready-made unified diff onto diff rows", () => {
+    // Codex hands over a finished diff, so it is parsed rather than recomputed.
+    expect(parseUnifiedDiff("@@ -1,3 +1,3 @@\n ctx\n-old\n+new\n")).toEqual([
+      { kind: "gap", text: "@@ -1,3 +1,3 @@" },
+      { kind: "context", text: "ctx" },
+      { kind: "remove", text: "old" },
+      { kind: "add", text: "new" },
+    ]);
+  });
+
+  it("drops file headers ahead of the first hunk", () => {
+    const lines = parseUnifiedDiff(
+      "diff --git a/x b/x\nindex 111..222 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n",
+    );
+    expect(lines).toEqual([
+      { kind: "gap", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "a" },
+      { kind: "add", text: "b" },
+    ]);
+  });
+
+  // Inside a hunk, "---"/"+++" are ordinary changed lines whose content starts
+  // with a dash or plus — a Markdown rule, a nested patch, a comment banner.
+  // Treating them as file headers anywhere silently deleted real content.
+  it("keeps header-like content lines once inside a hunk", () => {
+    expect(parseUnifiedDiff("@@ -1 +1 @@\n--- old markdown\n+++ new markdown\n")).toEqual([
+      { kind: "gap", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "-- old markdown" },
+      { kind: "add", text: "++ new markdown" },
+    ]);
+  });
+
+  it("keeps a removed line that is exactly a Markdown rule", () => {
+    expect(parseUnifiedDiff("@@ -1,2 +1,1 @@\n---\n ok\n")).toEqual([
+      { kind: "gap", text: "@@ -1,2 +1,1 @@" },
+      { kind: "remove", text: "--" },
+      { kind: "context", text: "ok" },
+    ]);
+  });
+
+  it("keeps an empty context line and does not invent a trailing one", () => {
+    // " " is a blank unchanged line; the phantom element left by the trailing
+    // newline is not.
+    expect(parseUnifiedDiff("@@ -1,2 +1,2 @@\n \n+x\n")).toEqual([
+      { kind: "gap", text: "@@ -1,2 +1,2 @@" },
+      { kind: "context", text: "" },
+      { kind: "add", text: "x" },
+    ]);
+  });
+});
+
+describe("traceEventDetail — Codex changes[]", () => {
+  it("renders a multi-file patch with one section per file", () => {
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: {
+        changes: [
+          { path: "src/a.go", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b\n" },
+          { path: "src/new.go", kind: "add", content: "package main\n" },
+        ],
+      },
+    });
+    expect(detail.kind).toBe("patch");
+    if (detail.kind !== "patch") return;
+    expect(detail.truncated).toBe(false);
+    expect(detail.files).toHaveLength(2);
+
+    const [update, added] = detail.files;
+    expect(update?.path).toBe("src/a.go");
+    expect(update?.changeKind).toBe("update");
+    expect(update?.body).toEqual({
+      kind: "diff",
+      lines: [
+        { kind: "gap", text: "@@ -1 +1 @@" },
+        { kind: "remove", text: "a" },
+        { kind: "add", text: "b" },
+      ],
+    });
+
+    // An added file has no before side, matching the whole-file write surface.
+    expect(added?.path).toBe("src/new.go");
+    expect(added?.body).toEqual({ kind: "file", text: "package main\n", lineCount: 2 });
+  });
+
+  it("renders a deletion as all-removals rather than a green whole-file write", () => {
+    // The legacy protocol reports a delete as the outgoing file's content; a
+    // "+N" gutter would state the opposite of what happened.
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: { changes: [{ path: "gone.txt", kind: "delete", content: "one\ntwo" }] },
+    });
+    expect(detail.kind).toBe("patch");
+    if (detail.kind !== "patch") return;
+    expect(detail.files[0]?.body).toEqual({
+      kind: "diff",
+      lines: [
+        { kind: "remove", text: "one" },
+        { kind: "remove", text: "two" },
+      ],
+    });
+  });
+
+  it("surfaces a rename destination", () => {
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: {
+        changes: [
+          { path: "old.go", kind: "update", move_path: "new.go", diff: "@@ -1 +1 @@\n-x\n+y\n" },
+        ],
+      },
+    });
+    if (detail.kind !== "patch") return expect(detail.kind).toBe("patch");
+    expect(detail.files[0]?.movePath).toBe("new.go");
+  });
+
+  it("keeps the path when the body was dropped by the size budget", () => {
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: {
+        changes: [{ path: "big.txt", kind: "add", truncated: true }],
+        truncated: true,
+      },
+    });
+    expect(detail.kind).toBe("patch");
+    if (detail.kind !== "patch") return;
+    expect(detail.truncated).toBe(true);
+    expect(detail.files[0]).toEqual({
+      path: "big.txt",
+      changeKind: "add",
+      truncated: true,
+      body: { kind: "none" },
+    });
+  });
+
+  it("renders an empty added file as an empty body, not as a missing one", () => {
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: { changes: [{ path: "empty.txt", kind: "add", content: "" }] },
+    });
+    if (detail.kind !== "patch") return expect(detail.kind).toBe("patch");
+    expect(detail.files[0]?.body).toEqual({ kind: "file", text: "", lineCount: 0 });
+  });
+
+  it("falls back to pretty JSON for an unrecognised shape", () => {
+    // Forward compatibility: a payload this presenter does not understand must
+    // still be readable rather than rendering as an empty patch.
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: { changes: "not-an-array" },
+    });
+    expect(detail.kind).toBe("text");
+    if (detail.kind !== "text") return;
+    expect(detail.text).toContain("not-an-array");
+  });
+
+  it("falls back to pretty JSON when no change carries a path", () => {
+    const detail = traceEventDetail({
+      type: "tool_use",
+      tool: "patch_apply",
+      input: { changes: [42, null, { kind: "add" }] },
+    });
+    expect(detail.kind).toBe("text");
+  });
+});
+
+describe("traceToolArgSummary / traceEventHasDetail — Codex changes[]", () => {
+  it("summarises a single-file patch as its path", () => {
+    expect(
+      traceToolArgSummary({ changes: [{ path: "src/a.go", kind: "update", diff: "@@\n+x" }] }),
+    ).toBe("src/a.go");
+  });
+
+  it("summarises a multi-file patch as the first path plus a count", () => {
+    expect(
+      traceToolArgSummary({
+        changes: [
+          { path: "src/a.go", kind: "update", diff: "@@\n+x" },
+          { path: "src/b.go", kind: "add", content: "y" },
+          { path: "src/c.go", kind: "add", content: "z" },
+        ],
+      }),
+    ).toBe("src/a.go +2 more");
+  });
+
+  it("shortens a deep path in the summary", () => {
+    expect(
+      traceToolArgSummary({ changes: [{ path: "a/b/c/d/e.go", kind: "add", content: "x" }] }),
+    ).toBe(".../d/e.go");
+  });
+
+  // The presenter stays i18n-free, so the caller injects the phrasing; the
+  // English form is only the fallback.
+  it("uses injected phrasing for the multi-file count", () => {
+    expect(
+      traceToolArgSummary(
+        {
+          changes: [
+            { path: "src/a.go", kind: "update", diff: "@@\n+x" },
+            { path: "src/b.go", kind: "add", content: "y" },
+          ],
+        },
+        { morePaths: (path, extraCount) => `${path}，另有 ${extraCount} 个文件` },
+      ),
+    ).toBe("src/a.go，另有 1 个文件");
+  });
+
+  // The injected number counts files *beyond* the named one. Phrasing it as a
+  // total under-reports by one, which is easy to miss in English ("+2 more")
+  // and obvious in a language that states the total outright.
+  it("passes the count of additional files, not the total", () => {
+    const seen: number[] = [];
+    traceToolArgSummary(
+      {
+        changes: [
+          { path: "a.go", kind: "add", content: "x" },
+          { path: "b.go", kind: "add", content: "y" },
+          { path: "c.go", kind: "add", content: "z" },
+        ],
+      },
+      {
+        morePaths: (path, extraCount) => {
+          seen.push(extraCount);
+          return path;
+        },
+      },
+    );
+    expect(seen).toEqual([2]);
+  });
+
+  it("does not consult the injected phrasing for a single file", () => {
+    expect(
+      traceToolArgSummary(
+        { changes: [{ path: "only.go", kind: "add", content: "x" }] },
+        {
+          morePaths: () => {
+            throw new Error("must not be called for a single-file patch");
+          },
+        },
+      ),
+    ).toBe("only.go");
+  });
+
+  it("makes a patch row expandable — the bug was two blank unexpandable rows", () => {
+    expect(
+      traceEventHasDetail({
+        type: "tool_use",
+        tool: "patch_apply",
+        input: { changes: [{ path: "a.go", kind: "add", content: "x" }] },
+      }),
+    ).toBe(true);
+    expect(
+      traceEventHasDetail({
+        type: "tool_result",
+        tool: "patch_apply",
+        output: "completed (1 file)",
+      }),
+    ).toBe(true);
+    // The regression itself: no payload means no expandable detail.
+    expect(traceEventHasDetail({ type: "tool_use", tool: "patch_apply", input: {} })).toBe(false);
+    expect(traceEventHasDetail({ type: "tool_result", tool: "patch_apply", output: "" })).toBe(
+      false,
+    );
   });
 });

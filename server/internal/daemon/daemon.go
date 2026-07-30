@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -6017,10 +6018,19 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					s := msgSeq.Add(1)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
-						Seq:   int(s),
-						Type:  "tool_use",
-						Tool:  msg.Tool,
-						Input: msg.Input,
+						Seq:  int(s),
+						Type: "tool_use",
+						Tool: msg.Tool,
+						// Redact before the payload leaves this process, not
+						// only on arrival. The server redacts again in its
+						// ingest handler, but that is the *remote* side: a
+						// daemon that self-updated ahead of the server — or one
+						// talking to a server mid-rollout — would otherwise ship
+						// whole-file edit contents (a deleted .env, a patched
+						// credential) to a peer that does not scrub nested
+						// values yet. Deployment order is not a control we
+						// have, so this side has to be safe on its own.
+						Input: redact.InputMap(msg.Input),
 					})
 					mu.Unlock()
 				case agent.MessageToolResult:
