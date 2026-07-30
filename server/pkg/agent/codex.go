@@ -2431,7 +2431,9 @@ func codexNormalizeLegacyChanges(raw any) []any {
 		if diff, _ := entry["unified_diff"].(string); diff != "" {
 			norm["diff"] = diff
 		}
-		if content, _ := entry["content"].(string); content != "" {
+		// Presence, not non-emptiness: an added empty file has content "" and
+		// should still render as an empty body rather than a missing one.
+		if content, ok := entry["content"].(string); ok {
 			norm["content"] = content
 		}
 		if movePath, _ := entry["move_path"].(string); movePath != "" {
@@ -2452,6 +2454,14 @@ func codexNormalizeLegacyChanges(raw any) []any {
 // FileUpdateChange{path, kind, diff}, and `kind` is an *object*
 // ({type, move_path?}) rather than a string — reading it as a string yields ""
 // and silently loses the add/delete/update distinction.
+//
+// The `diff` field is misleadingly named: upstream's format_file_change_diff
+// only produces a unified diff for `update`. For `add` and `delete` it returns
+// the whole file's contents verbatim, and for a moved `update` it appends a
+// trailing "\n\nMoved to: <path>" line. Feeding an added file's contents to a
+// diff parser mislabels every line — and actively inverts the meaning of any
+// line that happens to begin with '+' or '-' — so the payload is routed by
+// `kind`, not by field name.
 func codexNormalizeRawChanges(raw any) []any {
 	changes, ok := raw.([]any)
 	if !ok || len(changes) == 0 {
@@ -2467,26 +2477,41 @@ func codexNormalizeRawChanges(raw any) []any {
 		if path, _ := entry["path"].(string); path != "" {
 			norm["path"] = path
 		}
-		switch kind := entry["kind"].(type) {
+		kind := ""
+		movePath := ""
+		switch k := entry["kind"].(type) {
 		case map[string]any:
-			if kindType, _ := kind["type"].(string); kindType != "" {
-				norm["kind"] = kindType
-			}
-			if movePath, _ := kind["move_path"].(string); movePath != "" {
-				norm["move_path"] = movePath
-			}
+			kind, _ = k["type"].(string)
+			movePath, _ = k["move_path"].(string)
 		case string:
 			// Tolerate a flattened form so a future protocol tweak degrades
 			// to a labelled change instead of an unlabelled one.
-			if kind != "" {
-				norm["kind"] = kind
+			kind = k
+		}
+		if kind != "" {
+			norm["kind"] = kind
+		}
+		if movePath != "" {
+			norm["move_path"] = movePath
+		}
+
+		body, bodyPresent := entry["diff"].(string)
+		switch kind {
+		case "add", "delete":
+			// Whole-file contents, despite arriving under `diff`. Keyed on the
+			// field being present rather than non-empty so an empty added file
+			// still renders as an empty body instead of a missing one.
+			if bodyPresent {
+				norm["content"] = body
+			} else if content, ok := entry["content"].(string); ok {
+				norm["content"] = content
 			}
-		}
-		if diff, _ := entry["diff"].(string); diff != "" {
-			norm["diff"] = diff
-		}
-		if content, _ := entry["content"].(string); content != "" {
-			norm["content"] = content
+		default:
+			if body != "" {
+				norm["diff"] = stripCodexMovedToSuffix(body, movePath)
+			} else if content, ok := entry["content"].(string); ok {
+				norm["content"] = content
+			}
 		}
 		if len(norm) == 0 {
 			continue
@@ -2497,6 +2522,18 @@ func codexNormalizeRawChanges(raw any) []any {
 		return nil
 	}
 	return out
+}
+
+// stripCodexMovedToSuffix removes the trailing "Moved to: <path>" line that
+// upstream appends to a moved file's unified diff. The destination is already
+// carried as move_path, and leaving the sentence in would render as two stray
+// context lines at the end of the diff.
+func stripCodexMovedToSuffix(diff, movePath string) string {
+	if movePath == "" {
+		return diff
+	}
+	suffix := "\n\nMoved to: " + movePath
+	return strings.TrimSuffix(diff, suffix)
 }
 
 // codexPatchInput wraps normalized changes into the tool_use input, applying

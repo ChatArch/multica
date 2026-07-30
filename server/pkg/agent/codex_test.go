@@ -4630,8 +4630,10 @@ func TestCodexRawPatchApplyRecordsChanges(t *testing.T) {
 	var messages []Message
 	c.onMessage = func(msg Message) { messages = append(messages, msg) }
 
-	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"patch-1","status":"inProgress","changes":[{"path":"src/a.go","kind":{"type":"update","move_path":null},"diff":"@@ -1 +1 @@\n-a\n+b\n"},{"path":"src/new.go","kind":{"type":"add"},"diff":"@@ -0,0 +1 @@\n+package main\n"}]}}}`)
-	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"patch-1","status":"completed","changes":[{"path":"src/a.go","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-a\n+b\n"},{"path":"src/new.go","kind":{"type":"add"},"diff":"@@ -0,0 +1 @@\n+package main\n"}]}}}`)
+	// Fixtures follow upstream convert_patch_changes: `diff` holds a unified
+	// diff only for `update`. For `add` it is the whole file's contents.
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"patch-1","status":"inProgress","changes":[{"path":"src/a.go","kind":{"type":"update","move_path":null},"diff":"@@ -1 +1 @@\n-a\n+b\n"},{"path":"src/new.go","kind":{"type":"add"},"diff":"package main\n"}]}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"patch-1","status":"completed","changes":[{"path":"src/a.go","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-a\n+b\n"},{"path":"src/new.go","kind":{"type":"add"},"diff":"package main\n"}]}}}`)
 
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
@@ -4645,7 +4647,6 @@ func TestCodexRawPatchApplyRecordsChanges(t *testing.T) {
 	if len(changes) != 2 {
 		t.Fatalf("expected 2 changes, got %d: %#v", len(changes), changes)
 	}
-	// Array order is meaningful on this path, unlike the legacy map.
 	if changes[0]["path"] != "src/a.go" || changes[1]["path"] != "src/new.go" {
 		t.Fatalf("v2 change order not preserved: %#v", changes)
 	}
@@ -4654,11 +4655,20 @@ func TestCodexRawPatchApplyRecordsChanges(t *testing.T) {
 	if changes[0]["kind"] != "update" {
 		t.Fatalf("expected kind flattened to \"update\", got %#v", changes[0]["kind"])
 	}
+	if diff, _ := changes[0]["diff"].(string); !strings.Contains(diff, "+b") {
+		t.Fatalf("v2 update diff not captured: %#v", changes[0])
+	}
+	// The add's payload is file content, so it must NOT be labelled a diff:
+	// a diff parser would mislabel every line and invert any line starting
+	// with '+' or '-'.
 	if changes[1]["kind"] != "add" {
 		t.Fatalf("expected kind flattened to \"add\", got %#v", changes[1]["kind"])
 	}
-	if diff, _ := changes[0]["diff"].(string); !strings.Contains(diff, "+b") {
-		t.Fatalf("v2 diff not captured: %#v", changes[0])
+	if _, isDiff := changes[1]["diff"]; isDiff {
+		t.Fatalf("v2 add must not be recorded as a diff: %#v", changes[1])
+	}
+	if changes[1]["content"] != "package main\n" {
+		t.Fatalf("v2 add content not captured: %#v", changes[1])
 	}
 
 	end := messages[1]
@@ -4670,6 +4680,102 @@ func TestCodexRawPatchApplyRecordsChanges(t *testing.T) {
 	}
 	if !strings.Contains(end.Output, "completed") || !strings.Contains(end.Output, "2 files") {
 		t.Fatalf("expected status and file count, got %q", end.Output)
+	}
+}
+
+// Upstream format_file_change_diff returns whole-file contents for add and
+// delete under the `diff` field. Treating that as a unified diff renders plain
+// lines as context, and inverts any line that begins with '+' or '-'.
+func TestCodexRawPatchApplyContentKindsAreNotDiffs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		kind string
+		body string
+	}{
+		{name: "add", kind: "add", body: "package main\n"},
+		{name: "delete", kind: "delete", body: "GITHUB_TOKEN=x\n"},
+		{
+			name: "add whose content looks like a diff",
+			kind: "add",
+			body: "--- not a header\n+++ also not\n-minus lead\n+plus lead\n",
+		},
+		{name: "empty add", kind: "add", body: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c, _, _ := newTestCodexClient(t)
+			c.notificationProtocol = "raw"
+			var messages []Message
+			c.onMessage = func(msg Message) { messages = append(messages, msg) }
+
+			event, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "item/started",
+				"params": map[string]any{
+					"item": map[string]any{
+						"type": "fileChange", "id": "patch-1", "status": "inProgress",
+						"changes": []any{
+							map[string]any{
+								"path": "f.txt",
+								"kind": map[string]any{"type": tc.kind},
+								"diff": tc.body,
+							},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal event: %v", err)
+			}
+			c.handleLine(string(event))
+
+			changes := codexTestChanges(t, messages[0])
+			if len(changes) != 1 {
+				t.Fatalf("expected 1 change, got %#v", changes)
+			}
+			if _, isDiff := changes[0]["diff"]; isDiff {
+				t.Fatalf("%s must be recorded as content, not diff: %#v", tc.kind, changes[0])
+			}
+			content, ok := changes[0]["content"].(string)
+			if !ok {
+				// Presence, not non-emptiness: an empty added file still has a
+				// body, and dropping it would render as "no content reported".
+				t.Fatalf("expected content to be present for %s: %#v", tc.kind, changes[0])
+			}
+			if content != tc.body {
+				t.Fatalf("content altered: got %q want %q", content, tc.body)
+			}
+		})
+	}
+}
+
+// A moved update has "\n\nMoved to: <path>" appended to its diff upstream. The
+// destination is already carried as move_path, and leaving the sentence in
+// renders as two stray context rows at the end of the diff.
+func TestCodexRawPatchApplyStripsMovedToSuffix(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	var messages []Message
+	c.onMessage = func(msg Message) { messages = append(messages, msg) }
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"patch-1","status":"inProgress","changes":[{"path":"old/name.go","kind":{"type":"update","move_path":"new/name.go"},"diff":"@@ -1 +1 @@\n-x\n+y\n\n\nMoved to: new/name.go"}]}}}`)
+
+	changes := codexTestChanges(t, messages[0])
+	if changes[0]["move_path"] != "new/name.go" {
+		t.Fatalf("expected move_path lifted out of kind, got %#v", changes[0])
+	}
+	diff, _ := changes[0]["diff"].(string)
+	if strings.Contains(diff, "Moved to:") {
+		t.Fatalf("Moved to: sentence should be stripped from the diff: %q", diff)
+	}
+	if !strings.Contains(diff, "+y") {
+		t.Fatalf("stripping removed real diff content: %q", diff)
 	}
 }
 
@@ -4686,6 +4792,22 @@ func TestCodexRawPatchApplyMovePathFromKind(t *testing.T) {
 	changes := codexTestChanges(t, messages[0])
 	if changes[0]["move_path"] != "new/name.go" {
 		t.Fatalf("expected move_path lifted out of kind, got %#v", changes[0])
+	}
+}
+
+func TestCodexLegacyPatchApplyKeepsEmptyAddedFile(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	var messages []Message
+	c.onMessage = func(msg Message) { messages = append(messages, msg) }
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"codex/event","params":{"msg":{"type":"patch_apply_begin","call_id":"p1","auto_approved":true,"changes":{"empty.txt":{"type":"add","content":""}}}}}`)
+
+	changes := codexTestChanges(t, messages[0])
+	content, ok := changes[0]["content"].(string)
+	if !ok || content != "" {
+		t.Fatalf("empty added file should keep an empty body: %#v", changes[0])
 	}
 }
 
@@ -4831,12 +4953,21 @@ func TestCodexPatchApplyTruncatesOversizePayload(t *testing.T) {
 	changes := codexTestChanges(t, messages[0])
 	total := 0
 	for _, change := range changes {
-		if body, ok := change["diff"].(string); ok {
+		// An `add` is recorded as content, not diff, so both keys count
+		// toward the budget.
+		for _, key := range []string{"diff", "content"} {
+			body, ok := change[key].(string)
+			if !ok {
+				continue
+			}
 			total += len(body)
 			if !utf8.ValidString(body) {
 				t.Fatalf("truncation split a rune in %v", change["path"])
 			}
 		}
+	}
+	if total == 0 {
+		t.Fatal("expected some body to survive truncation")
 	}
 	if total > codexPatchInputMaxBytes {
 		t.Fatalf("payload %d bytes exceeds budget %d", total, codexPatchInputMaxBytes)
