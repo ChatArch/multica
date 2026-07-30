@@ -370,7 +370,7 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, quickActionsPending bool) error {
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, quickActionsPending bool, sessionRolloutMissing bool, retiredSessionID string) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -383,6 +383,12 @@ func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, s
 	}
 	if quickActionsPending {
 		body["quick_actions_pending"] = true
+	}
+	if sessionRolloutMissing {
+		body["session_rollout_missing"] = true
+	}
+	if retiredSessionID != "" {
+		body["retired_session_id"] = retiredSessionID
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, defaultTerminalRetrySchedule)
 }
@@ -405,7 +411,7 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}, nil)
 }
 
-func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, failureReason string) error {
+func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, failureReason string, sessionRolloutMissing bool, retiredSessionID string) error {
 	body := map[string]any{"error": errMsg}
 	if sessionID != "" {
 		body["session_id"] = sessionID
@@ -415,6 +421,12 @@ func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDi
 	}
 	if failureReason != "" {
 		body["failure_reason"] = failureReason
+	}
+	if sessionRolloutMissing {
+		body["session_rollout_missing"] = true
+	}
+	if retiredSessionID != "" {
+		body["retired_session_id"] = retiredSessionID
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/fail", taskID), body, nil, defaultTerminalRetrySchedule)
 }

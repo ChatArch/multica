@@ -66,74 +66,24 @@
       "navigation": "탐색"
     },
     "actions": {
-      "openSearch": {
-        "label": "검색 열기",
-        "description": "어디서나 검색하고 명령을 실행합니다."
-      },
-      "createIssue": {
-        "label": "Issue 만들기",
-        "description": "선호하는 issue 만들기 흐름을 엽니다."
-      },
-      "toggleSidebar": {
-        "label": "사이드바 전환",
-        "description": "기본 사이드바를 표시하거나 숨깁니다."
-      },
-      "findInIssue": {
-        "label": "Issue에서 찾기",
-        "description": "열린 issue 상세 내용에서 검색합니다."
-      },
-      "send": {
-        "label": "보내기",
-        "description": "채팅, 댓글, 답글, 피드백 및 프롬프트를 보내고, 생성 대화상자에서 이슈를 만듭니다."
-      },
-      "goInbox": {
-        "label": "받은 편지함으로 이동",
-        "description": "워크스페이스 받은 편지함을 엽니다."
-      },
-      "goChat": {
-        "label": "채팅으로 이동",
-        "description": "워크스페이스 채팅을 엽니다."
-      },
-      "goMyIssues": {
-        "label": "내 Issues로 이동",
-        "description": "나에게 할당된 issue를 엽니다."
-      },
-      "goIssues": {
-        "label": "Issues로 이동",
-        "description": "Issue 목록을 엽니다."
-      },
-      "goProjects": {
-        "label": "프로젝트로 이동",
-        "description": "프로젝트 목록을 엽니다."
-      },
-      "goAutopilots": {
-        "label": "자동화로 이동",
-        "description": "워크스페이스 자동화를 엽니다."
-      },
-      "goAgents": {
-        "label": "에이전트로 이동",
-        "description": "에이전트 목록을 엽니다."
-      },
-      "goSquads": {
-        "label": "스쿼드로 이동",
-        "description": "스쿼드 목록을 엽니다."
-      },
-      "goUsage": {
-        "label": "사용량으로 이동",
-        "description": "사용량 분석을 엽니다."
-      },
-      "goRuntimes": {
-        "label": "런타임으로 이동",
-        "description": "런타임 설정을 엽니다."
-      },
-      "goSkills": {
-        "label": "Skills로 이동",
-        "description": "Skill 라이브러리를 엽니다."
-      },
-      "goSettings": {
-        "label": "설정으로 이동",
-        "description": "워크스페이스 설정을 엽니다."
-      }
+      "openSearch": { "label": "검색 열기", "description": "어디서나 검색하고 명령을 실행합니다." },
+      "createIssue": { "label": "Issue 만들기", "description": "선호하는 issue 만들기 흐름을 엽니다." },
+      "toggleSidebar": { "label": "사이드바 전환", "description": "기본 사이드바를 표시하거나 숨깁니다." },
+      "toggleChat": { "label": "채팅 창 전환", "description": "플로팅 채팅 창을 열거나 닫습니다. 열면 메시지 입력란에 포커스합니다." },
+      "findInIssue": { "label": "Issue에서 찾기", "description": "열린 issue 상세 내용에서 검색합니다." },
+      "send": { "label": "보내기", "description": "채팅, 댓글, 답글, 피드백 및 프롬프트를 보내고, 생성 대화상자에서 이슈를 만듭니다." },
+      "goInbox": { "label": "받은 편지함으로 이동", "description": "워크스페이스 받은 편지함을 엽니다." },
+      "goChat": { "label": "채팅으로 이동", "description": "워크스페이스 채팅을 엽니다." },
+      "goMyIssues": { "label": "내 Issues로 이동", "description": "나에게 할당된 issue를 엽니다." },
+      "goIssues": { "label": "Issues로 이동", "description": "Issue 목록을 엽니다." },
+      "goProjects": { "label": "프로젝트로 이동", "description": "프로젝트 목록을 엽니다." },
+      "goAutopilots": { "label": "자동화로 이동", "description": "워크스페이스 자동화를 엽니다." },
+      "goAgents": { "label": "에이전트로 이동", "description": "에이전트 목록을 엽니다." },
+      "goSquads": { "label": "스쿼드로 이동", "description": "스쿼드 목록을 엽니다." },
+      "goUsage": { "label": "사용량으로 이동", "description": "사용량 분석을 엽니다." },
+      "goRuntimes": { "label": "런타임으로 이동", "description": "런타임 설정을 엽니다." },
+      "goSkills": { "label": "Skills로 이동", "description": "Skill 라이브러리를 엽니다." },
+      "goSettings": { "label": "설정으로 이동", "description": "워크스페이스 설정을 엽니다." }
     },
     "fixed": {
       "title": "고정 시스템 단축키",
@@ -548,6 +498,27 @@
     "url_empty": "(빈 URL)",
     "description_placeholder": "설명(예: Go 백엔드 + Next.js 프런트엔드)",
     "add": "저장소 추가",
+    "connect_github": "GitHub 연결",
+    "choose_from_github": "GitHub에서 선택",
+    "github_not_configured": "이 배포에는 GitHub 연결이 설정되어 있지 않습니다.",
+    "github_browse_not_configured": "저장소를 탐색하려면 GITHUB_APP_ID와 GITHUB_APP_PRIVATE_KEY가 필요합니다.",
+    "github_connect_failed": "GitHub에 연결하지 못했습니다. 다시 시도해 주세요.",
+    "github_picker_title": "GitHub 저장소 선택",
+    "github_picker_description": "이 워크스페이스에 추가할 저장소를 선택하세요. 기존 수동 설정은 변경되지 않습니다.",
+    "github_account": "GitHub 계정",
+    "github_search_placeholder": "불러온 저장소 검색",
+    "github_loading": "저장소 불러오는 중…",
+    "github_load_failed": "GitHub에서 저장소를 불러오지 못했습니다. 설치 권한을 확인한 후 다시 시도해 주세요.",
+    "github_empty": "이 설치에서 접근 가능한 저장소가 없습니다.",
+    "github_no_search_results": "불러온 저장소 중 검색 결과가 없습니다.",
+    "github_private": "비공개",
+    "github_archived": "보관됨",
+    "github_added": "추가됨",
+    "github_load_more": "더 불러오기",
+    "github_selected_count": "{{count}}개 선택",
+    "github_cancel": "취소",
+    "github_import": "저장소 추가",
+    "complete_manual_entry_first": "비어 있는 수동 저장소를 입력하거나 삭제한 후 가져오세요.",
     "save": "저장",
     "saving": "저장하는 중...",
     "saved_hint": "모든 변경사항 저장됨",
