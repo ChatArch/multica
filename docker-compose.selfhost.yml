@@ -14,12 +14,16 @@
 #   docker compose -f docker-compose.selfhost.yml up -d
 #
 # Frontend: http://localhost:${FRONTEND_PORT:-3000}
-# Backend:  http://localhost:${BACKEND_PORT:-${PORT:-8080}}
+# Backend:  http://localhost:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}
 #
 # The published values above are HOST ports; the containers always listen on
 # 8080 / 3000 internally, so changing them never needs a rebuild. PORT is the
-# variable to edit — BACKEND_PORT is an optional alias that overrides it, and
-# this chain matches Makefile and scripts/local-env.sh.
+# variable to edit; BACKEND_PORT, API_PORT and SERVER_PORT are optional aliases
+# that override it in that order. Keep this chain identical to Makefile,
+# scripts/local-env.sh, scripts/install.sh and scripts/install.ps1 — the
+# installer derives its health-check port from the same chain and then runs this
+# file, so any divergence puts the probe on a different port than the one
+# published here.
 
 name: multica
 
@@ -49,7 +53,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${BACKEND_PORT:-${PORT:-8080}}:8080"
+      - "127.0.0.1:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
     volumes:
       - backend_uploads:/app/data/uploads
     environment:

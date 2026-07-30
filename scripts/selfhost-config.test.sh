@@ -344,4 +344,82 @@ if grep -n 'localhost:$${PORT' Makefile; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# The backend port alias chain must be identical on every boundary
+#
+#   BACKEND_PORT -> API_PORT -> SERVER_PORT -> PORT -> 8080
+#
+# Exercised through the direct Compose path, because Makefile normalises all
+# four into PORT before a recipe ever runs — so a recipe-only test cannot see a
+# gap here. scripts/install.sh matters just as much: it derives its health-check
+# port from this chain and then runs docker-compose.selfhost.yml, so if the two
+# disagree the installer probes a port Compose never published. That is the
+# original #6145 defect on the installer path.
+# ---------------------------------------------------------------------------
+
+# The installer's resolver, extracted rather than sourced: install.sh ends with
+# an unguarded `main "$@"`.
+installer_port_lib="$tmp_dir/installer-ports.sh"
+sed -n '/^env_file_value()/,/^selfhost_frontend_port() {$/p' scripts/install.sh >"$installer_port_lib"
+printf '%s\n' '  env_file_value "${1:-.env}" "FRONTEND_PORT" "3000"' '}' >>"$installer_port_lib"
+# shellcheck disable=SC1090
+. "$installer_port_lib"
+
+if [ "$(selfhost_backend_port /dev/null)" != "8080" ]; then
+  echo "failed to extract the installer port resolver from scripts/install.sh"
+  exit 1
+fi
+
+compose_published_backend_port() {
+  docker compose --env-file "$1" -f docker-compose.selfhost.yml config --format json |
+    node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  const config = JSON.parse(raw);
+  console.log(config.services.backend.ports[0].published);
+});
+'
+}
+
+# Each case: label, sed script applied to .env.example, expected host port.
+# .env.example ships PORT=8080 with every alias commented out.
+while IFS='|' read -r case_label case_mutation case_expected; do
+  [ -n "$case_label" ] || continue
+  case_env="$tmp_dir/.env.alias"
+  if [ -n "$case_mutation" ]; then
+    sed "$case_mutation" .env.example >"$case_env"
+  else
+    cp .env.example "$case_env"
+  fi
+
+  compose_port=$(compose_published_backend_port "$case_env")
+  installer_port=$(selfhost_backend_port "$case_env")
+
+  if [ "$compose_port" != "$case_expected" ] || [ "$installer_port" != "$case_expected" ]; then
+    echo "[$case_label] backend port chain disagreement"
+    echo "  expected:            $case_expected"
+    echo "  compose published:   $compose_port"
+    echo "  installer resolved:  $installer_port"
+    echo "(scripts/install.sh health-checks its value against the port Compose"
+    echo " published, so these two must always agree.)"
+    exit 1
+  fi
+done <<'CASES'
+defaults||8080
+PORT only|s/^PORT=8080/PORT=9100/|9100
+SERVER_PORT overrides PORT|s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9200
+API_PORT overrides SERVER_PORT|s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9300
+BACKEND_PORT overrides all|s/^# BACKEND_PORT=8080/BACKEND_PORT=9400/;s/^# API_PORT=8080/API_PORT=9300/;s/^# SERVER_PORT=8080/SERVER_PORT=9200/|9400
+CASES
+
+# Every alias must also be reported when the env file shadows it.
+for shadowed_alias in BACKEND_PORT API_PORT SERVER_PORT; do
+  alias_output="$(
+    run_recipe selfhost "s/^# ${shadowed_alias}=8080/${shadowed_alias}=8080/" \
+      "${shadowed_alias}=9600" ''
+  )"
+  require_config "$alias_output" "${shadowed_alias}=9600 from your environment is ignored;"
+done
+
 echo "self-host env derivation ok"

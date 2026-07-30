@@ -50,7 +50,7 @@ compose_host_port() {
   esac
 }
 
-backend_port=$(compose_host_port backend 8080 "${BACKEND_PORT:-${PORT:-8080}}")
+backend_port=$(compose_host_port backend 8080 "${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}")
 frontend_port=$(compose_host_port frontend 3000 "${FRONTEND_PORT:-3000}")
 
 backend_url="http://localhost:${backend_port}"

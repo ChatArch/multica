@@ -48,7 +48,7 @@ if [ -n "$env_file_port" ]; then
 fi
 
 # 2. A shell environment value the env file overrides.
-for var_name in PORT BACKEND_PORT FRONTEND_PORT; do
+for var_name in PORT BACKEND_PORT API_PORT SERVER_PORT FRONTEND_PORT; do
   shell_value=$(value_of "SHELL_ENV_${var_name}")
   file_value=$(value_of "ENV_FILE_${var_name}")
   if [ -n "$shell_value" ] && [ -n "$file_value" ] && [ "$shell_value" != "$file_value" ]; then

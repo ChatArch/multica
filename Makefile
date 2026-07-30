@@ -12,6 +12,8 @@ ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $
 # authoritative.
 SHELL_ENV_PORT := $(if $(filter environment,$(origin PORT)),$(PORT))
 SHELL_ENV_BACKEND_PORT := $(if $(filter environment,$(origin BACKEND_PORT)),$(BACKEND_PORT))
+SHELL_ENV_API_PORT := $(if $(filter environment,$(origin API_PORT)),$(API_PORT))
+SHELL_ENV_SERVER_PORT := $(if $(filter environment,$(origin SERVER_PORT)),$(SERVER_PORT))
 SHELL_ENV_FRONTEND_PORT := $(if $(filter environment,$(origin FRONTEND_PORT)),$(FRONTEND_PORT))
 
 ifneq ($(wildcard $(ENV_FILE)),)
@@ -87,6 +89,8 @@ define REQUIRE_PORT_CONTRACT
 	@ENV_FILE="$(ENV_FILE)" \
 		SHELL_ENV_PORT="$(SHELL_ENV_PORT)" \
 		SHELL_ENV_BACKEND_PORT="$(SHELL_ENV_BACKEND_PORT)" \
+		SHELL_ENV_API_PORT="$(SHELL_ENV_API_PORT)" \
+		SHELL_ENV_SERVER_PORT="$(SHELL_ENV_SERVER_PORT)" \
 		SHELL_ENV_FRONTEND_PORT="$(SHELL_ENV_FRONTEND_PORT)" \
 		ENV_FILE_PORT="$(ENV_FILE_PORT)" \
 		ENV_FILE_BACKEND_PORT="$(ENV_FILE_BACKEND_PORT)" \
