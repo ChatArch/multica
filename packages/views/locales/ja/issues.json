@@ -248,7 +248,6 @@
     "section_quick_actions": "クイックアクション",
     "quick_actions_more": "残り {{count}} 件を表示",
     "quick_action_runs_as": "{{name}} が実行します",
-    "quick_action_ran_via": "{{name}} が実行",
     "quick_action_target_fallback": "このエージェント",
     "quick_action_queued": "{{name}} が作業を開始しました",
     "quick_action_coalesced": "{{name}} の実行中タスクに追加しました",

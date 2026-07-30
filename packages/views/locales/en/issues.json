@@ -250,7 +250,6 @@
     "section_quick_actions": "Quick Actions",
     "quick_actions_more": "Show {{count}} more",
     "quick_action_runs_as": "Runs as {{name}}",
-    "quick_action_ran_via": "via {{name}}",
     "quick_action_target_fallback": "the agent",
     "quick_action_queued": "{{name}} started working",
     "quick_action_coalesced": "Added to {{name}}’s current run",

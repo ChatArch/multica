@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, Loader2, MoreHorizontal, Pencil, RotateCcw, Trash2, Zap } from "lucide-react";
+import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, Loader2, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button } from "@multica/ui/components/ui/button";
@@ -28,9 +28,6 @@ import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { useQuery } from "@tanstack/react-query";
-import { useCurrentWorkspace } from "@multica/core/paths";
-import { quickActionListOptions } from "@multica/core/quick-actions";
 import { useTimeAgo } from "../../i18n";
 import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
@@ -756,82 +753,12 @@ function CommentRow({
 // CommentCard — One Card per thread (parent + all replies flat inside)
 // ---------------------------------------------------------------------------
 
-/**
- * Collapsed body for a `quick_action` comment (MUL-5465).
- *
- * A quick action posts a real comment so the trigger stays auditable and rides
- * the normal mention path — but rendering the full prompt inline would bury
- * the discussion: eight Code Review clicks means eight copies of the same
- * paragraph. So the prompt collapses to one line and expands on demand.
- *
- * The mention line is dropped from the preview (it is the machinery, not the
- * message) but preserved in the expanded view so the reader can still see
- * exactly what was sent.
- */
-function QuickActionCommentBody({
-  content,
-  quickActionId,
-}: {
-  content: string;
-  quickActionId: string;
-}) {
-  const { t } = useT("issues");
-  const [expanded, setExpanded] = useState(false);
-  const wsId = useCurrentWorkspace()?.id ?? "";
-  const { data: actions = [] } = useQuery({
-    ...quickActionListOptions(wsId),
-    enabled: wsId !== "",
-  });
-  const action = actions.find((a) => a.id === quickActionId);
-
-  // The header identifies WHICH action ran; the body is what was actually
-  // sent. An earlier version previewed the prompt's first line here, which
-  // then repeated verbatim two lines below once expanded — and told you
-  // nothing the body did not.
-  //
-  // Falling back to the prompt's opening line keeps the row meaningful when
-  // the action cannot be resolved: it was deleted, or it is another member's
-  // private action and therefore absent from this viewer's catalog.
-  const separator = content.indexOf("\n\n");
-  const prompt = separator === -1 ? content : content.slice(separator + 2);
-  const fallback = prompt.trim().split("\n")[0] ?? "";
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:bg-accent/40"
-      >
-        <ChevronRight
-          className={cn(
-            "!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform",
-            expanded && "rotate-90",
-          )}
-        />
-        <Zap className="!size-3 shrink-0 text-muted-foreground" />
-        {action ? (
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            <span className="font-medium text-foreground/80">{action.name}</span>
-            {action.target_name ? (
-              <span>
-                {" "}
-                {t(($) => $.detail.quick_action_ran_via, { name: action.target_name })}
-              </span>
-            ) : null}
-          </span>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">{fallback}</span>
-        )}
-      </button>
-      {expanded ? (
-        <div className="mt-1.5 pl-[18px]">
-          <ReadonlyContent content={content} />
-        </div>
-      ) : null}
-    </div>
-  );
-}
+// A quick action posts an ordinary comment and is rendered as one (MUL-5465).
+// It briefly had a collapsed one-line header that expanded to reveal the
+// prompt, on the theory that repeated runs would bury the discussion. In
+// practice the prompts are short, the header restated what the body already
+// said, and the disclosure only added a click between the reader and the text.
+// Provenance still lives on `quick_action_id`; it is data, not decoration.
 
 function CommentCardImpl({
   issueId,
@@ -1115,18 +1042,7 @@ function CommentCardImpl({
             ) : (
               <>
                 <div className="pl-10 text-body leading-relaxed text-foreground/85">
-                  {/* Keyed on the id, never on comment_type: `type` is
-                      client-supplied on the generic comment endpoint, so
-                      keying the collapsed rendering off it would let any
-                      member post a comment whose body is hidden by default. */}
-                  {entry.quick_action_id ? (
-                    <QuickActionCommentBody
-                      content={entry.content ?? ""}
-                      quickActionId={entry.quick_action_id}
-                    />
-                  ) : (
-                    <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
-                  )}
+                  <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-10" />
                 {retryableAgentFailureComment(entry) && (
