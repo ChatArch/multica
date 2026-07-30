@@ -77,16 +77,35 @@ func TestEnsureSkillFrontmatterReSynthesizesInvalidYAMLWithEmptyDescription(t *t
 	}
 }
 
-// Valid frontmatter that already carries a name must survive untouched —
-// re-synthesis is only for the broken case, so upstream import formatting is
-// preserved on the happy path.
-func TestEnsureSkillFrontmatterLeavesValidYAMLUntouched(t *testing.T) {
+// Valid frontmatter survives re-synthesis: every key keeps its upstream
+// formatting and only `name` is retargeted at the slug. Re-synthesis proper is
+// still reserved for the broken case.
+//
+// `name` cannot be left alone because runtimes disagree on which field
+// identifies a skill (OpenCode: frontmatter `name`; Claude: directory name), so
+// an upstream value that differs from the slug makes the skill answer to two
+// names depending on the runtime (MUL-5529).
+func TestEnsureSkillFrontmatterRetargetsNameAndKeepsOtherKeys(t *testing.T) {
 	t.Parallel()
 
 	valid := "---\nname: upstream\ndescription: \"colon: safe because quoted\"\nextra-key: kept\n---\n\nbody\n"
+	want := "---\nname: my-slug\ndescription: \"colon: safe because quoted\"\nextra-key: kept\n---\n\nbody\n"
 
-	if got := ensureSkillFrontmatter(valid, "my-slug", "ignored"); got != valid {
-		t.Errorf("valid frontmatter was rewritten;\n got: %q\nwant: %q", got, valid)
+	if got := ensureSkillFrontmatter(valid, "my-slug", "ignored"); got != want {
+		t.Errorf("frontmatter name was not retargeted;\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// The rewrite is byte-surgical: a CRLF block keeps its line endings instead of
+// acquiring a lone LF on the name line.
+func TestEnsureSkillFrontmatterPreservesCRLFOnNameRewrite(t *testing.T) {
+	t.Parallel()
+
+	valid := "---\r\nname: upstream\r\ndescription: kept\r\n---\r\n\r\nbody\r\n"
+	want := "---\r\nname: my-slug\r\ndescription: kept\r\n---\r\n\r\nbody\r\n"
+
+	if got := ensureSkillFrontmatter(valid, "my-slug", "ignored"); got != want {
+		t.Errorf("CRLF frontmatter mangled;\n got: %q\nwant: %q", got, want)
 	}
 }
 

@@ -139,10 +139,14 @@ Hidden body.`,
 	}
 
 	for name, out := range rendered {
-		if !strings.Contains(out, "Visible Skill") {
+		// Listings carry the on-disk slug, not the display name (MUL-5529).
+		if !strings.Contains(out, "visible-skill") {
 			t.Errorf("%s missing visible skill:\n%s", name, out)
 		}
-		if strings.Contains(out, "Hidden Skill") || strings.Contains(out, "hidden description") {
+		if strings.Contains(out, "Visible Skill") {
+			t.Errorf("%s lists the display name instead of the slug:\n%s", name, out)
+		}
+		if strings.Contains(out, "hidden-skill") || strings.Contains(out, "hidden description") {
 			t.Errorf("%s advertised disable-model-invocation skill:\n%s", name, out)
 		}
 	}

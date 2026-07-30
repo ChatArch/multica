@@ -425,8 +425,8 @@ var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 //   - No frontmatter at all → synthesize one with `name: <slug>` (and the DB
 //     description when available).
 //   - Frontmatter present, has a non-empty `name`, AND parses as valid YAML →
-//     leave it untouched. The upstream import may have shaped that block
-//     deliberately to match a specific runtime, and we don't want to clobber it.
+//     rewrite `name` to the slug and keep every other key verbatim. See below
+//     for why `name` specifically is not left alone.
 //   - Frontmatter present and has a non-empty `name` but YAML is invalid (e.g.
 //     unquoted colon in description) → strip and re-synthesize so runtimes like
 //     Codex don't discard the skill on parse errors.
@@ -434,16 +434,26 @@ var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 //     YAML only set `description`, with the directory slug filling in for
 //     `name` at import time) → prepend `name: <slug>` as the first key of
 //     the existing block so OpenCode can still route the skill.
+//
+// `name` is the one key Multica must own. Runtimes disagree on which field
+// identifies a skill — Claude routes on the directory name, OpenCode on the
+// frontmatter `name` — so letting the two diverge gives a single skill two
+// different invocable names depending on where it runs (MUL-5529). The slug is
+// authoritative because it is what lands on disk and the only value carrying a
+// uniqueness guarantee (allocateCollisionFreeSkillDir); a frontmatter `name` is
+// author-supplied and two imported skills may both claim the same one. Every
+// other key stays byte-identical, so deliberately shaped upstream frontmatter
+// still survives the round-trip.
 func ensureSkillFrontmatter(content, slug, description string) string {
 	fmStart, ok := frontmatterBodyStart(content)
 	if !ok {
 		return synthesizeFrontmatter(content, slug, description)
 	}
-	// Frontmatter exists and has a parseable name. If it's valid YAML, leave
-	// it untouched so upstream-imported frontmatter survives round-trips.
+	// Frontmatter exists and has a parseable name. If it's valid YAML, keep the
+	// block and force `name` to the slug.
 	if hasFrontmatterName(content[fmStart:]) {
 		if isFrontmatterValidYAML(content) {
-			return content
+			return setFrontmatterName(content, fmStart, slug)
 		}
 		// Frontmatter has a name but the YAML is invalid (e.g. unquoted
 		// colon in the description). Strip and re-synthesize so runtimes
@@ -545,6 +555,25 @@ func frontmatterBodyStart(content string) (int, bool) {
 // just after the opening `---` line) contains a parseable, non-empty `name:`
 // scalar before the closing `---`.
 func hasFrontmatterName(fmBody string) bool {
+	_, _, ok := frontmatterNameLineSpan(fmBody)
+	return ok
+}
+
+// frontmatterNameLineSpan locates the top-level `name:` line carrying a
+// non-empty value inside a frontmatter body (the slice starting just after the
+// opening `---` line). start and end are byte offsets into fmBody bounding that
+// line, excluding its terminating newline.
+//
+// hasFrontmatterName and setFrontmatterName both route through this so the
+// "does a name exist?" check and the rewrite can never disagree about which
+// line they mean — the same reason frontmatterParts centralizes where a block
+// ends.
+//
+// Only unindented keys match. An indented `name:` belongs to a nested mapping
+// (`metadata:\n  name: foo`), and treating it as the skill's name would both
+// miss that the block has no top-level name and, on rewrite, splice a
+// top-level key into the middle of the nested one.
+func frontmatterNameLineSpan(fmBody string) (start, end int, ok bool) {
 	closeIdx := strings.Index(fmBody, "\n---")
 	if closeIdx < 0 {
 		// Missing close — scan everything we have and fall through. The
@@ -553,18 +582,41 @@ func hasFrontmatterName(fmBody string) bool {
 		// on top.
 		closeIdx = len(fmBody)
 	}
+	offset := 0
 	for _, line := range strings.Split(fmBody[:closeIdx], "\n") {
-		line = strings.TrimSpace(line)
+		lineStart := offset
+		offset += len(line) + 1 // +1 for the newline Split consumed
 		if !strings.HasPrefix(line, "name:") {
 			continue
 		}
-		v := strings.TrimSpace(strings.TrimPrefix(line, "name:"))
+		v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "name:"))
 		v = strings.Trim(v, `"'`)
-		if v != "" {
-			return true
+		if v == "" {
+			continue
 		}
+		return lineStart, lineStart + len(line), true
 	}
-	return false
+	return 0, 0, false
+}
+
+// setFrontmatterName rewrites the value of the top-level frontmatter `name` key
+// to slug and leaves every other byte of content untouched. fmStart is the
+// offset where the YAML body begins (see frontmatterBodyStart). Content with no
+// such key is returned unchanged; ensureSkillFrontmatter handles that case by
+// injecting one instead.
+func setFrontmatterName(content string, fmStart int, slug string) string {
+	fmBody := content[fmStart:]
+	start, end, ok := frontmatterNameLineSpan(fmBody)
+	if !ok {
+		return content
+	}
+	replacement := "name: " + slug
+	// strings.Split on "\n" leaves the "\r" of a CRLF ending inside the line;
+	// carry it over so the block doesn't end up with mixed terminators.
+	if strings.HasSuffix(fmBody[start:end], "\r") {
+		replacement += "\r"
+	}
+	return content[:fmStart+start] + replacement + content[fmStart+end:]
 }
 
 // yamlEscapeInline returns a double-quoted YAML scalar that always parses as
