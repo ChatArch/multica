@@ -52,6 +52,7 @@ jobs:
               - 'server/internal/handler/reserved_slugs.json'
               - 'scripts/selfhost-config.test.sh'
               - 'scripts/selfhost-wait.sh'
+              - 'scripts/selfhost-preflight.sh'
               - 'scripts/check.sh'
               - 'scripts/dev.sh'
               - 'scripts/local-env.sh'
