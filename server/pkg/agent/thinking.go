@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -438,125 +437,27 @@ func codexThinkingFromDebugModel(m codexDebugModel) *ModelThinking {
 
 // ── CodeBuddy ────────────────────────────────────────────────────────
 //
-// CodeBuddy uses the same `--effort <level>` flag as Claude but with a
-// different level set (no `max`). Discovery parses `--help` identically
-// to the claude approach. All models get the same effort levels since
-// CodeBuddy doesn't document per-model restrictions.
-
-var codebuddyEffortRe = regexp.MustCompile(`--effort\s*(?:<[^>]+>)?\s*[^(]*\(([^)]+)\)`)
+// CodeBuddy uses the same `--effort <level>` flag as Claude. The level set is
+// discovered from the `thought_level` config option in the ACP session/new
+// response — the same handshake that yields the model catalog — so no extra
+// process is spawned for it. All models share one effort catalog because
+// CodeBuddy advertises it per session, not per model.
 
 var codebuddyEffortLabel = map[string]string{
-	"low":    "Low",
-	"medium": "Medium",
-	"high":   "High",
-	"xhigh":  "Extra high",
+	"minimal": "Minimal",
+	"low":     "Low",
+	"medium":  "Medium",
+	"high":    "High",
+	"xhigh":   "Extra high",
+	"max":     "Max",
 }
 
-var codebuddyStaticEffortFallback = []string{"low", "medium", "high", "xhigh"}
-
-// codebuddyHelpCache memoises the raw --help output across discovery rounds:
-// CodeBuddy's --help can take ~30s, so re-running it for every model-list
-// request would be painful.
-//
-// It is NOT what keeps a single request down to one invocation. That is
-// structural: discoverCodebuddyModels captures the help text once and hands the
-// string to the model and effort parsers, and its failure paths skip the effort
-// pass entirely (MUL-5549). Relying on the cache for that would be wrong — a
-// failed --help is deliberately not cached, so the second caller would re-run
-// the full 35s timeout.
-var (
-	codebuddyHelpMu    sync.Mutex
-	codebuddyHelpStore = map[string]codebuddyHelpEntry{}
-)
-
-const codebuddyHelpTTL = 60 * time.Second
-
-type codebuddyHelpEntry struct {
-	output    string
-	expiresAt time.Time
-}
-
-// codebuddyHelpOutput runs `codebuddy --help` (cached for codebuddyHelpTTL) and
-// returns "" when the command could not be run.
-//
-// discoverCodebuddyModels is its only caller. The effort parser deliberately
-// takes an already-captured string instead of calling this itself, so one
-// discovery round can never pay the 35s timeout twice (MUL-5549). Keep it that
-// way: a new caller here reintroduces that bug on the failure path, where
-// nothing is cached to absorb the second run.
-func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
-	if executablePath == "" {
-		executablePath = "codebuddy"
-	}
-	key := executablePath
-	codebuddyHelpMu.Lock()
-	if entry, ok := codebuddyHelpStore[key]; ok && time.Now().Before(entry.expiresAt) {
-		codebuddyHelpMu.Unlock()
-		return entry.output
-	}
-	codebuddyHelpMu.Unlock()
-
-	runCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, executablePath, "--help")
-	hideAgentWindow(cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// A non-zero exit or a timeout means this is not usable help text, and
-		// CombinedOutput folds stderr in, so the failure message itself would
-		// be returned as if it were help. The canonical case: `codebuddy` is a
-		// `#!/usr/bin/env node` script installed under nvm, and a GUI-launched
-		// daemon does not inherit the interactive PATH, so the shebang fails
-		// and the "output" is `env: node: No such file or directory`. Returning
-		// that made every parser here silently fall back, and caching it pinned
-		// the failure for codebuddyHelpTTL (MUL-5549).
-		slog.Debug("codebuddy --help failed", "path", executablePath, "error", err)
-		return ""
-	}
-	result := string(out)
-
-	if result != "" {
-		codebuddyHelpMu.Lock()
-		codebuddyHelpStore[key] = codebuddyHelpEntry{output: result, expiresAt: time.Now().Add(codebuddyHelpTTL)}
-		codebuddyHelpMu.Unlock()
-	}
-	return result
-}
-
-// annotateCodebuddyThinking derives the effort catalog from helpOut — the SAME
-// `codebuddy --help` capture the model catalog was parsed from — rather than
-// running the command again.
-//
-// It used to call codebuddyHelpOutput itself. That was free while a failed
-// --help was (wrongly) memoised, but once failures correctly stopped being
-// cached it meant one ListModels could pay the 35s timeout twice, blowing past
-// the server's 60s running timeout and denying the user even the fallback list
-// (MUL-5549). Callers on the failure path skip this entirely and use
-// codebuddyFallbackCatalog, which applies the static levels without exec'ing.
-func annotateCodebuddyThinking(ctx context.Context, models []Model, executablePath, helpOut string) {
-	if executablePath == "" {
-		executablePath = "codebuddy"
-	}
-	version, _ := DetectVersion(ctx, executablePath)
-	key := thinkingCacheKey{provider: "codebuddy", executablePath: executablePath, cliVersion: version}
-	if cached, ok := thinkingCacheGet(key); ok {
-		for i := range models {
-			if t, ok := cached[models[i].ID]; ok && t != nil {
-				models[i].Thinking = t
-			}
-		}
-		return
-	}
-
-	result := codebuddyThinkingByModel(models, codebuddyEffortSuperset(helpOut))
-	thinkingCachePut(key, result)
-
-	for i := range models {
-		if t, ok := result[models[i].ID]; ok && t != nil {
-			models[i].Thinking = t
-		}
-	}
-}
+// codebuddyStaticEffortFallback is used when discovery cannot reach the CLI.
+// It lists every level `--effort` accepts (confirmed against CodeBuddy 2.130.0,
+// which advertises minimal/low/medium/high/xhigh/max) — the previous value
+// omitted `minimal` and `max`, so a working install still lost two real levels
+// whenever discovery degraded.
+var codebuddyStaticEffortFallback = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 
 // codebuddyThinkingByModel maps every model onto the shared effort catalog
 // built from levels. CodeBuddy advertises one `--effort` set for the whole CLI,
@@ -584,9 +485,9 @@ func codebuddyThinkingByModel(models []Model, levels []string) map[string]*Model
 	return result
 }
 
-// applyCodebuddyStaticThinking annotates models with the static effort
-// fallback. Used on the discovery-failure path, where re-running --help to
-// discover the real levels would just fail again — slowly.
+// applyCodebuddyStaticThinking annotates models with the static effort fallback.
+// Used when discovery could not reach the CLI, or reached it but got no
+// recognisable thought_level option back.
 func applyCodebuddyStaticThinking(models []Model) {
 	result := codebuddyThinkingByModel(models, codebuddyStaticEffortFallback)
 	for i := range models {
@@ -596,34 +497,101 @@ func applyCodebuddyStaticThinking(models []Model) {
 	}
 }
 
-// codebuddyEffortSuperset extracts the `--effort` levels from an already
-// captured `codebuddy --help`, falling back to the static set when the help
-// text carries no parseable effort line.
-func codebuddyEffortSuperset(helpOut string) []string {
-	if helpOut == "" {
-		return append([]string(nil), codebuddyStaticEffortFallback...)
-	}
-	parsed := parseCodebuddyEffortHelp(helpOut)
-	if len(parsed) == 0 {
-		return append([]string(nil), codebuddyStaticEffortFallback...)
-	}
-	return parsed
+// codebuddyFlagEffortValues are the tokens `codebuddy --effort <level>` accepts.
+//
+// The ACP `thought_level` option advertises one extra choice, `enabled`
+// ("On (default)"), which is a session-level toggle rather than a flag argument.
+// The daemon passes the selected level straight through to `--effort`
+// (codebuddy.go), so surfacing `enabled` in the picker would let a user build a
+// command line CodeBuddy rejects. Filter against this set instead of trusting
+// the advertised list wholesale.
+var codebuddyFlagEffortValues = map[string]bool{
+	"minimal": true,
+	"low":     true,
+	"medium":  true,
+	"high":    true,
+	"xhigh":   true,
+	"max":     true,
 }
 
-func parseCodebuddyEffortHelp(helpText string) []string {
-	match := codebuddyEffortRe.FindStringSubmatch(helpText)
-	if len(match) < 2 {
-		return nil
+// annotateCodebuddyThinkingFromACP fills in each model's effort catalog from the
+// `thought_level` config option carried by the SAME `session/new` response the
+// models came from — so the effort catalog costs no extra process at all. It
+// replaces a second regex pass over `codebuddy --help` (MUL-5549).
+//
+// CodeBuddy advertises one effort set for the whole CLI rather than per model,
+// so every entry shares it. Levels the `--effort` flag would reject are dropped,
+// and a currentValue outside the flag set (the default `enabled`) becomes an
+// empty DefaultLevel, which the UI renders as a generic "Default" instead of
+// inventing a level we cannot pass through.
+func annotateCodebuddyThinkingFromACP(models []Model, sessionResult json.RawMessage) {
+	levels, defaultLevel := parseACPCodebuddyEffort(sessionResult)
+	if len(levels) == 0 {
+		applyCodebuddyStaticThinking(models)
+		return
 	}
-	var out []string
-	for _, raw := range strings.Split(match[1], ",") {
-		token := strings.TrimSpace(raw)
-		if token == "" {
+	result := codebuddyThinkingByModel(models, levels)
+	for _, thinking := range result {
+		thinking.DefaultLevel = defaultLevel
+	}
+	for i := range models {
+		if t, ok := result[models[i].ID]; ok && t != nil {
+			models[i].Thinking = t
+		}
+	}
+}
+
+// parseACPCodebuddyEffort extracts the effort levels and the advertised default
+// from an ACP session/new result. Returns no levels when the response carries no
+// recognisable thought_level option, which makes the caller fall back to the
+// static set rather than hiding the thinking picker entirely.
+func parseACPCodebuddyEffort(raw json.RawMessage) (levels []string, defaultLevel string) {
+	type acpChoice struct {
+		Value string `json:"value"`
+	}
+	type acpOption struct {
+		ID                string      `json:"id"`
+		Category          string      `json:"category"`
+		CurrentValue      string      `json:"currentValue"`
+		CurrentValueSnake string      `json:"current_value"`
+		Options           []acpChoice `json:"options"`
+	}
+	var resp struct {
+		ConfigOptions      []acpOption `json:"configOptions"`
+		ConfigOptionsSnake []acpOption `json:"config_options"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, ""
+	}
+	options := resp.ConfigOptions
+	if len(options) == 0 {
+		options = resp.ConfigOptionsSnake
+	}
+	for _, opt := range options {
+		if !strings.EqualFold(strings.TrimSpace(opt.ID), "thought_level") &&
+			!strings.EqualFold(strings.TrimSpace(opt.Category), "thought_level") {
 			continue
 		}
-		out = append(out, token)
+		seen := map[string]bool{}
+		for _, choice := range opt.Options {
+			value := strings.TrimSpace(choice.Value)
+			if value == "" || seen[value] || !codebuddyFlagEffortValues[value] {
+				continue
+			}
+			seen[value] = true
+			levels = append(levels, value)
+		}
+		current := strings.TrimSpace(opt.CurrentValue)
+		if current == "" {
+			current = strings.TrimSpace(opt.CurrentValueSnake)
+		}
+		// Only echo a default we could actually pass to --effort.
+		if codebuddyFlagEffortValues[current] {
+			defaultLevel = current
+		}
+		return levels, defaultLevel
 	}
-	return out
+	return nil, ""
 }
 
 // ── Shared validation ────────────────────────────────────────────────
@@ -774,11 +742,16 @@ var providerThinkingEnums = map[string]map[string]bool{
 		"xhigh":  true,
 		"max":    true,
 	},
+	// Confirmed against CodeBuddy 2.130.0's advertised thought_level catalog.
+	// `minimal` and `max` were missing here, so the server rejected two levels
+	// the CLI genuinely accepts.
 	"codebuddy": {
-		"low":    true,
-		"medium": true,
-		"high":   true,
-		"xhigh":  true,
+		"minimal": true,
+		"low":     true,
+		"medium":  true,
+		"high":    true,
+		"xhigh":   true,
+		"max":     true,
 	},
 	// Grok 4.5's documented --effort levels. It cannot disable reasoning and
 	// does not accept none, minimal, or xhigh.

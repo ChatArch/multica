@@ -4,217 +4,234 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-// writeCodebuddyStub writes an executable stub at <dir>/codebuddy whose
-// `--help` behaviour is supplied by body. Tests use a stub rather than the
-// real CLI so the default suite never executes a user-installed agent binary.
-func writeCodebuddyStub(t *testing.T, body string) string {
+// codebuddyACPSessionResult is the shape CodeBuddy 2.130.0 actually returns from
+// `session/new` over `codebuddy --acp`, trimmed to four models. Captured from the
+// real CLI: the catalog lives under models.availableModels with an advertised
+// currentModelId, and the effort catalog rides along in configOptions as
+// thought_level — including the `enabled` choice that is a session toggle rather
+// than a valid `--effort` argument.
+const codebuddyACPSessionResult = `{"sessionId":"ses-codebuddy","models":{"currentModelId":"hy3",` +
+	`"availableModels":[` +
+	`{"modelId":"hy3","name":"Hy3","description":"x0.00 credits"},` +
+	`{"modelId":"glm-5.2","name":"GLM-5.2","description":"x0.79 credits"},` +
+	`{"modelId":"kimi-k3-1","name":"Kimi-K3","description":"x1.62 credits"},` +
+	`{"modelId":"deepseek-v3-2-volc","name":"DeepSeek-V3.2","description":"x0.29 credits"}]},` +
+	`"configOptions":[` +
+	`{"type":"select","id":"mode","name":"Permission Mode","currentValue":"default","options":[{"value":"default","name":"Default"}]},` +
+	`{"type":"select","id":"thought_level","name":"Deep Thinking","category":"thought_level","currentValue":"enabled","options":[` +
+	`{"value":"minimal","name":"Minimal"},{"value":"low","name":"Low"},{"value":"medium","name":"Medium"},` +
+	`{"value":"high","name":"High"},{"value":"xhigh","name":"X-High"},{"value":"max","name":"Max"},` +
+	`{"value":"enabled","name":"On (default)"}]}]}`
+
+// writeCodebuddyACPStub writes an executable stub that speaks just enough ACP for
+// discovery. sessionResult is returned from session/new; when it is empty the
+// stub fails that call, which is how a not-logged-in CLI is simulated.
+func writeCodebuddyACPStub(t *testing.T, sessionResult string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "codebuddy")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write codebuddy stub: %v", err)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codebuddy")
+	sessionReply := `printf '{"jsonrpc":"2.0","id":%s,"result":` + sessionResult + `}\n' "$id"`
+	if sessionResult == "" {
+		sessionReply = `printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"not authenticated"}}\n' "$id"`
+	}
+	script := `#!/bin/sh
+# Minimal CodeBuddy ACP stub: initialize + session/new only, which is all model
+# discovery drives. --version answers so the runtime-registration probe is happy.
+case "$1" in
+  --version) echo '2.130.0'; exit 0 ;;
+esac
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[{"id":"external","name":"Login with Google/Github"}]}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      ` + sessionReply + `
+      exit 0
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write codebuddy ACP stub: %v", err)
 	}
 	return path
 }
 
-// resetCodebuddyHelpCache drops any memoised --help output for path so each
-// case actually re-runs the stub. codebuddyHelpStore is a package global.
-func resetCodebuddyHelpCache(t *testing.T, path string) {
+func resetCodebuddyDiscoveryCaches(t *testing.T) {
 	t.Helper()
-	drop := func() {
-		codebuddyHelpMu.Lock()
-		delete(codebuddyHelpStore, path)
-		codebuddyHelpMu.Unlock()
+	clear := func() {
+		modelCacheMu.Lock()
+		delete(modelCache, "codebuddy")
+		modelCacheMu.Unlock()
+		resetThinkingCacheForTests()
 	}
-	drop()
-	t.Cleanup(drop)
+	clear()
+	t.Cleanup(clear)
 }
 
-// TestCodebuddyHelpOutputRejectsFailedExec is the MUL-5549 regression: a
-// `#!/usr/bin/env node` codebuddy whose interpreter is not on a GUI-launched
-// daemon's PATH exits 127 and prints `env: node: No such file or directory` on
-// stderr. codebuddyHelpOutput used to discard the exit status and hand that
-// stderr back as if it were help text, so every parser downstream silently
-// fell back — and the failure was then memoised for codebuddyHelpTTL.
-func TestCodebuddyHelpOutputRejectsFailedExec(t *testing.T) {
-	path := writeCodebuddyStub(t, "#!/bin/sh\necho 'env: node: No such file or directory' >&2\nexit 127\n")
-	resetCodebuddyHelpCache(t, path)
-
-	if got := codebuddyHelpOutput(context.Background(), path); got != "" {
-		t.Fatalf("a non-zero exit must yield no help text, got %q", got)
-	}
-
-	codebuddyHelpMu.Lock()
-	_, cached := codebuddyHelpStore[path]
-	codebuddyHelpMu.Unlock()
-	if cached {
-		t.Error("a failed --help must not be cached; it would pin the failure for codebuddyHelpTTL")
-	}
-}
-
-// TestDiscoverCodebuddyModelsMarksFallback pins that every degraded path is
-// reported as Fallback. Before MUL-5549 all three returned (staticModels, nil),
-// which the daemon reported as a successful discovery and the server then
-// cached as this runtime's real catalog for 24h.
-func TestDiscoverCodebuddyModelsMarksFallback(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path string
-	}{
-		{"binary missing", missingAgentExecutable(t, "codebuddy")},
-		{"help exec fails", writeCodebuddyStub(t, "#!/bin/sh\necho 'env: node: No such file or directory' >&2\nexit 127\n")},
-		{"help has no model line", writeCodebuddyStub(t, "#!/bin/sh\necho 'Usage: codebuddy [options]'\n")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resetCodebuddyHelpCache(t, tc.path)
-
-			catalog, err := discoverCodebuddyModels(context.Background(), tc.path)
-			if err != nil {
-				t.Fatalf("discoverCodebuddyModels: %v", err)
-			}
-			if !catalog.Fallback {
-				t.Error("a degraded discovery must be marked Fallback")
-			}
-			// The models are still returned — the picker stays populated.
-			if len(catalog.Models) == 0 {
-				t.Error("expected the static stand-in to still be offered to the UI")
-			}
-		})
-	}
-}
-
-// TestDiscoverCodebuddyModelsRealHelpIsNotFallback is the other half: a stub
-// emitting the real v2.130.0 `--model` line must parse and must NOT be marked
-// Fallback, so a genuine catalog still reaches the cache.
-func TestDiscoverCodebuddyModelsRealHelpIsNotFallback(t *testing.T) {
-	const helpLine = `  --model <model>    Model for the current session. Please provide the model ID. ` +
-		`Currently supported: (hy3, glm-5.2, minimax-m3, kimi-k3-1, deepseek-v4-pro)`
-	path := writeCodebuddyStub(t, "#!/bin/sh\ncat <<'EOF'\nUsage: codebuddy [options]\n"+helpLine+"\nEOF\n")
-	resetCodebuddyHelpCache(t, path)
+// TestDiscoverCodebuddyModelsFromACP is the core of the migration (MUL-5549):
+// the catalog now comes from the ACP handshake, so IDs, display names AND the
+// default model all come from CodeBuddy instead of being guessed from the ID.
+func TestDiscoverCodebuddyModelsFromACP(t *testing.T) {
+	resetCodebuddyDiscoveryCaches(t)
+	path := writeCodebuddyACPStub(t, codebuddyACPSessionResult)
 
 	catalog, err := discoverCodebuddyModels(context.Background(), path)
 	if err != nil {
 		t.Fatalf("discoverCodebuddyModels: %v", err)
 	}
 	if catalog.Fallback {
-		t.Error("a parsed catalog must not be marked Fallback")
+		t.Fatal("a successful ACP handshake must not be marked Fallback")
 	}
-	if len(catalog.Models) != 5 || catalog.Models[0].ID != "hy3" {
-		t.Fatalf("unexpected catalog: %+v", catalog.Models)
+	if len(catalog.Models) != 4 {
+		t.Fatalf("expected 4 models, got %d: %+v", len(catalog.Models), catalog.Models)
 	}
-	// The static stand-in shares no IDs with the real catalog, which is what
-	// made the silent fallback user-visible in the first place.
+
+	// Labels are the CLI's own names. The old --help path had to derive these
+	// from the ID and got them wrong: kimi-k3-1 became "Kimi K3 1" and
+	// deepseek-v3-2-volc became "Deepseek V3 2 Volc".
+	wantLabel := map[string]string{
+		"hy3":                "Hy3",
+		"glm-5.2":            "GLM-5.2",
+		"kimi-k3-1":          "Kimi-K3",
+		"deepseek-v3-2-volc": "DeepSeek-V3.2",
+	}
 	for _, m := range catalog.Models {
-		for _, static := range codebuddyStaticModels() {
-			if m.ID == static.ID {
-				t.Fatalf("real and fallback catalogs must stay distinguishable, both have %q", m.ID)
-			}
+		if want, ok := wantLabel[m.ID]; !ok {
+			t.Errorf("unexpected model %q", m.ID)
+		} else if m.Label != want {
+			t.Errorf("label(%q) = %q, want the CLI's own %q", m.ID, m.Label, want)
 		}
 	}
-}
 
-// countingCodebuddyStub writes a codebuddy stub that appends a line to a
-// counter file on every `--help` invocation, so a test can assert how many
-// times the (slow, 35s-capped) command actually ran. helpBody is emitted on
-// stdout for --help; --version always succeeds so runtime registration and the
-// thinking-cache key lookup behave normally.
-func countingCodebuddyStub(t *testing.T, helpBody string, helpExit int) (path, counter string) {
-	t.Helper()
-	dir := t.TempDir()
-	counter = filepath.Join(dir, "help-calls")
-	path = filepath.Join(dir, "codebuddy")
-	script := "#!/bin/sh\n" +
-		"case \"$1\" in\n" +
-		"  --version) echo '2.130.0'; exit 0 ;;\n" +
-		"  --help) echo call >> " + counter + "\n" +
-		"          cat <<'HELPEOF'\n" + helpBody + "\nHELPEOF\n" +
-		"          exit " + itoa(helpExit) + " ;;\n" +
-		"esac\n" +
-		"exit 0\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write counting stub: %v", err)
+	// The default is the advertised currentModelId, not "whichever came first".
+	var defaults []string
+	for _, m := range catalog.Models {
+		if m.Default {
+			defaults = append(defaults, m.ID)
+		}
 	}
-	return path, counter
+	if len(defaults) != 1 || defaults[0] != "hy3" {
+		t.Errorf("default models = %v, want exactly [hy3] from currentModelId", defaults)
+	}
 }
 
-func itoa(n int) string { return strconv.Itoa(n) }
+// TestDiscoverCodebuddyModelsACPEffort pins the effort catalog coming out of the
+// same handshake — no second process — and the `enabled` filtering.
+func TestDiscoverCodebuddyModelsACPEffort(t *testing.T) {
+	resetCodebuddyDiscoveryCaches(t)
+	path := writeCodebuddyACPStub(t, codebuddyACPSessionResult)
 
-func helpCallCount(t *testing.T, counter string) int {
-	t.Helper()
-	b, err := os.ReadFile(counter)
+	catalog, err := discoverCodebuddyModels(context.Background(), path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0
-		}
-		t.Fatalf("read counter: %v", err)
+		t.Fatalf("discoverCodebuddyModels: %v", err)
 	}
-	return len(strings.Fields(string(b)))
+	thinking := catalog.Models[0].Thinking
+	if thinking == nil {
+		t.Fatal("expected the effort catalog to be annotated from the same session/new response")
+	}
+	var got []string
+	for _, lvl := range thinking.SupportedLevels {
+		got = append(got, lvl.Value)
+	}
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("levels = %v, want %v", got, want)
+	}
+	// `enabled` is advertised by ACP but `--effort enabled` is not a valid
+	// command line, so it must not reach the picker...
+	for _, lvl := range thinking.SupportedLevels {
+		if lvl.Value == "enabled" {
+			t.Error("`enabled` is a session toggle, not an --effort value; it must be filtered out")
+		}
+	}
+	// ...and since it is the advertised currentValue, DefaultLevel must stay
+	// empty ("runtime decides") rather than echo a value we cannot pass.
+	if thinking.DefaultLevel != "" {
+		t.Errorf("DefaultLevel = %q, want empty because currentValue was the unusable `enabled`", thinking.DefaultLevel)
+	}
 }
 
-// TestListModelsCodebuddyRunsHelpAtMostOnce is the MUL-5549 follow-up: model
-// discovery and effort discovery both read `codebuddy --help`, and the effort
-// pass used to call it independently. That was masked while a failed --help was
-// wrongly memoised; once failures correctly stopped being cached, the failure
-// path ran the 35s command TWICE in one request — past the server's 60s running
-// timeout, so the request timed out and the late report was discarded as stale.
-// The user then got no list at all, not even the fallback.
-//
-// Both paths must therefore run --help exactly once. This goes through the full
-// ListModels entry point, since that is where the second call was introduced.
-func TestListModelsCodebuddyRunsHelpAtMostOnce(t *testing.T) {
-	const realHelp = "Usage: codebuddy [options]\n" +
-		"  --model <model>   Currently supported: (hy3, glm-5.2, kimi-k3-1)\n" +
-		"  --effort <level>  Reasoning effort level (low, medium, high, xhigh)"
+// TestParseACPCodebuddyEffortDefault covers the other branch: when CodeBuddy
+// advertises a real level as current, we echo it.
+func TestParseACPCodebuddyEffortDefault(t *testing.T) {
+	raw := json.RawMessage(`{"configOptions":[{"id":"thought_level","currentValue":"high","options":[` +
+		`{"value":"low"},{"value":"high"},{"value":"enabled"}]}]}`)
+	levels, def := parseACPCodebuddyEffort(raw)
+	if strings.Join(levels, ",") != "low,high" {
+		t.Errorf("levels = %v, want [low high]", levels)
+	}
+	if def != "high" {
+		t.Errorf("DefaultLevel = %q, want high", def)
+	}
+}
 
+// TestDiscoverCodebuddyModelsFallsBackOnACPFailure covers the not-logged-in /
+// unreachable-CLI cases. The stand-in is still offered so the picker stays
+// usable, but it must be marked Fallback so the server can never cache it as
+// this runtime's real catalog (MUL-5549), and the effort picker must still work.
+func TestDiscoverCodebuddyModelsFallsBackOnACPFailure(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		helpBody     string
-		helpExit     int
-		wantFallback bool
+		name string
+		path func(t *testing.T) string
 	}{
-		{name: "help succeeds", helpBody: realHelp, helpExit: 0},
-		// The original #6180 failure: interpreter missing, exit 127.
-		{name: "help fails", helpBody: "env: node: No such file or directory", helpExit: 127, wantFallback: true},
-		// Help runs but carries no model line (older//unauthenticated CLI).
-		{name: "help unparseable", helpBody: "Usage: codebuddy [options]", helpExit: 0, wantFallback: true},
+		{
+			name: "binary missing",
+			path: func(t *testing.T) string { return missingAgentExecutable(t, "codebuddy") },
+		},
+		{
+			name: "session/new refused (not logged in)",
+			path: func(t *testing.T) string { return writeCodebuddyACPStub(t, "") },
+		},
+		{
+			name: "session/new carries no catalog",
+			path: func(t *testing.T) string { return writeCodebuddyACPStub(t, `{"sessionId":"ses-empty"}`) },
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, counter := countingCodebuddyStub(t, tc.helpBody, tc.helpExit)
-			resetCodebuddyHelpCache(t, path)
-			// cachedDiscovery and the thinking cache are package globals; clear
-			// both so this case actually executes the stub.
-			modelCacheMu.Lock()
-			delete(modelCache, "codebuddy")
-			modelCacheMu.Unlock()
-			resetThinkingCacheForTests()
-			t.Cleanup(resetThinkingCacheForTests)
-
-			catalog, err := ListModels(context.Background(), "codebuddy", path)
+			resetCodebuddyDiscoveryCaches(t)
+			catalog, err := discoverCodebuddyModels(context.Background(), tc.path(t))
 			if err != nil {
-				t.Fatalf("ListModels(codebuddy): %v", err)
+				t.Fatalf("discoverCodebuddyModels: %v", err)
 			}
-			if catalog.Fallback != tc.wantFallback {
-				t.Errorf("Fallback = %v, want %v", catalog.Fallback, tc.wantFallback)
+			if !catalog.Fallback {
+				t.Error("a degraded discovery must be marked Fallback")
 			}
-			if got := helpCallCount(t, counter); got != 1 {
-				t.Errorf("`codebuddy --help` ran %d times, want exactly 1 — "+
-					"two 35s attempts in one request exceed the server's 60s running timeout", got)
-			}
-			// Whichever path was taken, the picker still gets models and the
-			// thinking picker still gets levels.
 			if len(catalog.Models) == 0 {
-				t.Fatal("expected a non-empty catalog")
+				t.Error("expected the static stand-in to still be offered to the UI")
 			}
 			if catalog.Models[0].Thinking == nil || len(catalog.Models[0].Thinking.SupportedLevels) == 0 {
-				t.Error("expected effort levels to be annotated on both the real and fallback paths")
+				t.Error("the fallback path must still annotate effort levels")
 			}
 		})
+	}
+}
+
+// TestCodebuddyStaticEffortFallbackCoversFlagValues keeps the offline fallback
+// honest against the flag it feeds: every level offered must be one `--effort`
+// accepts, and the set should not silently shrink below what the CLI supports.
+func TestCodebuddyStaticEffortFallbackCoversFlagValues(t *testing.T) {
+	t.Parallel()
+	for _, level := range codebuddyStaticEffortFallback {
+		if !codebuddyFlagEffortValues[level] {
+			t.Errorf("static fallback offers %q, which `--effort` does not accept", level)
+		}
+		if !IsKnownThinkingValue("codebuddy", level) {
+			t.Errorf("static fallback offers %q, which the server-side gate rejects", level)
+		}
+	}
+	if len(codebuddyStaticEffortFallback) != len(codebuddyFlagEffortValues) {
+		t.Errorf("static fallback has %d levels but --effort accepts %d; they drifted apart",
+			len(codebuddyStaticEffortFallback), len(codebuddyFlagEffortValues))
 	}
 }
 
