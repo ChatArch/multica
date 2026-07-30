@@ -302,7 +302,8 @@ require_consistent 'BACKEND_PORT from the environment' 9300
 # PORT is ignored — but it must be reported rather than silently dropped.
 env_ignored_output="$(run_recipe selfhost '' 'PORT=9500' '')"
 require_consistent 'PORT from the environment is overridden by .env' 8080
-require_config "$env_ignored_output" 'PORT=9500 from your environment is ignored;'
+require_config "$env_ignored_output" 'resolves to 8080 from PORT (.env)'
+require_config "$env_ignored_output" 'PORT=9500 (environment)'
 
 # Defaults stay 8080/3000.
 run_recipe selfhost '' '' '' >/dev/null
@@ -316,20 +317,77 @@ fi
 run_recipe selfhost-build 's/^PORT=8080/PORT=9400/' '' '' >/dev/null
 require_consistent 'selfhost-build with PORT edited' 9400
 
-# Config that cannot take effect must be reported, not silently dropped.
-preflight_output="$(run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=8080/;s/^PORT=8080/PORT=9100/' '' '')"
-require_config "$preflight_output" 'BACKEND_PORT wins for the backend, so PORT=9100 is ignored.'
+# ---------------------------------------------------------------------------
+# The preflight must name exactly one winner
+#
+# Only one input along BACKEND_PORT -> API_PORT -> SERVER_PORT -> PORT can take
+# effect, so reporting must resolve the winner first. Claiming several aliases
+# each "win" is wrong, and staying silent because a *different* alias took
+# precedence hides exactly the configuration the user needs to know about.
+# ---------------------------------------------------------------------------
+
+require_absent() {
+  local label=$1 output=$2 unexpected=$3
+
+  if grep -Fq "$unexpected" <<<"$output"; then
+    echo "[$label] output must not contain:"
+    echo "  $unexpected"
+    echo "Observed:"
+    echo "$output"
+    exit 1
+  fi
+}
+
+# Every alias set at once: only BACKEND_PORT can win, and the rest must be
+# listed as unused rather than each claiming to be the winner.
+all_aliases_output="$(
+  run_recipe selfhost \
+    's/^PORT=8080/PORT=9000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/;s/^# API_PORT=8080/API_PORT=7000/;s/^# SERVER_PORT=8080/SERVER_PORT=6000/' \
+    '' ''
+)"
+require_consistent 'every alias set at once' 8000
+require_config "$all_aliases_output" 'resolves to 8000 from BACKEND_PORT (.env)'
+require_config "$all_aliases_output" 'API_PORT=7000 (.env)'
+require_config "$all_aliases_output" 'SERVER_PORT=6000 (.env)'
+require_config "$all_aliases_output" 'PORT=9000 (.env)'
+require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 7000'
+require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 6000'
+require_absent 'every alias set at once' "$all_aliases_output" 'resolves to 9000'
+if [ "$(grep -c 'the backend host port resolves to' <<<"$all_aliases_output")" != "1" ]; then
+  echo "the preflight must name exactly one winning input:"
+  echo "$all_aliases_output"
+  exit 1
+fi
+
+# Cross-alias shadowing: a higher-priority alias in the env file silently beat a
+# lower-priority alias from the shell, because only same-named variables were
+# compared. It must be reported.
+cross_alias_output="$(
+  run_recipe selfhost \
+    's/^PORT=8080/PORT=8000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=8000/' \
+    'API_PORT=7000' ''
+)"
+require_consistent 'env-file BACKEND_PORT over shell API_PORT' 8000
+require_config "$cross_alias_output" 'resolves to 8000 from BACKEND_PORT (.env)'
+require_config "$cross_alias_output" 'API_PORT=7000 (environment)'
+
+# A redundant alias that carries the winning value changes nothing the user can
+# see, so it must not be reported.
+redundant_output="$(
+  run_recipe selfhost \
+    's/^PORT=8080/PORT=9000/;s/^# BACKEND_PORT=8080/BACKEND_PORT=9000/' '' ''
+)"
+require_consistent 'redundant alias with the same value' 9000
+require_absent 'redundant alias with the same value' "$redundant_output" 'Set but unused'
 
 preflight_output="$(run_recipe selfhost '' 'FRONTEND_PORT=3100' '')"
 require_config "$preflight_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
 
 # A clean default run must stay quiet.
 quiet_output="$(run_recipe selfhost '' '' '')"
-if grep -Fq 'is ignored' <<<"$quiet_output"; then
-  echo "default configuration must not emit ignored-port warnings:"
-  echo "$quiet_output"
-  exit 1
-fi
+for noise in 'Set but unused' 'is ignored' 'resolves to'; do
+  require_absent 'default configuration' "$quiet_output" "$noise"
+done
 
 # The recipes must delegate instead of re-deriving the port.
 for expected_call in 'bash scripts/selfhost-wait.sh official' 'bash scripts/selfhost-wait.sh build'; do
@@ -419,7 +477,7 @@ for shadowed_alias in BACKEND_PORT API_PORT SERVER_PORT; do
     run_recipe selfhost "s/^# ${shadowed_alias}=8080/${shadowed_alias}=8080/" \
       "${shadowed_alias}=9600" ''
   )"
-  require_config "$alias_output" "${shadowed_alias}=9600 from your environment is ignored;"
+  require_config "$alias_output" "${shadowed_alias}=9600 (environment)"
 done
 
 echo "self-host env derivation ok"
