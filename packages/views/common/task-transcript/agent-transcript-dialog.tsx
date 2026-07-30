@@ -1359,7 +1359,7 @@ function PatchDetailSurface({
       {files.map((file, index) => (
         // Transcript events are immutable once persisted, so index is stable.
         <div key={`${file.path}:${index}`}>
-          <div className="flex items-center gap-2 px-3 pt-2 font-mono text-[10px]">
+          <div className="flex items-center gap-2 px-3 pt-2 font-mono text-micro">
             {file.changeKind && (
               <span
                 className={cn(
@@ -1391,7 +1391,7 @@ function PatchDetailSurface({
               path={file.path}
             />
           ) : (
-            <div className="px-3 pb-2 pt-1 font-mono text-[11px] text-muted-foreground/60">
+            <div className="px-3 pb-2 pt-1 font-mono text-micro text-muted-foreground/60">
               {file.truncated
                 ? t(($) => $.transcript.patch_body_truncated)
                 : t(($) => $.transcript.patch_no_content)}
@@ -1400,7 +1400,7 @@ function PatchDetailSurface({
         </div>
       ))}
       {truncated && (
-        <div className="px-3 py-2 font-mono text-[10px] text-muted-foreground/60">
+        <div className="px-3 py-2 font-mono text-micro text-muted-foreground/60">
           {t(($) => $.transcript.patch_truncated)}
         </div>
       )}
