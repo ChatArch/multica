@@ -29,8 +29,13 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
         repository. This includes the components located in the
         `apps/web/`, `apps/desktop/`, `apps/mobile/`, `packages/views/`,
         and `packages/ui/` directories when running Multica from the raw
-        source code, the "web" image when running Multica with Docker, and
-        any compiled desktop or mobile application built from that code.
+        source code, the frontend container image (published as
+        `ghcr.io/multica-ai/multica-web`) when running Multica with
+        Docker, and any compiled desktop or mobile application built from
+        that code. That enumeration is illustrative rather than
+        exhaustive: user interface code remains covered when it is
+        modified, moved, renamed, or extracted into another package or
+        repository.
       - This restriction is inapplicable to uses of Multica that do not
         involve a Multica user interface, such as running only the
         `server/` backend, the daemon, or the CLI without redistributing
