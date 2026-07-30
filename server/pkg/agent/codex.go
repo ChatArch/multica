@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // codexBlockedArgs are flags hardcoded by the daemon that must not be
@@ -2544,7 +2546,37 @@ func codexPatchInput(changes []any) map[string]any {
 	if len(changes) == 0 {
 		return nil
 	}
-	originalBytes := 0
+	// Measure before anything rewrites the bodies, so the figure reported to the
+	// reader is the size of the patch they actually produced.
+	originalBytes := codexPatchBodyBytes(changes)
+
+	// Redaction must run BEFORE the size budget, never after it. Several rules
+	// only match a credential as a whole — the PEM rule needs both the BEGIN
+	// and the END marker — so cutting a body at the budget can strand the
+	// opening half of a private key in text that no pattern will match again.
+	// The daemon and the server each redact further down the path, and neither
+	// can recover a secret that truncation has already made unrecognisable.
+	safe, ok := redact.InputMap(map[string]any{"changes": changes})["changes"].([]any)
+	if !ok {
+		safe = changes
+	}
+
+	input := map[string]any{"changes": safe}
+	// Budget the redacted bodies, since those are what gets stored. Redaction
+	// usually shrinks a body — a whole key collapses to a short placeholder —
+	// so this is also the measurement that decides whether trimming is needed
+	// at all.
+	if codexPatchBodyBytes(safe) > codexPatchInputMaxBytes {
+		applyCodexPatchBudget(safe)
+		input["truncated"] = true
+		input["original_bytes"] = originalBytes
+	}
+	return input
+}
+
+// codexPatchBodyBytes totals the diff/content payload carried by a change list.
+func codexPatchBodyBytes(changes []any) int {
+	total := 0
 	for _, change := range changes {
 		entry, ok := change.(map[string]any)
 		if !ok {
@@ -2552,18 +2584,11 @@ func codexPatchInput(changes []any) map[string]any {
 		}
 		for _, key := range []string{"diff", "content"} {
 			if body, _ := entry[key].(string); body != "" {
-				originalBytes += len(body)
+				total += len(body)
 			}
 		}
 	}
-
-	input := map[string]any{"changes": changes}
-	if originalBytes > codexPatchInputMaxBytes {
-		applyCodexPatchBudget(changes)
-		input["truncated"] = true
-		input["original_bytes"] = originalBytes
-	}
-	return input
+	return total
 }
 
 // applyCodexPatchBudget trims diff/content bodies in place until the payload

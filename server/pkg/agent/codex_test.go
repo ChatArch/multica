@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []Message) {
@@ -4695,7 +4697,7 @@ func TestCodexRawPatchApplyContentKindsAreNotDiffs(t *testing.T) {
 		body string
 	}{
 		{name: "add", kind: "add", body: "package main\n"},
-		{name: "delete", kind: "delete", body: "GITHUB_TOKEN=x\n"},
+		{name: "delete", kind: "delete", body: "goodbye\n"},
 		{
 			name: "add whose content looks like a diff",
 			kind: "add",
@@ -4995,9 +4997,13 @@ func TestCodexPatchApplyTruncationKeepsValidUTF8(t *testing.T) {
 	if input["truncated"] != true {
 		t.Fatalf("expected truncation for %d-byte body", len(body))
 	}
-	kept, _ := changes[0].(map[string]any)["content"].(string)
-	if !utf8.ValidString(kept) {
-		t.Fatal("truncated content is not valid UTF-8")
+	for _, kept := range codexTestBodies(t, input) {
+		if !utf8.ValidString(kept) {
+			t.Fatal("truncated content is not valid UTF-8")
+		}
+		if len(kept) > codexPatchInputMaxBytes {
+			t.Fatalf("kept %d bytes, budget is %d", len(kept), codexPatchInputMaxBytes)
+		}
 	}
 	if _, err := json.Marshal(input); err != nil {
 		t.Fatalf("truncated payload does not marshal: %v", err)
@@ -5015,5 +5021,160 @@ func TestCodexPatchApplyUnderBudgetIsNotMarkedTruncated(t *testing.T) {
 	}
 	if _, marked := input["original_bytes"]; marked {
 		t.Fatalf("small payload must not carry original_bytes: %#v", input)
+	}
+}
+
+// codexTestBodies returns the diff/content bodies carried by a tool_use input.
+//
+// Read the *returned* payload, never the slice handed to codexPatchInput:
+// redaction copies before the budget trims, so the caller's originals stay
+// untouched and asserting on them would pass vacuously.
+func codexTestBodies(t *testing.T, input map[string]any) []string {
+	t.Helper()
+	raw, ok := input["changes"].([]any)
+	if !ok {
+		t.Fatalf("expected changes slice, got %#v", input["changes"])
+	}
+	var bodies []string
+	for _, change := range raw {
+		entry, ok := change.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"diff", "content"} {
+			if body, ok := entry[key].(string); ok {
+				bodies = append(bodies, body)
+			}
+		}
+	}
+	return bodies
+}
+
+// Redaction has to happen before the size budget, not after it. Several rules
+// only match a credential as a whole: the PEM rule needs both the BEGIN and the
+// END marker. If a key straddles the budget, truncating first strands the
+// opening half — marker plus key material — in text that no later pass can
+// recognise, so both the daemon's and the server's redaction wave it through
+// and it lands in the database and the WebSocket broadcast.
+func TestCodexPatchApplyRedactsBeforeTruncating(t *testing.T) {
+	t.Parallel()
+
+	const keyChunk = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKg"
+	// BEGIN lands inside the budget; END lands well past it.
+	pem := "-----BEGIN PRIVATE KEY-----\n" +
+		strings.Repeat(keyChunk, 2000) +
+		"\n-----END PRIVATE KEY-----\n"
+	if len(pem) <= codexPatchInputMaxBytes {
+		t.Fatalf("fixture must exceed the budget to exercise the boundary: %d", len(pem))
+	}
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	var messages []Message
+	c.onMessage = func(msg Message) { messages = append(messages, msg) }
+
+	event, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "item/started",
+		"params": map[string]any{
+			"item": map[string]any{
+				"type": "fileChange", "id": "patch-1", "status": "inProgress",
+				"changes": []any{
+					map[string]any{
+						"path": "id_rsa",
+						"kind": map[string]any{"type": "add"},
+						"diff": pem,
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	c.handleLine(string(event))
+
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	bodies := codexTestBodies(t, messages[0].Input)
+	if len(bodies) == 0 {
+		t.Fatal("expected a recorded body")
+	}
+
+	total := 0
+	for _, body := range bodies {
+		total += len(body)
+		if strings.Contains(body, "BEGIN PRIVATE KEY") {
+			t.Errorf("PEM opening marker survived: %q", body[:min(len(body), 120)])
+		}
+		if strings.Contains(body, keyChunk) {
+			t.Error("private key material survived redaction")
+		}
+		if !strings.Contains(body, "[REDACTED PRIVATE KEY]") {
+			t.Errorf("expected the redaction placeholder, got %q", body[:min(len(body), 120)])
+		}
+	}
+	if total > codexPatchInputMaxBytes {
+		t.Fatalf("payload %d bytes exceeds budget %d", total, codexPatchInputMaxBytes)
+	}
+}
+
+// The daemon and the server redact again after the adapter. Those passes must
+// not corrupt an already-redacted payload, or the placeholder itself would be
+// rewritten on the way to the database.
+func TestCodexPatchApplyRedactionIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	input := codexPatchInput([]any{
+		map[string]any{
+			"path":    ".env",
+			"kind":    "delete",
+			"content": "GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn\n",
+		},
+	})
+
+	first, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(first), "ghp_ABCDEFGH") {
+		t.Fatalf("token survived the adapter: %s", first)
+	}
+
+	second, err := json.Marshal(redact.InputMap(input))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("a second redaction pass changed the payload:\n first=%s\nsecond=%s", first, second)
+	}
+}
+
+// Redaction running first must not disable the budget for ordinary large
+// patches: a big generated file carries no secret to shrink.
+func TestCodexPatchApplyStillTruncatesNonSecretPayload(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Repeat("x", codexPatchInputMaxBytes+5000)
+	changes := []any{map[string]any{"path": "big.txt", "kind": "add", "content": body}}
+	input := codexPatchInput(changes)
+
+	if input["truncated"] != true {
+		t.Fatalf("expected truncation for a %d-byte body: %#v", len(body), input["truncated"])
+	}
+	if got := input["original_bytes"]; got != len(body) {
+		t.Fatalf("original_bytes should report the pre-redaction size: got %v want %d", got, len(body))
+	}
+	total := 0
+	for _, kept := range codexTestBodies(t, input) {
+		total += len(kept)
+	}
+	if total > codexPatchInputMaxBytes {
+		t.Fatalf("kept %d bytes, budget is %d", total, codexPatchInputMaxBytes)
+	}
+	// The caller's slice is deliberately left alone: redaction copies first.
+	if original, _ := changes[0].(map[string]any)["content"].(string); len(original) != len(body) {
+		t.Fatalf("codexPatchInput must not mutate its argument: %d != %d", len(original), len(body))
 	}
 }
