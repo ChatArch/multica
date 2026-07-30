@@ -2,7 +2,6 @@
 
 import { useRef } from "react";
 import {
-  ArrowLeft,
   ArrowRight,
   Brain,
   Briefcase,
@@ -23,8 +22,14 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import type { QuestionnaireAnswers, Role, UseCase } from "@multica/core/onboarding";
+import { cn } from "@multica/ui/lib/utils";
 import { DragStrip } from "@multica/views/platform";
-import { StepHeader } from "../components/step-header";
+import {
+  STEP_BLOCK_PADDING,
+  STEP_FRAME,
+  STEP_GUTTER,
+  StepShellHeader,
+} from "../components/step-shell";
 import {
   IconOptionCard,
   IconOtherOptionCard,
@@ -180,30 +185,14 @@ export function StepAboutYou({
   return (
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
-      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-2 sm:px-10 md:px-14 lg:px-16">
-        {onBack ? (
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {t(($) => $.common.back)}
-          </button>
-        ) : (
-          <span aria-hidden className="w-0" />
-        )}
-        <div className="flex-1">
-          <StepHeader currentStep="about_you" />
-        </div>
-      </header>
+      <StepShellHeader currentStep="about_you" onBack={onBack} />
 
       <main
         ref={mainRef}
         style={fadeStyle}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
       >
-        <div className="mx-auto w-full max-w-[920px] px-6 py-8 sm:px-10 md:px-14">
+        <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
           <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
             {t(($) => $.questions.eyebrow_about_you)}
           </div>

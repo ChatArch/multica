@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Download, Loader2 } from "lucide-react";
+import { ArrowRight, Download, Loader2 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Dialog,
@@ -16,7 +16,12 @@ import { cn } from "@multica/ui/lib/utils";
 import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
 import { DragStrip } from "@multica/views/platform";
-import { StepHeader } from "../components/step-header";
+import {
+  STEP_BLOCK_PADDING,
+  STEP_COLUMN,
+  STEP_GUTTER,
+  StepShellHeader,
+} from "../components/step-shell";
 import { CompactRuntimeRow } from "../components/compact-runtime-row";
 import { useRuntimePicker } from "../components/use-runtime-picker";
 import { useT } from "../../i18n";
@@ -108,30 +113,14 @@ export function StepPlatformFork({
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
 
-      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
-        {onBack ? (
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {t(($) => $.common.back)}
-          </button>
-        ) : (
-          <span aria-hidden className="w-0" />
-        )}
-        <div className="flex-1">
-          <StepHeader currentStep="runtime" />
-        </div>
-      </header>
+      <StepShellHeader currentStep="runtime" onBack={onBack} />
 
       <main
         ref={mainRef}
         style={fadeStyle}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
       >
-        <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
+        <div className={cn(STEP_COLUMN, STEP_BLOCK_PADDING)}>
           <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
             {t(($) => $.step_platform.eyebrow)}
           </div>

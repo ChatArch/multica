@@ -1,7 +1,7 @@
 "use client";
 
 import { type ReactNode, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Dices, Plus } from "lucide-react";
+import { ArrowRight, Dices, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -16,7 +16,12 @@ import { useConfigStore } from "@multica/core/config";
 import { workspaceUrlHost } from "@multica/core/workspace/workspace-url";
 import { DragStrip } from "@multica/views/platform";
 import { useLogout } from "../../auth";
-import { StepHeader } from "../components/step-header";
+import {
+  STEP_BLOCK_PADDING,
+  STEP_COLUMN,
+  STEP_GUTTER,
+  StepShellHeader,
+} from "../components/step-shell";
 import { RadioMark } from "../components/option-card";
 import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
 import { useT } from "../../i18n";
@@ -293,31 +298,18 @@ export function StepWorkspace({
   return (
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
-      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
-        {onBack ? (
-          <button
-            type="button"
-            onClick={onBack}
-            disabled={isCreating}
-            className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {t(($) => $.common.back)}
-          </button>
-        ) : (
-          <span aria-hidden className="w-0" />
-        )}
-        <div className="flex-1">
-          <StepHeader currentStep="workspace" />
-        </div>
-      </header>
+      <StepShellHeader
+        currentStep="workspace"
+        onBack={onBack}
+        backDisabled={isCreating}
+      />
 
       <main
         ref={mainRef}
         style={fadeStyle}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
       >
-        <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
+        <div className={cn(STEP_COLUMN, STEP_BLOCK_PADDING)}>
           <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
             {reusing
               ? workspaceCreationAllowed
