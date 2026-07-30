@@ -245,7 +245,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    quick_actions_disabled
+    quick_actions_disabled, regenerate_quick_actions_for
 )
 VALUES (
     $1, $2, NULL, 'queued', $3, $4, $5,
@@ -257,7 +257,8 @@ VALUES (
     sqlc.narg(originator_source),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
-    COALESCE(sqlc.narg('quick_actions_disabled')::boolean, FALSE)
+    COALESCE(sqlc.narg('quick_actions_disabled')::boolean, FALSE),
+    sqlc.narg(regenerate_quick_actions_for)
 )
 RETURNING *;
 
@@ -304,6 +305,10 @@ LIMIT 1;
 -- without "resetting to 0s".
 SELECT id, status, created_at FROM agent_task_queue
 WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  -- Background quick-actions regeneration passes are invisible to the chat UI:
+  -- they own no assistant turn and must not raise the StatusPill or disable the
+  -- composer (MUL-5149 refresh follow-up).
+  AND regenerate_quick_actions_for IS NULL
 ORDER BY created_at DESC
 LIMIT 1;
 
@@ -324,6 +329,9 @@ FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL
   AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  -- Exclude background quick-actions regeneration passes: they own no assistant
+  -- turn and must not surface as "running" chat work (MUL-5149 refresh follow-up).
+  AND atq.regenerate_quick_actions_for IS NULL
   AND cs.workspace_id = $1
   AND cs.creator_id = $2
 ORDER BY atq.created_at DESC;
@@ -344,6 +352,9 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = atq.chat_session_id
   WHERE atq.chat_session_id IS NOT NULL
     AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    -- Background quick-actions regeneration passes own no visible turn and must
+    -- never light the FAB "running" indicator (MUL-5149 refresh follow-up).
+    AND atq.regenerate_quick_actions_for IS NULL
     AND cs.workspace_id = sqlc.arg(workspace_id)
     AND cs.creator_id = sqlc.arg(creator_id)
     AND cs.agent_id = ANY(sqlc.arg(agent_ids)::uuid[])
@@ -486,6 +497,16 @@ WHERE chat_session_id IN (
 -- supplement path (daemon suggestion pass finishing after chat:done).
 SELECT * FROM chat_message
 WHERE task_id = $1 AND role = 'assistant'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetLatestAssistantChatMessageForSession :one
+-- The session's most recent assistant turn, used as the regeneration target
+-- when the user clicks "refresh" on the quick-actions row (MUL-5149). Only rows
+-- with a task_id qualify — the daemon suggest supplement keys off task_id and
+-- a resume needs a real completed turn to resume from.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND role = 'assistant' AND task_id IS NOT NULL
 ORDER BY created_at DESC
 LIMIT 1;
 

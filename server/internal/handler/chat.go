@@ -894,6 +894,80 @@ func parseChatMessagesPageParams(r *http.Request) (int, pgtype.Timestamptz, pgty
 	return limit, pgtype.Timestamptz{Time: beforeTime, Valid: true}, beforeID, nil
 }
 
+// RegenerateChatQuickActionsResponse acknowledges an accepted refresh request.
+// message_id is the assistant turn the refreshed pills will attach to — the
+// client anchors its pending placeholder on it and resolves it when the
+// chat:quick_actions supplement arrives.
+type RegenerateChatQuickActionsResponse struct {
+	MessageID string `json:"message_id"`
+	TaskID    string `json:"task_id"`
+}
+
+// RegenerateChatQuickActions re-runs the daemon suggestion pass for a session's
+// latest assistant turn on explicit user request (the "refresh" button on the
+// quick-actions row, MUL-5149). It enqueues a background regenerate task; the
+// refreshed pills arrive over the same chat:quick_actions realtime path as the
+// automatic pass. Same gate as sending a message — it enqueues an agent run.
+func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := ctxWorkspaceID(r.Context())
+	sessionID := chi.URLParam(r, "sessionId")
+
+	session, ok := h.gateChatSessionForUser(w, r, userID, workspaceID, sessionID)
+	if !ok {
+		return
+	}
+	if session.Status != "active" {
+		writeError(w, http.StatusBadRequest, "chat session is archived")
+		return
+	}
+	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
+		return
+	}
+	if agent.ArchivedAt.Valid {
+		writeError(w, http.StatusConflict, "chat agent is archived")
+		return
+	}
+	if !agent.RuntimeID.Valid {
+		writeError(w, http.StatusConflict, "chat agent has no runtime")
+		return
+	}
+	// Enqueuing a suggestion pass runs the agent and spends quota, so it must
+	// clear the same INVOKE gate as a normal send (MUL-4525), not just the
+	// softer view gate in gateChatSessionForUser.
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+		return
+	}
+
+	messageID, task, err := h.TaskService.RegenerateChatQuickActions(r.Context(), session, parseUUID(userID))
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrChatQuickActionsNoTurn):
+			writeError(w, http.StatusConflict, "no assistant reply to refresh yet")
+		case errors.Is(err, service.ErrChatQuickActionsNotResumable):
+			writeError(w, http.StatusConflict, "this conversation can't be refreshed right now")
+		case errors.Is(err, service.ErrChatTaskAgentArchived):
+			writeError(w, http.StatusConflict, "chat agent is archived")
+		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
+			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to regenerate quick actions")
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, RegenerateChatQuickActionsResponse{
+		MessageID: uuidToString(messageID),
+		TaskID:    uuidToString(task.ID),
+	})
+}
+
 func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {

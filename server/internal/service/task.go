@@ -1399,6 +1399,16 @@ var ErrChatTaskAgentArchived = errors.New("chat task: agent archived")
 // path returns a task row, not this error.
 var ErrChatTaskAgentNoRuntime = errors.New("chat task: agent has no runtime")
 
+// ErrChatQuickActionsNoTurn signals that a quick-actions regeneration was asked
+// for a session with no eligible assistant turn to resume from (empty session,
+// or the latest turn is a no_response / failure with nothing to suggest from).
+var ErrChatQuickActionsNoTurn = errors.New("chat quick actions: no assistant turn to regenerate")
+
+// ErrChatQuickActionsNotResumable signals that the session has no provider
+// resume pointer bound to the agent's current runtime, so a regeneration pass
+// would run context-less. Productizable as "can't refresh right now".
+var ErrChatQuickActionsNotResumable = errors.New("chat quick actions: session not resumable")
+
 // EnqueueChatTask creates a queued task for a chat session.
 // Unlike issue tasks, chat tasks have no issue_id.
 //
@@ -1480,6 +1490,128 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
+}
+
+// RegenerateChatQuickActions enqueues a background suggestion pass for the
+// session's latest assistant turn, letting the user refresh the quick-action
+// pills without sending a new message (MUL-5149). The task carries no user
+// message and owns no assistant turn (chat_input_task_id stays NULL): the daemon
+// resumes the same provider session the target turn ran on, runs only the
+// suggest prompt, and supplements the target turn's assistant row — so the
+// refreshed pills arrive over the identical chat:quick_actions path as the
+// automatic pass. It reports the target assistant message id so the client can
+// anchor its pending placeholder there.
+//
+// This is an explicit user action, so it ignores the per-device quick-actions
+// toggle (which only gates automatic generation at send time).
+func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSession db.ChatSession, initiatorUserID pgtype.UUID) (targetMessageID pgtype.UUID, task db.AgentTaskQueue, err error) {
+	// Preflight on the caller's snapshot for a fast reject, and resolve
+	// attribution (may do network I/O) BEFORE opening the transaction. The
+	// authoritative runtime/resume decision is re-read under the lock below.
+	agent, err := s.Queries.GetAgent(ctx, chatSession.AgentID)
+	if err != nil {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
+	}
+	if agent.ArchivedAt.Valid {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatTaskAgentArchived
+	}
+	if !agent.RuntimeID.Valid {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
+	}
+	attr := attribution.DirectHumanRun(initiatorUserID, attribution.EvidenceChat, chatSession.ID)
+	attr, err = s.applyAttributionFallback(ctx, attr, agent)
+	if err != nil {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, err
+	}
+	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+
+	var targetID pgtype.UUID
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		// Serialise against a concurrent runtime rebind of the same session
+		// (MUL-5163): lock first, then re-read BOTH the session and the agent
+		// under the lock. Unlike SendDirectChatMessage, regeneration depends on
+		// runtime-mutable session fields (session_id + runtime_id) to resume the
+		// right provider conversation — the caller's snapshot can already be
+		// stale, so validate and dispatch off the freshly-read rows. Locking
+		// chat_session first matches the send/delete lock order (no deadlock).
+		if _, err := qtx.LockChatSessionForRuntimeBind(ctx, chatSession.ID); err != nil {
+			return fmt.Errorf("lock chat session: %w", err)
+		}
+		session, err := qtx.GetChatSession(ctx, chatSession.ID)
+		if err != nil {
+			return fmt.Errorf("reload chat session: %w", err)
+		}
+		carrier, err := qtx.GetAgent(ctx, chatSession.AgentID)
+		if err != nil {
+			return fmt.Errorf("reload chat agent: %w", err)
+		}
+		if carrier.ArchivedAt.Valid {
+			return ErrChatTaskAgentArchived
+		}
+		if !carrier.RuntimeID.Valid {
+			return ErrChatTaskAgentNoRuntime
+		}
+		// Regeneration resumes the provider session the last turn produced.
+		// Without a resume pointer bound to the agent's CURRENT runtime there is
+		// nothing to resume, so refuse rather than spawn a fresh, context-less
+		// pass — or dispatch to a runtime the session just switched away from.
+		if !session.SessionID.Valid || session.SessionID.String == "" ||
+			!session.RuntimeID.Valid || session.RuntimeID != carrier.RuntimeID {
+			return ErrChatQuickActionsNotResumable
+		}
+		// The target is the latest assistant turn. Only an ordinary message turn
+		// can seed suggestions — a no_response / failure turn has nothing to
+		// build on. Resolved in-tx so target and dispatch commit together.
+		target, terr := qtx.GetLatestAssistantChatMessageForSession(ctx, chatSession.ID)
+		if terr != nil {
+			if errors.Is(terr, pgx.ErrNoRows) {
+				return ErrChatQuickActionsNoTurn
+			}
+			return fmt.Errorf("load latest assistant turn: %w", terr)
+		}
+		if target.MessageKind != protocol.ChatMessageKindMessage || !target.TaskID.Valid {
+			return ErrChatQuickActionsNoTurn
+		}
+		created, cerr := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
+			AgentID:           chatSession.AgentID,
+			RuntimeID:         carrier.RuntimeID,
+			Priority:          2, // medium priority, same as an ordinary chat turn
+			ChatSessionID:     chatSession.ID,
+			InitiatorUserID:   initiatorUserID,
+			OriginatorUserID:  initiatorUserID,
+			AccountableUserID: attr.AccountableUserID,
+			// Must resume the target turn's session — a fresh session has no context.
+			ForceFreshSession:         pgtype.Bool{Bool: false, Valid: true},
+			OriginatorSource:          attrSource,
+			TriggerEvidenceKind:       attrEvidenceKind,
+			TriggerEvidenceRefID:      attrEvidenceRef,
+			RegenerateQuickActionsFor: target.TaskID,
+		})
+		if cerr != nil {
+			return fmt.Errorf("create quick-actions regenerate task: %w", cerr)
+		}
+		task = created
+		targetID = target.ID
+		return nil
+	}); err != nil {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, err
+	}
+
+	slog.Info("chat quick-actions regenerate enqueued",
+		"task_id", util.UUIDToString(task.ID),
+		"chat_session_id", util.UUIDToString(chatSession.ID),
+		"target_task_id", util.UUIDToString(task.RegenerateQuickActionsFor),
+	)
+	// Deliberately NO task:queued broadcast (contrast EnqueueChatTask): that
+	// event seeds the frontend's chat pending-task cache, which raises the
+	// "Thinking…" StatusPill under the reply (MUL-5149 refresh follow-up). A
+	// regeneration is a background pass that owns no visible turn — its only
+	// affordance is the spinning refresh icon on the pills. The daemon still
+	// wakes via NotifyTaskEnqueued below, and task:dispatch/running are
+	// update-only (guarded on an existing seed), so without the queued seed they
+	// stay no-ops and no pill ever appears.
+	s.NotifyTaskEnqueued(ctx, task)
+	return targetID, task, nil
 }
 
 // DirectChatSendResult carries the rows a transactional direct-chat send
@@ -2752,10 +2884,18 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// cursor (chat_session.last_read_at) vs the assistant messages after it — a
 	// no_response row has role='assistant' and a fresh created_at, so it counts
 	// as unread just like a text reply, no per-reply stamping needed.
-	if task.ChatSessionID.Valid {
+	if task.ChatSessionID.Valid && !task.RegenerateQuickActionsFor.Valid {
 		// The assistant outcome row (message / no_response) and any attachment
 		// binding were written inside the completion transaction above by
 		// writeChatCompletionOutcome. Broadcast chat:done AFTER commit.
+		//
+		// A quick-actions regeneration is excluded: it owns no visible turn, and
+		// chat:done unconditionally clears the session's pending-task cache
+		// (use-realtime-sync.ts). If the user sent a real message DURING the
+		// refresh, that turn's "Thinking…" pill would be wrongly cleared. The
+		// refresh's own pending marker is resolved by the daemon's
+		// chat:quick_actions supplement (or resolveFailedRegenerateQuickActions on
+		// failure) instead (MUL-5149).
 		s.broadcastChatDone(ctx, task, chatAssistantMsg, chatQuickActionsPending(result, chatAssistantMsg))
 	}
 
@@ -3129,7 +3269,13 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// pending (the new attempt will write its own outcome) — same guard as
 	// the issue path above.
 	if task.ChatSessionID.Valid && retried == nil {
-		if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		if task.RegenerateQuickActionsFor.Valid {
+			// A failed quick-actions regeneration owns no visible turn: write no
+			// failure bubble (MUL-5149). Its refresh spinner is only resolved by a
+			// chat:quick_actions event, which the daemon's supplement never sent on
+			// this pre-supplement failure — so resolve it here off the target turn.
+			s.resolveFailedRegenerateQuickActions(ctx, task)
+		} else if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
 			ChatSessionID: task.ChatSessionID,
 			Role:          "assistant",
 			Content:       redact.Text(errMsg),
@@ -3160,6 +3306,32 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	s.broadcastTaskEvent(ctx, protocol.EventTaskFailed, task)
 
 	return &task, nil
+}
+
+// resolveFailedRegenerateQuickActions clears a refresh's client-side pending
+// spinner after the regeneration task itself failed before it could supplement
+// (MUL-5149). It loads the target turn the refresh was aimed at and re-broadcasts
+// that turn's current (unchanged) quick actions via chat:quick_actions, which
+// resolves the pending marker on every client — leaving the old suggestions in
+// place rather than stranding the user on a spinner. Best-effort: a lookup miss
+// just leaves the client's own skeleton-timeout fallback to clear it.
+func (s *TaskService) resolveFailedRegenerateQuickActions(ctx context.Context, task db.AgentTaskQueue) {
+	if !task.RegenerateQuickActionsFor.Valid {
+		return
+	}
+	target, err := s.Queries.GetAgentTask(ctx, task.RegenerateQuickActionsFor)
+	if err != nil {
+		slog.Warn("regenerate failure: target task lookup failed",
+			"task_id", util.UUIDToString(task.ID), "error", err)
+		return
+	}
+	// Empty raw parses to no actions, so SupplementChatQuickActions re-broadcasts
+	// the target's existing pills (GetChatMessageByTaskAssistant) and resolves the
+	// marker without overwriting anything.
+	if err := s.SupplementChatQuickActions(ctx, target, ""); err != nil {
+		slog.Warn("regenerate failure: resolve pending marker failed",
+			"task_id", util.UUIDToString(task.ID), "error", err)
+	}
 }
 
 // retryableReasons enumerates failure reasons that the auto-retry path is
@@ -3272,6 +3444,13 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 	return retryableReasons[failureReason] &&
 		t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
 		!t.AutopilotRunID.Valid &&
+		// A quick-actions regeneration is an explicit, quota-spending refresh that
+		// is never retried (MUL-5149). CreateRetryTask does not carry the
+		// regenerate_quick_actions_for discriminator, so a retry child would run
+		// as an ordinary chat turn — a visible reply + Thinking pill the user
+		// never asked for. Gating here also covers MaybeRetryFailedTask, which
+		// funnels through retryEligible.
+		!t.RegenerateQuickActionsFor.Valid &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid)
 }
 

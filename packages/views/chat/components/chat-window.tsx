@@ -44,6 +44,7 @@ import {
 import {
   useCreateChatSession,
   useMarkChatSessionRead,
+  useRegenerateChatQuickActions,
   useSetChatSessionArchived,
   useSetChatSessionProject,
   useUpdateChatSession,
@@ -147,6 +148,7 @@ export function ChatWindow() {
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(activeSessionId ?? ""),
   );
+  const regenerateQuickActions = useRegenerateChatQuickActions();
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
   const selectedProjectId = useChatStore((s) => s.selectedProjectId);
   const setOpen = useChatStore((s) => s.setOpen);
@@ -907,6 +909,14 @@ export function ChatWindow() {
           onQuickAction={(action) => handleSend(action.prompt)}
           quickActionsDisabled={
             !!pendingTaskId || isSessionArchived || isAgentArchived || noAgent
+          }
+          onRegenerateQuickActions={(message) =>
+            activeSessionId
+              ? regenerateQuickActions.mutateAsync({
+                  sessionId: activeSessionId,
+                  messageId: message.id,
+                })
+              : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
         />

@@ -104,6 +104,47 @@ func (d *Daemon) chatSuggestJob(task Task, backend agent.Backend, opts agent.Exe
 	}
 }
 
+// runChatQuickActionsRegenerate services an on-demand quick-actions refresh
+// (MUL-5149). Unlike the deferred chatSuggestJob (which trails a real reply),
+// this IS the whole task: it resumes the target turn's provider session, runs
+// only the suggestion prompt, and supplements the target turn's assistant row
+// via the same server path (SupplementTaskQuickActions → chat:quick_actions) as
+// the automatic pass. It writes no assistant message: an empty completed result
+// on a task with no chat_input_task_id routes through the server's chat "no row"
+// branch, so no reply bubble appears and the session resume pointer is left
+// untouched (matching the automatic pass, which never advances it either).
+func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, backend agent.Backend, opts agent.ExecOptions, provider string, taskLog *slog.Logger) (TaskResult, error) {
+	taskLog.Info("chat quick-actions regenerate",
+		"target_task", shortID(task.RegenerateQuickActionsFor),
+		"resume", opts.ResumeSessionID != "",
+	)
+	raw, usage := d.runChatSuggestPass(ctx, backend, opts, opts.ResumeSessionID, taskLog)
+
+	reportCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := d.client.SupplementTaskQuickActions(reportCtx, task.RegenerateQuickActionsFor, raw); err != nil {
+		taskLog.Warn("chat quick-actions regenerate supplement failed", "error", err)
+	}
+
+	// Report the pass's own token spend on this regenerate task (its own row —
+	// no merge with a main turn, there isn't one). Same shape as chatSuggestJob.
+	var usageEntries []TaskUsageEntry
+	for model, u := range usage {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 {
+			continue
+		}
+		usageEntries = append(usageEntries, TaskUsageEntry{
+			Provider:         provider,
+			Model:            model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+		})
+	}
+	return TaskResult{Status: "completed", Comment: "", Usage: usageEntries}, nil
+}
+
 // runChatSuggestPass runs one extra provider turn on the just-finished chat
 // session and returns its raw text output (the JSON array, hopefully — the
 // server parses leniently and treats garbage as "no suggestions"). Best-effort

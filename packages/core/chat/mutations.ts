@@ -3,7 +3,12 @@ import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
 import { chatKeys, sortChatSessions } from "./queries";
 import { createLogger } from "../logger";
-import type { ChatSession, ChatPinnedAgent, ChatDraftRestoresResponse } from "../types";
+import type {
+  ChatSession,
+  ChatPinnedAgent,
+  ChatDraftRestoresResponse,
+  ChatQuickActionsPendingState,
+} from "../types";
 
 const logger = createLogger("chat.mut");
 
@@ -364,6 +369,44 @@ export function useDeleteChatSession() {
     onSettled: (_data, _err, sessionId) => {
       logger.debug("deleteChatSession.settled", { sessionId });
       qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
+
+/**
+ * Refresh the quick-action suggestions for a session's latest assistant turn
+ * (MUL-5149). Optimistically raises the pending marker for that turn — its pills
+ * go inert and the refresh icon spins — and rolls it back on failure. The
+ * refreshed pills arrive over the chat:quick_actions realtime event, which
+ * clears the marker (applyChatQuickActionsToCache). Never retried: a refresh is
+ * an explicit, quota-spending user action.
+ */
+export function useRegenerateChatQuickActions() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sessionId }: { sessionId: string; messageId: string }) =>
+      api.regenerateChatQuickActions(sessionId),
+    onMutate: ({ sessionId, messageId }) => {
+      const previous = qc.getQueryData<ChatQuickActionsPendingState | null>(
+        chatKeys.quickActionsPending(sessionId),
+      );
+      // task_id is unknown client-side and unused for resolution — the supplement
+      // matches on message_id (applyChatQuickActionsToCache).
+      qc.setQueryData<ChatQuickActionsPendingState | null>(
+        chatKeys.quickActionsPending(sessionId),
+        { message_id: messageId, task_id: "" },
+      );
+      return { previous, sessionId };
+    },
+    onError: (error, _vars, ctx) => {
+      logger.error("regenerateChatQuickActions.error", { error });
+      if (ctx) {
+        qc.setQueryData<ChatQuickActionsPendingState | null>(
+          chatKeys.quickActionsPending(ctx.sessionId),
+          ctx.previous ?? null,
+        );
+      }
     },
   });
 }

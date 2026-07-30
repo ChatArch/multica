@@ -125,11 +125,11 @@ const (
 // reportTerminalTask gives the durable outbox one insertion point without
 // revisiting every task exit when it is added.
 type terminalTaskReport struct {
-	kind            terminalTaskReportKind
-	taskID          string
-	output          string
-	branchName      string
-	errorMessage    string
+	kind                terminalTaskReportKind
+	taskID              string
+	output              string
+	branchName          string
+	errorMessage        string
 	sessionID           string
 	workDir             string
 	failureReason       string
@@ -4737,6 +4737,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// context and bloats every turn.
 	if providerNeedsInlineSystemPrompt(provider) {
 		execOpts.SystemPrompt = runtimeBrief
+	}
+
+	// Quick-actions refresh (MUL-5149): this task carries no user turn — it only
+	// re-runs the suggestion pass for an existing assistant reply and supplements
+	// that reply's row. Resume pointer, backend, and workdir are already prepared
+	// above, so diverge here, before the main provider turn, and never write a
+	// reply.
+	if task.RegenerateQuickActionsFor != "" {
+		return d.runChatQuickActionsRegenerate(ctx, task, backend, execOpts, provider, taskLog)
 	}
 
 	taskLog.Debug("invoking backend",

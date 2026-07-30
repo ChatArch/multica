@@ -14,6 +14,7 @@ import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
@@ -59,6 +60,7 @@ export function ChatPage() {
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(c.activeSessionId ?? ""),
   );
+  const regenerateQuickActions = useRegenerateChatQuickActions();
   const urlSession = searchParams.get("session") || null;
   const urlAgent = searchParams.get("agent") || null;
 
@@ -252,6 +254,14 @@ export function ChatPage() {
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={
             !!c.pendingTaskId || c.isSessionArchived || c.isAgentArchived || c.noAgent
+          }
+          onRegenerateQuickActions={(message) =>
+            c.activeSessionId
+              ? regenerateQuickActions.mutateAsync({
+                  sessionId: c.activeSessionId,
+                  messageId: message.id,
+                })
+              : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
         />

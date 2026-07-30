@@ -2036,6 +2036,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Chat task: populate workspace/session info from the chat_session table.
 	if task.ChatSessionID.Valid {
 		resp.QuickActionsDisabled = task.QuickActionsDisabled
+		// A quick-actions regeneration task carries the id of the turn to
+		// re-supplement; the daemon runs only the suggestion pass for it and
+		// skips the main reply (MUL-5149).
+		if task.RegenerateQuickActionsFor.Valid {
+			resp.RegenerateQuickActionsFor = uuidToString(task.RegenerateQuickActionsFor)
+		}
 		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
 			resp.WorkspaceID = uuidToString(cs.WorkspaceID)
 			resp.ChatSessionID = uuidToString(cs.ID)

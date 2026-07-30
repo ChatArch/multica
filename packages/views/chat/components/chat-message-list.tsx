@@ -25,6 +25,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Copy,
+  RotateCw,
 } from "lucide-react";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
@@ -69,9 +70,16 @@ interface ChatMessageListProps {
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled?: boolean;
   /**
+   * Regenerate the follow-up suggestions for the session's latest assistant
+   * turn (the "refresh" affordance, MUL-5149). Only offered on that turn —
+   * regeneration resumes the newest provider state, so an older turn's pills
+   * can't be refreshed in place.
+   */
+  onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
+  /**
    * Message currently awaiting its quick-actions supplement (client-only
-   * marker raised by chat:done) — renders pill skeletons under that reply
-   * until chat:quick_actions resolves it.
+   * marker raised by chat:done or a refresh) — renders pill skeletons under
+   * that reply until chat:quick_actions resolves it.
    */
   quickActionsPendingMessageId?: string | null;
 }
@@ -169,6 +177,7 @@ export function ChatMessageList({
   transformContent,
   onQuickAction,
   quickActionsDisabled = false,
+  onRegenerateQuickActions,
   quickActionsPendingMessageId = null,
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -183,6 +192,17 @@ export function ChatMessageList({
   const fadeStyle = useScrollFade(scrollRef, 16);
 
   const pendingTaskId = pendingTask?.task_id ?? null;
+
+  // The session's newest assistant turn — the only one whose quick actions can
+  // be refreshed (regeneration resumes the newest provider state). Computed off
+  // the persisted list so the affordance tracks the real tail, not a live row.
+  const latestAssistantMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m && m.role === "assistant" && m.task_id) return m.id;
+    }
+    return null;
+  }, [messages]);
 
   // Once the assistant message for this pending task has landed in the
   // messages list, AssistantMessage owns its rendering — suppress the live
@@ -282,6 +302,8 @@ export function ChatMessageList({
               transformContent={transformContent}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
+              onRegenerateQuickActions={onRegenerateQuickActions}
+              latestAssistantMessageId={latestAssistantMessageId}
               quickActionsPendingMessageId={quickActionsPendingMessageId}
             />
           </div>
@@ -333,6 +355,8 @@ const MessageBubble = memo(function MessageBubble({
   transformContent,
   onQuickAction,
   quickActionsDisabled,
+  onRegenerateQuickActions,
+  latestAssistantMessageId,
   quickActionsPendingMessageId,
 }: {
   item: ChatRenderItem;
@@ -340,6 +364,8 @@ const MessageBubble = memo(function MessageBubble({
   transformContent?: (content: string) => string;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
+  onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
+  latestAssistantMessageId: string | null;
   quickActionsPendingMessageId: string | null;
 }) {
   // The live row and the persisted assistant row both land here under one key,
@@ -392,6 +418,8 @@ const MessageBubble = memo(function MessageBubble({
       transformContent={transformContent}
       onQuickAction={onQuickAction}
       quickActionsDisabled={quickActionsDisabled}
+      onRegenerateQuickActions={onRegenerateQuickActions}
+      canRegenerateQuickActions={message.id === latestAssistantMessageId}
       quickActionsPending={quickActionsPendingMessageId === message.id}
     />
   );
@@ -421,6 +449,8 @@ function AssistantMessage({
   transformContent,
   onQuickAction,
   quickActionsDisabled,
+  onRegenerateQuickActions,
+  canRegenerateQuickActions = false,
   quickActionsPending = false,
 }: {
   taskId: string | null;
@@ -429,6 +459,8 @@ function AssistantMessage({
   transformContent?: (content: string) => string;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
+  onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
+  canRegenerateQuickActions?: boolean;
   quickActionsPending?: boolean;
 }) {
   const canFetchTaskMessages = isTaskMessageTaskId(taskId);
@@ -510,6 +542,12 @@ function AssistantMessage({
               actions={message.quick_actions ?? []}
               disabled={quickActionsDisabled || isPending}
               onSelect={onQuickAction}
+              onRegenerate={
+                onRegenerateQuickActions && canRegenerateQuickActions
+                  ? () => onRegenerateQuickActions(message)
+                  : undefined
+              }
+              pending={quickActionsPending}
             />
           ) : onQuickAction && quickActionsPending ? (
             <QuickActionsSkeleton />
@@ -540,13 +578,44 @@ function QuickActions({
   actions,
   disabled,
   onSelect,
+  onRegenerate,
+  pending = false,
 }: {
   actions: ChatQuickAction[];
   disabled: boolean;
   onSelect: (action: ChatQuickAction) => void | Promise<unknown>;
+  /** Present only on the session's latest turn — re-runs the suggestion pass. */
+  onRegenerate?: () => void | Promise<unknown>;
+  /**
+   * The turn is awaiting a supplement (a refresh is in flight): its old pills
+   * stay visible but inert, and the refresh icon spins until chat:quick_actions
+   * lands. Distinct from the local `regenerating` guard, which only covers the
+   * click → HTTP-ack window before the pending marker is observed.
+   */
+  pending?: boolean;
 }) {
+  const { t } = useT("chat");
   const [submitting, setSubmitting] = useState(false);
-  const blocked = disabled || submitting;
+  const [regenerating, setRegenerating] = useState(false);
+  // Safety net mirroring QuickActionsSkeleton: normally chat:quick_actions
+  // resolves the refresh, but if that event never arrives (daemon died, or its
+  // supplement ultimately failed) the pills would stay inert with a forever-
+  // spinning icon. After the same window, give up: stop the spinner and re-enable
+  // the old pills instead of stranding the user (MUL-5149).
+  const [pendingExpired, setPendingExpired] = useState(false);
+  useEffect(() => {
+    if (!pending) {
+      setPendingExpired(false);
+      return;
+    }
+    const timer = setTimeout(
+      () => setPendingExpired(true),
+      QUICK_ACTIONS_SKELETON_TIMEOUT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [pending]);
+  const awaitingRefresh = pending && !pendingExpired;
+  const blocked = disabled || submitting || regenerating || awaitingRefresh;
 
   const handleSelect = async (action: ChatQuickAction) => {
     if (blocked) return;
@@ -560,6 +629,22 @@ function QuickActions({
       setSubmitting(false);
     }
   };
+
+  const handleRegenerate = async () => {
+    if (blocked || !onRegenerate) return;
+    setRegenerating(true);
+    try {
+      await onRegenerate();
+    } catch {
+      // The caller's mutation rolls the pending marker back; surface a toast so
+      // the silent re-enable isn't mistaken for "no suggestions this time".
+      toast.error(t(($) => $.message_list.quick_actions_regenerate_failed));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const regenerateLabel = t(($) => $.message_list.quick_actions_regenerate);
 
   return (
     <div className="mt-2 border-t border-border/40 pt-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
@@ -590,6 +675,31 @@ function QuickActions({
             </TooltipContent>
           </Tooltip>
         ))}
+        {onRegenerate ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="shrink-0 rounded-full text-muted-foreground/70 hover:text-foreground"
+                  disabled={blocked}
+                  aria-label={regenerateLabel}
+                  onClick={() => void handleRegenerate()}
+                />
+              }
+            >
+              <RotateCw
+                aria-hidden="true"
+                className={
+                  awaitingRefresh || regenerating ? "animate-spin" : undefined
+                }
+              />
+            </TooltipTrigger>
+            <TooltipContent side="top">{regenerateLabel}</TooltipContent>
+          </Tooltip>
+        ) : null}
       </div>
     </div>
   );
