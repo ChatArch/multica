@@ -11,11 +11,9 @@ import {
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
   ChatDraftRestoresResponseSchema,
-  ChatPendingTaskSchema,
   CreateFeedbackResponseSchema,
   DuplicateIssueErrorBodySchema,
   EMPTY_CHAT_DRAFT_RESTORES,
-  EMPTY_CHAT_PENDING_TASK,
   EMPTY_CREATE_FEEDBACK_RESPONSE,
   EMPTY_INBOX_ITEMS,
   EMPTY_INBOX_UNREAD_SUMMARY,
@@ -409,65 +407,6 @@ describe("ChatDraftRestoresResponseSchema", () => {
       { endpoint: "test" },
     );
     expect(parsed).toEqual(EMPTY_CHAT_DRAFT_RESTORES);
-  });
-});
-
-describe("ChatPendingTaskSchema", () => {
-  const ENDPOINT = { endpoint: "GET /api/chat/sessions/:id/pending-task" };
-
-  it("keeps legacy responses compatible when queued_tasks is absent", () => {
-    const parsed = parseWithFallback(
-      {
-        task_id: "task-active",
-        status: "running",
-        created_at: "2026-07-01T00:00:00Z",
-      },
-      ChatPendingTaskSchema,
-      EMPTY_CHAT_PENDING_TASK,
-      ENDPOINT,
-    );
-
-    expect(parsed).toMatchObject({
-      task_id: "task-active",
-      status: "running",
-      queued_tasks: [],
-    });
-  });
-
-  it("parses queued task summaries", () => {
-    const parsed = ChatPendingTaskSchema.parse({
-      task_id: "task-active",
-      status: "running",
-      queued_tasks: [
-        {
-          task_id: "task-queued",
-          status: "queued",
-          content: "Follow up after the current task",
-          created_at: "2026-07-01T00:01:00Z",
-        },
-      ],
-    });
-
-    expect(parsed.queued_tasks).toEqual([
-      expect.objectContaining({
-        task_id: "task-queued",
-        content: "Follow up after the current task",
-      }),
-    ]);
-  });
-
-  it("falls back safely when a queued row is malformed", () => {
-    const parsed = parseWithFallback(
-      {
-        task_id: "task-active",
-        queued_tasks: [{ task_id: 42, status: "queued" }],
-      },
-      ChatPendingTaskSchema,
-      EMPTY_CHAT_PENDING_TASK,
-      ENDPOINT,
-    );
-
-    expect(parsed).toBe(EMPTY_CHAT_PENDING_TASK);
   });
 });
 

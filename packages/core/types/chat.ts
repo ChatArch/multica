@@ -192,21 +192,8 @@ export interface ChatDraftRestoresResponse {
  * task_id/status only, then this query catches up with the real created_at
  * so the timer survives refresh / reopen without "resetting to 0s".
  */
-export interface ChatQueuedTask {
-  task_id: string;
-  status: string;
-  created_at: string;
-  message_id?: string;
-  content?: string;
-}
-
 export interface ChatPendingTask {
   task_id?: string;
   status?: string;
   created_at?: string;
-  /**
-   * FIFO follow-ups waiting behind the current task. The current task itself
-   * remains in the root fields for backward compatibility.
-   */
-  queued_tasks?: ChatQueuedTask[];
 }

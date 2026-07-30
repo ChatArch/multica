@@ -994,18 +994,9 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 // optimistic seeds don't have a real task created_at and the timer needs to
 // survive refresh / reopen.
 type PendingChatTaskResponse struct {
-	TaskID      string                   `json:"task_id,omitempty"`
-	Status      string                   `json:"status,omitempty"`
-	CreatedAt   string                   `json:"created_at,omitempty"`
-	QueuedTasks []QueuedChatTaskResponse `json:"queued_tasks,omitempty"`
-}
-
-type QueuedChatTaskResponse struct {
-	TaskID    string `json:"task_id"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	MessageID string `json:"message_id,omitempty"`
-	Content   string `json:"content,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // MarkChatSessionRead clears the session's unread_since (→ has_unread=false)
@@ -1329,9 +1320,9 @@ func (h *Handler) HasPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HasPendingChatTasksResponse{HasPending: hasPending})
 }
 
-// GetPendingChatTask returns the current task plus queued FIFO follow-ups for a
-// chat session. The root fields retain the original response shape so older
-// clients continue to recover a single pending task after refresh / reopen.
+// GetPendingChatTask returns the most recent in-flight task (queued / dispatched
+// / running) for a chat session. The frontend polls this on mount / session
+// switch so pending UI state survives refresh and reopen.
 func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -1345,36 +1336,17 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, err := h.Queries.ListPendingChatTasksForSession(r.Context(), session.ID)
+	task, err := h.Queries.GetPendingChatTask(r.Context(), session.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list pending chat tasks")
-		return
-	}
-	if len(tasks) == 0 {
+		// No in-flight task — return an empty object, not an error.
 		writeJSON(w, http.StatusOK, PendingChatTaskResponse{})
 		return
 	}
 
-	head := tasks[0]
-	queued := make([]QueuedChatTaskResponse, 0, len(tasks)-1)
-	for _, task := range tasks[1:] {
-		if task.Status != "queued" {
-			continue
-		}
-		queued = append(queued, QueuedChatTaskResponse{
-			TaskID:    uuidToString(task.ID),
-			Status:    task.Status,
-			CreatedAt: timestampToString(task.CreatedAt),
-			MessageID: uuidToString(task.MessageID),
-			Content:   task.Content,
-		})
-	}
-
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
-		TaskID:      uuidToString(head.ID),
-		Status:      head.Status,
-		CreatedAt:   timestampToString(head.CreatedAt),
-		QueuedTasks: queued,
+		TaskID:    uuidToString(task.ID),
+		Status:    task.Status,
+		CreatedAt: timestampToString(task.CreatedAt),
 	})
 }
 

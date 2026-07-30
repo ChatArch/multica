@@ -30,10 +30,6 @@ import {
   useSetChatSessionArchived,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import {
-  enqueuePendingChatTask,
-  removePendingChatTask,
-} from "@multica/core/chat/pending";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatProjectContextSupport } from "./use-chat-project-context-support";
@@ -445,10 +441,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
         sessionId,
         source: options.source,
       });
-      qc.setQueryData<ChatPendingTask>(
-        chatKeys.pendingTask(sessionId),
-        (old) => removePendingChatTask(old, taskId),
-      );
+      qc.setQueryData(chatKeys.pendingTask(sessionId), {});
 
       try {
         const result = await api.cancelTaskById(taskId);
@@ -481,12 +474,9 @@ export function useChatController(opts?: { isActive?: boolean }) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
         return null;
-      } finally {
-        qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
-        if (wsId) qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
       }
     },
-    [qc, enqueueLocalRestore, wsId],
+    [qc, enqueueLocalRestore],
   );
 
   const handleSend = useCallback(
@@ -590,16 +580,11 @@ export function useChatController(opts?: { isActive?: boolean }) {
         chatKeys.messages(sessionId),
         (old) => (old ? [...old, sent] : [sent]),
       );
-      qc.setQueryData<ChatPendingTask>(
-        chatKeys.pendingTask(sessionId),
-        (old) => enqueuePendingChatTask(old, {
-          task_id: result.task_id,
-          status: "queued",
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content: finalContent,
-        }),
-      );
+      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
+        task_id: result.task_id,
+        status: "queued",
+        created_at: result.created_at,
+      });
       // Cache primed → publish the new active session, but only if the user
       // hasn't navigated away mid-send. See isStillOnComposeTarget. commitInput
       // clears the sent draft, and scrubs the shared editor only when the user
@@ -665,17 +650,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
       source: "active-input",
     });
   }, [pendingTaskId, activeSessionId, cancelChatTask]);
-
-  const handleRemoveQueuedTask = useCallback(
-    async (taskId: string) => {
-      if (!activeSessionId) return;
-      await cancelChatTask(taskId, activeSessionId, {
-        restoreDraftToInput: true,
-        source: "queued-message",
-      });
-    },
-    [activeSessionId, cancelChatTask],
-  );
 
   const handleNewChat = useCallback(() => {
     uiLogger.info("newChat", {
@@ -846,7 +820,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     // actions
     handleSend,
     handleStop,
-    handleRemoveQueuedTask,
     uploadEnabled,
     handleNewChat,
     handleStartNewChat,

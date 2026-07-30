@@ -429,8 +429,8 @@ export function ChatInput({
       editorScrubbedRef.current = false;
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
-      if (disabled || noAgent) {
-        logger.debug("input.send skipped", { disabled, noAgent });
+      if (isRunning || disabled || noAgent) {
+        logger.debug("input.send skipped", { isRunning, disabled, noAgent });
         return false;
       }
       // The editor is still holding a DIFFERENT draft's document than the one
@@ -673,18 +673,13 @@ export function ChatInput({
             busy={gate.uploading}
             running={isRunning}
             onStop={onStop}
-            allowSubmitWhileRunning
             tooltip={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning
-                ? t(($) => $.input.queue_send_tooltip)
-                : sendShortcut
-                  ? `${t(($) => $.input.send_tooltip)} · ${formatShortcut(sendShortcut)}`
-                  : t(($) => $.input.send_tooltip)}
+              : sendShortcut
+                ? `${t(($) => $.input.send_tooltip)} · ${formatShortcut(sendShortcut)}`
+                : t(($) => $.input.send_tooltip)}
             ariaLabel={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning
-                ? t(($) => $.input.queue_send_tooltip)
               : t(($) => $.input.send_tooltip)}
             stopTooltip={t(($) => $.input.stop_tooltip)}
             stopAriaLabel={t(($) => $.input.stop_tooltip)}

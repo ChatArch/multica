@@ -1301,69 +1301,6 @@ func (q *Queries) ListPendingChatTasksByCreator(ctx context.Context, arg ListPen
 	return items, nil
 }
 
-const listPendingChatTasksForSession = `-- name: ListPendingChatTasksForSession :many
-SELECT
-    task.id,
-    task.status,
-    task.created_at,
-    message.id AS message_id,
-    COALESCE(message.content, '')::text AS content
-FROM agent_task_queue AS task
-LEFT JOIN LATERAL (
-    SELECT input.id, input.content
-    FROM chat_message AS input
-    WHERE input.task_id = COALESCE(task.chat_input_task_id, task.id)
-      AND input.role = 'user'
-    ORDER BY input.created_at ASC, input.id ASC
-    LIMIT 1
-) AS message ON TRUE
-WHERE task.chat_session_id = $1
-  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
-ORDER BY
-    CASE WHEN task.status = 'queued' THEN 1 ELSE 0 END,
-    task.created_at ASC,
-    task.id ASC
-`
-
-type ListPendingChatTasksForSessionRow struct {
-	ID        pgtype.UUID        `json:"id"`
-	Status    string             `json:"status"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	MessageID pgtype.UUID        `json:"message_id"`
-	Content   string             `json:"content"`
-}
-
-// Returns the active task first, followed by queued follow-ups in FIFO order.
-// The message lateral join reads only the immutable input owned by each task;
-// it avoids loading the session's complete message history just to render a
-// one-line queue preview. GetPendingChatTask remains for legacy callers that
-// only need an existence check.
-func (q *Queries) ListPendingChatTasksForSession(ctx context.Context, chatSessionID pgtype.UUID) ([]ListPendingChatTasksForSessionRow, error) {
-	rows, err := q.db.Query(ctx, listPendingChatTasksForSession, chatSessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListPendingChatTasksForSessionRow{}
-	for rows.Next() {
-		var i ListPendingChatTasksForSessionRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Status,
-			&i.CreatedAt,
-			&i.MessageID,
-			&i.Content,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockChatSessionForDelete = `-- name: LockChatSessionForDelete :one
 SELECT id FROM chat_session
 WHERE id = $1

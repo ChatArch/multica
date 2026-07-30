@@ -481,47 +481,6 @@ describe("useChatController.archiveSession", () => {
   });
 });
 
-describe("useChatController queued task removal", () => {
-  beforeEach(() => {
-    vi.mocked(api.cancelTaskById).mockReset();
-    h.removeFromCaches.mockClear();
-    h.store.enqueuePendingSendRestore.mockClear();
-    h.store.pendingSendRestores = {};
-  });
-
-  it("returns a cancelled queued prompt to the current composer", async () => {
-    vi.mocked(api.cancelTaskById).mockResolvedValue({
-      id: "task-queued",
-      cancelled_chat_message: {
-        chat_session_id: "sA",
-        message_id: "message-queued",
-        content: "Revise this follow-up",
-        restore_to_input: true,
-        attachments: [],
-      },
-    } as Awaited<ReturnType<typeof api.cancelTaskById>>);
-    const result = setup("sA", [sA], [agentA]);
-
-    await act(async () => {
-      await result.current.handleRemoveQueuedTask("task-queued");
-    });
-
-    expect(api.cancelTaskById).toHaveBeenCalledWith("task-queued");
-    expect(h.removeFromCaches).toHaveBeenCalledWith(
-      expect.anything(),
-      "sA",
-      "message-queued",
-    );
-    expect(h.store.enqueuePendingSendRestore).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "message-queued",
-        content: "Revise this follow-up",
-        sessionId: "sA",
-      }),
-    );
-  });
-});
-
 // MUL-4360 mount race: `activeSessionId` is persisted, so on a bare `/chat`
 // navigation the page restores the last session as active for one frame before
 // its URL→store effect clears it back to null. The auto-mark-read must NOT fire

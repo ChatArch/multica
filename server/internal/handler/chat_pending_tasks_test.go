@@ -98,75 +98,6 @@ func containsPendingTask(tasks []PendingChatTaskItem, taskID string) bool {
 	return false
 }
 
-func TestGetPendingChatTask_ReturnsActiveHeadAndFIFOQueue(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-
-	agentID := createHandlerTestAgent(t, "PendingSessionQueueAgent", []byte("[]"))
-	sessionID := createHandlerTestChatSession(t, agentID)
-	activeID := insertPendingChatTask(t, agentID, sessionID, "running")
-	nextID := insertPendingChatTask(t, agentID, sessionID, "queued")
-	laterID := insertPendingChatTask(t, agentID, sessionID, "queued")
-
-	for _, row := range []struct {
-		id        string
-		createdAt string
-		content   string
-	}{
-		{activeID, "2026-07-29T01:00:00Z", "active prompt"},
-		{nextID, "2026-07-29T01:00:01Z", "next prompt"},
-		{laterID, "2026-07-29T01:00:02Z", "later prompt"},
-	} {
-		if _, err := testPool.Exec(context.Background(), `
-			UPDATE agent_task_queue
-			SET created_at = $2, chat_input_task_id = id
-			WHERE id = $1
-		`, row.id, row.createdAt); err != nil {
-			t.Fatalf("stamp pending task %s: %v", row.id, err)
-		}
-		if _, err := testPool.Exec(context.Background(), `
-			INSERT INTO chat_message (chat_session_id, role, content, task_id, created_at)
-			VALUES ($1, 'user', $2, $3, $4)
-		`, sessionID, row.content, row.id, row.createdAt); err != nil {
-			t.Fatalf("insert pending message %s: %v", row.id, err)
-		}
-	}
-
-	req := withURLParam(
-		newRequestAs(
-			testUserID,
-			http.MethodGet,
-			"/api/chat/sessions/"+sessionID+"/pending-task",
-			nil,
-		),
-		"sessionId",
-		sessionID,
-	)
-	w := httptest.NewRecorder()
-	testHandler.GetPendingChatTask(w, chatPendingCtxAs(t, req, testUserID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp PendingChatTaskResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode pending task queue: %v", err)
-	}
-	if resp.TaskID != activeID || resp.Status != "running" {
-		t.Fatalf("unexpected active head: %+v", resp)
-	}
-	if len(resp.QueuedTasks) != 2 {
-		t.Fatalf("expected two queued tasks, got %+v", resp.QueuedTasks)
-	}
-	if resp.QueuedTasks[0].TaskID != nextID ||
-		resp.QueuedTasks[0].Content != "next prompt" ||
-		resp.QueuedTasks[1].TaskID != laterID ||
-		resp.QueuedTasks[1].Content != "later prompt" {
-		t.Fatalf("queue is not FIFO with message summaries: %+v", resp.QueuedTasks)
-	}
-}
-
 // TestListPendingChatTasks_HidesPrivateAgentFromLostAccessCreator verifies the
 // P1 rewrite still enforces the private-agent gate now that filtering keys off
 // the agent_id returned by the query (instead of a second session-list scan).
@@ -304,6 +235,7 @@ func TestHasPendingChatTasks_IgnoresTerminalTasks(t *testing.T) {
 		t.Fatalf("has-any returned true for a terminal (completed) task")
 	}
 }
+
 
 // TestHasPendingChatTasks_HidesOtherCreatorsTask locks the cs.creator_id gate:
 // user A's in-flight task on a workspace-visible agent — one B can freely

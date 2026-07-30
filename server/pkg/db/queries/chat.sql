@@ -464,34 +464,6 @@ WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'wa
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: ListPendingChatTasksForSession :many
--- Returns the active task first, followed by queued follow-ups in FIFO order.
--- The message lateral join reads only the immutable input owned by each task;
--- it avoids loading the session's complete message history just to render a
--- one-line queue preview. GetPendingChatTask remains for legacy callers that
--- only need an existence check.
-SELECT
-    task.id,
-    task.status,
-    task.created_at,
-    message.id AS message_id,
-    COALESCE(message.content, '')::text AS content
-FROM agent_task_queue AS task
-LEFT JOIN LATERAL (
-    SELECT input.id, input.content
-    FROM chat_message AS input
-    WHERE input.task_id = COALESCE(task.chat_input_task_id, task.id)
-      AND input.role = 'user'
-    ORDER BY input.created_at ASC, input.id ASC
-    LIMIT 1
-) AS message ON TRUE
-WHERE task.chat_session_id = $1
-  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
-ORDER BY
-    CASE WHEN task.status = 'queued' THEN 1 ELSE 0 END,
-    task.created_at ASC,
-    task.id ASC;
-
 -- name: ListPendingChatTasksByCreator :many
 -- Aggregate view of all in-flight chat tasks owned by a given creator in a
 -- workspace. Drives the FAB's "running" indicator when the chat window is

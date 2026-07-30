@@ -15,7 +15,6 @@ import type {
   BillingTransactionsPage,
   CancelTaskResponse,
   ChatDraftRestoresResponse,
-  ChatPendingTask,
   CreateAgentFromTemplateResponse,
   CreateBillingCheckoutSessionResponse,
   CreateBillingPortalSessionResponse,
@@ -1113,25 +1112,6 @@ const ChatDraftRestoreSchema = z.object({
 export const ChatDraftRestoresResponseSchema = z.object({
   restores: z.array(ChatDraftRestoreSchema).default([]),
 }).loose();
-
-const ChatQueuedTaskSchema = z.object({
-  task_id: z.string(),
-  status: z.string().default("queued"),
-  created_at: z.string().default(""),
-  message_id: z.string().optional(),
-  content: z.string().optional(),
-}).loose();
-
-// Root fields retain the legacy single-task response shape. queued_tasks is
-// additive and defaults to an empty list for older servers.
-export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
-  task_id: z.string().optional(),
-  status: z.string().optional(),
-  created_at: z.string().optional(),
-  queued_tasks: z.array(ChatQueuedTaskSchema).default([]),
-}).loose();
-
-export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = { queued_tasks: [] };
 
 export const EMPTY_CHAT_DRAFT_RESTORES: ChatDraftRestoresResponse = {
   restores: [],

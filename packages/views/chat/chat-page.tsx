@@ -19,7 +19,6 @@ import { useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
-import { ChatQueue } from "./components/chat-queue";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { EmptyState } from "./components/chat-empty-state";
@@ -259,11 +258,6 @@ export function ChatPage() {
       ) : (
         <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
       )}
-
-      <ChatQueue
-        tasks={c.pendingTask?.queued_tasks ?? []}
-        onRemove={c.handleRemoveQueuedTask}
-      />
 
       <ChatInput
         onSend={c.handleSend}
