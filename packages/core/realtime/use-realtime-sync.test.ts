@@ -898,6 +898,9 @@ describe("chat quick-actions supplement flow", () => {
     expect(qc.getQueryData(pendingMarkerKey)).toEqual({
       message_id: "msg-assistant",
       task_id: taskId,
+      // Absolute give-up deadline stamped at raise time (MUL-5149); its exact
+      // value tracks the wall clock, so assert presence, not a fixed number.
+      expires_at: expect.any(Number),
     });
   });
 
