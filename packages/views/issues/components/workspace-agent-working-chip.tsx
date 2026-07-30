@@ -20,18 +20,34 @@ interface WorkspaceAgentWorkingChipProps {
   agents: readonly WorkingAgentSummary[] | undefined;
 }
 
+/** What the projection says about activity in this surface. `unknown` is a
+ *  first-class case, not a synonym for `none`. */
+export type ChipActivity = "unknown" | "none" | "some";
+
+export function chipActivity(
+  agents: readonly WorkingAgentSummary[] | undefined,
+): ChipActivity {
+  if (agents === undefined) return "unknown";
+  return agents.length > 0 ? "some" : "none";
+}
+
 /**
  * Which colour tier the chip wears, and the only classes allowed alongside
  * it. Activity uses a tint, the active filter uses the filled brand tier,
- * and an idle workspace stays neutral.
+ * and an idle surface stays neutral.
+ *
+ * The muted text on the neutral tier is what reads as "nothing is happening
+ * here", so an unresolved projection gets the neutral tier WITHOUT it: we do
+ * not yet know whether the surface is idle, and dimming it would claim so.
  */
 export function chipAppearance(
   value: boolean,
-  hasAgents: boolean,
+  activity: ChipActivity,
 ): { variant: "brand" | "brandSubtle" | "outline"; className: string } {
   const layout = "h-8 px-2 md:h-7 md:px-2.5";
   if (value) return { variant: "brand", className: layout };
-  if (hasAgents) return { variant: "brandSubtle", className: layout };
+  if (activity === "some") return { variant: "brandSubtle", className: layout };
+  if (activity === "unknown") return { variant: "outline", className: layout };
   return { variant: "outline", className: `${layout} text-muted-foreground` };
 }
 
@@ -44,14 +60,29 @@ export function chipAppearance(
  * Identity comes from the workspace agent directory rather than the payload:
  * the surface projection is a facet of ids and counts, and resolving names
  * here keeps one definition of an agent's name/avatar across both callers.
+ *
+ * Three distinct states, and the first two must never collapse into each other:
+ * `undefined` = the projection has not resolved, `[]` = it resolved and this
+ * surface really has nobody working, a non-empty list = the roster. Rendering
+ * the empty sentence for an unresolved projection would assert "no agents
+ * working right now" on no evidence — the same class of unearned claim the chip
+ * count itself had (MUL-5525).
  */
 export function WorkingAgentsHoverContent({
   agents,
 }: {
-  agents: readonly WorkingAgentSummary[];
+  agents: readonly WorkingAgentSummary[] | undefined;
 }) {
   const { t } = useT("issues");
   const { getActorName, getActorInitials, getActorAvatarUrl } = useActorName();
+
+  if (agents === undefined) {
+    return (
+      <p className="text-caption text-muted-foreground">
+        {t(($) => $.agent_activity.unknown_hover)}
+      </p>
+    );
+  }
 
   if (agents.length === 0) {
     return (
@@ -101,9 +132,10 @@ export function WorkingAgentsHoverContent({
  * workspace-wide `/api/working-agents` read, so on a project page it could
  * advertise agents working nowhere near that project and open an empty list.
  *
- * `agents === undefined` means the projection has not resolved. The chip then
- * renders an explicit indeterminate label instead of a number, because "0" and
- * "not known yet" are different claims.
+ * `agents === undefined` means the projection has not resolved. Every surface of
+ * the chip then stays indeterminate — label, compact number, colour tier and
+ * hover body alike — because "0" and "not known yet" are different claims and
+ * the reader cannot tell them apart once one of them is rendered as the other.
  *
  * Clicking only toggles view state; the controller turns the running-issue set
  * into the query's `working_issue_ids` filter.
@@ -114,14 +146,13 @@ export function WorkspaceAgentWorkingChip({
   agents,
 }: WorkspaceAgentWorkingChipProps) {
   const { t } = useT("issues");
-  const resolved = agents !== undefined;
+  const activity = chipActivity(agents);
   const agentIds = agents?.map((agent) => agent.id) ?? [];
-  const agentCount = agentIds.length;
-  const hasAgents = agentCount > 0;
-  const label = resolved
-    ? t(($) => $.agent_activity.chip_agents_working, { count: agentCount })
-    : t(($) => $.agent_activity.chip_agents_working_unknown);
-  const appearance = chipAppearance(value, hasAgents);
+  const label =
+    activity === "unknown"
+      ? t(($) => $.agent_activity.chip_agents_working_unknown)
+      : t(($) => $.agent_activity.chip_agents_working, { count: agentIds.length });
+  const appearance = chipAppearance(value, activity);
 
   const trigger = (
     <Button
@@ -132,9 +163,11 @@ export function WorkspaceAgentWorkingChip({
       aria-pressed={value}
       aria-label={label}
     >
-      {hasAgents && <AgentAvatarStack agentIds={agentIds} size="sm" max={3} />}
+      {activity === "some" && (
+        <AgentAvatarStack agentIds={agentIds} size="sm" max={3} />
+      )}
       <span className="tabular-nums md:hidden">
-        {resolved ? agentCount : "—"}
+        {activity === "unknown" ? "—" : agentIds.length}
       </span>
       <span className="hidden tabular-nums md:inline">{label}</span>
     </Button>
@@ -144,7 +177,10 @@ export function WorkspaceAgentWorkingChip({
     <HoverCard>
       <HoverCardTrigger render={trigger} />
       <HoverCardContent align="end" className="w-72">
-        <WorkingAgentsHoverContent agents={agents ?? []} />
+        {/* Pass the projection through untouched. Defaulting to [] here would
+            hand the hover card a definite "nobody is working" for a state we
+            have not resolved. */}
+        <WorkingAgentsHoverContent agents={agents} />
       </HoverCardContent>
     </HoverCard>
   );

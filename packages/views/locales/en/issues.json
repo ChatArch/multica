@@ -431,6 +431,7 @@
     "status_running": "Working",
     "status_queued": "Queued",
     "empty_hover": "No agents working right now",
+    "unknown_hover": "Agents working: not loaded yet",
     "filter_active_label": "Viewing issues with agents working",
     "tasks_count_one": "{{count}} task",
     "tasks_count_other": "{{count}} tasks",

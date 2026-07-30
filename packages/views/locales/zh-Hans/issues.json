@@ -415,6 +415,7 @@
     "status_running": "正在工作",
     "status_queued": "排队中",
     "empty_hover": "当前没有智能体在工作",
+    "unknown_hover": "工作中的智能体：尚未加载",
     "filter_active_label": "正在查看有智能体在工作的 issue",
     "tasks_count_other": "{{count}} 个 task",
     "chip_agents_working_other": "{{count}} 个智能体工作中",
