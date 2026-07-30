@@ -291,9 +291,11 @@ describe("Open in new tab", () => {
     await openMenuAndClickOpenInNewTab();
 
     // `activate: true` — an explicit CTA moves the user into the new context,
-    // unlike modifier-click, which stashes a background tab.
+    // unlike modifier-click, which stashes a background tab. The path carries
+    // the identifier, matching copyLink, so the opened tab is already on the
+    // canonical URL instead of being rewritten off the UUID after it lands.
     expect(openInNewTabMock).toHaveBeenCalledWith(
-      "/test/issues/issue-1",
+      "/test/issues/TES-1",
       "TES-1",
       { activate: true },
     );
@@ -311,9 +313,9 @@ describe("Open in new tab", () => {
     await openMenuAndClickOpenInNewTab();
 
     expect(openInNewTabMock).not.toHaveBeenCalled();
-    expect(getShareableUrlMock).toHaveBeenCalledWith("/test/issues/issue-1");
+    expect(getShareableUrlMock).toHaveBeenCalledWith("/test/issues/TES-1");
     expect(windowOpen).toHaveBeenCalledWith(
-      "https://app.example/test/issues/issue-1",
+      "https://app.example/test/issues/TES-1",
       "_blank",
       "noopener,noreferrer",
     );
