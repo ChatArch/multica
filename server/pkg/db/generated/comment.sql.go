@@ -559,6 +559,101 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listMissingAncestorComments = `-- name: ListMissingAncestorComments :many
+WITH RECURSIVE ancestors AS (
+    SELECT p.id, p.issue_id, p.author_type, p.author_id, p.content, p.type, p.created_at, p.updated_at, p.parent_id, p.workspace_id, p.resolved_at, p.resolved_by_type, p.resolved_by_id, p.source_task_id
+    FROM comment p
+    JOIN comment child ON child.parent_id = p.id
+    WHERE child.id = ANY($1::uuid[])
+      AND p.issue_id = $2
+      AND p.workspace_id = $3
+    UNION
+    SELECT p.id, p.issue_id, p.author_type, p.author_id, p.content, p.type, p.created_at, p.updated_at, p.parent_id, p.workspace_id, p.resolved_at, p.resolved_by_type, p.resolved_by_id, p.source_task_id
+    FROM comment p
+    JOIN ancestors a ON a.parent_id = p.id
+)
+SELECT a.id, a.issue_id, a.author_type, a.author_id, a.content, a.type, a.created_at, a.updated_at, a.parent_id, a.workspace_id, a.resolved_at, a.resolved_by_type, a.resolved_by_id, a.source_task_id FROM ancestors a
+WHERE NOT (a.id = ANY($1::uuid[]))
+ORDER BY a.created_at ASC, a.id ASC
+`
+
+type ListMissingAncestorCommentsParams struct {
+	Ids         []pgtype.UUID `json:"ids"`
+	IssueID     pgtype.UUID   `json:"issue_id"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+type ListMissingAncestorCommentsRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	AuthorType     string             `json:"author_type"`
+	AuthorID       pgtype.UUID        `json:"author_id"`
+	Content        string             `json:"content"`
+	Type           string             `json:"type"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	ParentID       pgtype.UUID        `json:"parent_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
+	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
+	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
+}
+
+// The ancestors of @ids that are NOT themselves in @ids, walking parent_id
+// upward to each thread root.
+//
+// Restores the "every retained reply's parent is in the same set" invariant
+// after a newest-N window cut a thread in half. Taking the OLDEST n comments
+// could never do that — a reply is always newer than its parent, so a prefix of
+// the timeline is closed under "parent of" — but a newest-N window is a suffix
+// and is not: an old thread root falls outside the window while a fresh reply to
+// it stays inside.
+//
+// An orphan is not merely mis-nested, it is invisible. The timeline groups
+// top-level entries as "activities + comments with no parent_id" and renders
+// replies by looking them up under their parent, so a reply whose parent is
+// absent sits in the map with no card to render it (MUL-1847 / #2263). It also
+// breaks the COMPLETE-thread precondition foldResolvedThreads documents.
+//
+// Recursive rather than a single parent_id lookup because the schema permits
+// reply-of-reply; the write path collapses replies to the thread root today but
+// does not enforce it, and the read paths already handle depth > 1.
+func (q *Queries) ListMissingAncestorComments(ctx context.Context, arg ListMissingAncestorCommentsParams) ([]ListMissingAncestorCommentsRow, error) {
+	rows, err := q.db.Query(ctx, listMissingAncestorComments, arg.Ids, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMissingAncestorCommentsRow{}
+	for rows.Next() {
+		var i ListMissingAncestorCommentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentThreadCommentsForIssue = `-- name: ListRecentThreadCommentsForIssue :many
 WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
     -- Each root maps to itself.

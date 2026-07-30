@@ -29,7 +29,7 @@ func TestCORSAllowedHeaders_IncludeClientCapabilities(t *testing.T) {
 // an entry missing here is not a degraded signal, it is no signal at all: the
 // header arrives on the wire and the client cannot see it (MUL-5492).
 func TestCORSExposedHeaders_IncludeTimelineTruncation(t *testing.T) {
-	for _, want := range []string{handler.HeaderTimelineTruncated, handler.HeaderTimelineWindowFrom} {
+	for _, want := range []string{handler.HeaderTimelineTruncated} {
 		if !slices.Contains(corsExposedHeaders, want) {
 			t.Errorf("%s missing from CORS exposed headers: %v", want, corsExposedHeaders)
 		}

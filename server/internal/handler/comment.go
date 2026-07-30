@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -994,7 +995,99 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 		WorkspaceID: issue.WorkspaceID,
 		Limit:       commentHardCap,
 	})
-	return fetchCommentsResult{Comments: comments}, err
+	if err != nil {
+		return fetchCommentsResult{}, err
+	}
+	// The cap now keeps the NEWEST commentHardCap comments (MUL-5492), so a
+	// thread can be cut in half: an old root outside the window, a fresh reply
+	// inside it. Complete the parent chains before returning — the default mode
+	// is one of the modes foldResolvedThreads is allowed to run on, and it
+	// documents a COMPLETE-thread set as its precondition.
+	if len(comments) == commentHardCap {
+		comments, err = h.backfillCommentParents(ctx, issue.WorkspaceID, comments)
+		if err != nil {
+			return fetchCommentsResult{}, err
+		}
+	}
+	return fetchCommentsResult{Comments: comments}, nil
+}
+
+// backfillCommentParents re-adds the ancestors of any reply whose parent fell
+// outside a newest-N comment window, restoring the invariant that every reply's
+// parent is present in the same set.
+//
+// Why this is needed at all: capping with the OLDEST n comments could never
+// orphan a reply, because a reply is always newer than its parent and so a
+// prefix of the timeline is closed under "parent of". A newest-n window is a
+// suffix and has no such property — an old thread root falls outside while a
+// fresh reply to it stays inside (MUL-5492).
+//
+// Why it matters: an orphaned reply is not merely mis-nested, it is invisible.
+// The timeline builds its top level from "activities + comments with no
+// parent_id" and renders replies by looking them up under their parent, so an
+// orphan sits in the map with no card to render it — the exact shape of MUL-1847
+// (1 root + 29 replies, root dropped, all 29 vanished from the UI while the API
+// returned them). It also violates the COMPLETE-thread precondition that
+// foldResolvedThreads documents.
+//
+// The result is deliberately no longer a pure time window: backfilled ancestors
+// are older than the window floor. Completing a thread is worth more than the
+// window being describable by a single timestamp — and unlike clamping, this
+// only ever ADDS rows, so it cannot hide anything the caller would have seen.
+func (h *Handler) backfillCommentParents(ctx context.Context, workspaceID pgtype.UUID, comments []db.Comment) ([]db.Comment, error) {
+	if len(comments) == 0 {
+		return comments, nil
+	}
+
+	present := make(map[string]struct{}, len(comments))
+	ids := make([]pgtype.UUID, len(comments))
+	for i, c := range comments {
+		present[uuidToString(c.ID)] = struct{}{}
+		ids[i] = c.ID
+	}
+
+	orphaned := false
+	for _, c := range comments {
+		if !c.ParentID.Valid {
+			continue
+		}
+		if _, ok := present[uuidToString(c.ParentID)]; !ok {
+			orphaned = true
+			break
+		}
+	}
+	if !orphaned {
+		return comments, nil
+	}
+
+	rows, err := h.Queries.ListMissingAncestorComments(ctx, db.ListMissingAncestorCommentsParams{
+		Ids:         ids,
+		IssueID:     comments[0].IssueID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]db.Comment, 0, len(comments)+len(rows))
+	out = append(out, comments...)
+	for _, r := range rows {
+		out = append(out, db.Comment{
+			ID: r.ID, IssueID: r.IssueID, AuthorType: r.AuthorType, AuthorID: r.AuthorID,
+			Content: r.Content, Type: r.Type, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+			ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
+			ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
+			SourceTaskID: r.SourceTaskID,
+		})
+	}
+	// Restore the ascending (created_at, id) contract every caller relies on.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Time.Equal(out[j].CreatedAt.Time) {
+			return out[i].CreatedAt.Time.Before(out[j].CreatedAt.Time)
+		}
+		return bytes.Compare(out[i].ID.Bytes[:], out[j].ID.Bytes[:]) < 0
+	})
+	return out, nil
 }
 
 type CreateCommentRequest struct {

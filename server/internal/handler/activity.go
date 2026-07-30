@@ -1,11 +1,9 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"sort"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -49,86 +47,55 @@ const timelineHardCap = 2000
 
 // timelineProbeLimit reads one row past the cap so "we hit the cap" can be
 // distinguished from "the issue happens to have exactly timelineHardCap rows".
-// Without the probe row an issue sitting exactly on the boundary would be
-// reported as truncated and would drag the other list's window down with it.
+// Without the probe row an issue sitting exactly on the boundary would report a
+// complete timeline as truncated and pay a needless ancestor-backfill query.
 const timelineProbeLimit = timelineHardCap + 1
 
-// Truncation is signalled with response headers rather than body fields because
-// the unpaginated response is a bare JSON array (TimelineEntriesSchema =
+// Truncation is signalled with a response header rather than a body field
+// because the unpaginated response is a bare JSON array (TimelineEntriesSchema =
 // z.array(TimelineEntrySchema) in packages/core/api/schemas.ts) with nowhere to
-// put a flag. Headers are additive: existing clients keep validating, and a
-// future "load earlier" affordance has the floor it needs to resume from.
+// put a flag. The header is additive: existing clients keep validating.
 //
-// Exported so the CORS layer can reference the same identifiers
+// The value names which kinds were truncated ("activity", "comment", or
+// "activity,comment") because the two caps are independent — in practice it is
+// almost always activity alone.
+//
+// There is deliberately no companion "window from" header. An earlier revision
+// emitted one, but TimestampToString is second-precision RFC3339 while the real
+// ordering key is (created_at, id) at full precision, so it could not be used to
+// resume a read without skipping or repeating rows inside a shared second. A
+// resumable cursor needs to be opaque and carry both halves; that is worth
+// designing when there is a consumer, not shipping as a lossy approximation.
+//
+// Exported so the CORS layer can reference the same identifier
 // (corsExposedHeaders in server/cmd/server/router.go). A custom response header
-// is invisible to browser JS unless it is explicitly exposed, so a rename here
-// that did not reach the CORS list would silently switch the signal back off.
-const (
-	HeaderTimelineTruncated  = "X-Timeline-Truncated"
-	HeaderTimelineWindowFrom = "X-Timeline-Window-From"
-)
+// is invisible to browser JS unless explicitly exposed, so a rename here that
+// did not reach the CORS list would silently switch the signal back off.
+const HeaderTimelineTruncated = "X-Timeline-Truncated"
 
-// timelineKey is the (created_at, id) tuple the timeline is ordered by. It
-// mirrors the keyset tuple in ListCommentsForIssue / ListActivitiesForIssue so a
-// window floor computed here means exactly what it means in SQL. Comparisons use
-// the real timestamp and the raw UUID bytes (Postgres orders uuid bytewise)
-// rather than the formatted strings on TimelineEntry, which are second-precision
-// RFC3339 and would collapse sub-second ordering.
-type timelineKey struct {
-	At time.Time
-	ID pgtype.UUID
-}
-
-// before reports whether k sorts strictly before other in ascending order.
-func (k timelineKey) before(other timelineKey) bool {
-	if !k.At.Equal(other.At) {
-		return k.At.Before(other.At)
-	}
-	return bytes.Compare(k.ID.Bytes[:], other.ID.Bytes[:]) < 0
-}
-
-func commentKey(c db.Comment) timelineKey {
-	return timelineKey{At: c.CreatedAt.Time, ID: c.ID}
-}
-
-func activityKey(a db.ActivityLog) timelineKey {
-	return timelineKey{At: a.CreatedAt.Time, ID: a.ID}
-}
-
-// takeNewest trims a timelineProbeLimit read down to timelineHardCap and returns
-// the window floor when the probe row proved older rows exist. rows must be
-// ascending; the floor is the oldest row actually kept.
-func takeNewest[T any](rows []T, key func(T) timelineKey) ([]T, *timelineKey) {
-	if len(rows) <= timelineHardCap {
-		return rows, nil
-	}
-	kept := rows[len(rows)-timelineHardCap:]
-	floor := key(kept[0])
-	return kept, &floor
-}
-
-// clampFrom drops ascending rows older than floor.
-func clampFrom[T any](rows []T, floor timelineKey, key func(T) timelineKey) []T {
-	for i, row := range rows {
-		if !key(row).before(floor) {
-			return rows[i:]
-		}
-	}
-	return nil
-}
-
-// newerFloor returns whichever floor is later, treating nil as "no floor".
-func newerFloor(a, b *timelineKey) *timelineKey {
+// truncatedKinds renders the X-Timeline-Truncated value, "" when nothing was
+// truncated.
+func truncatedKinds(comments, activities bool) string {
 	switch {
-	case a == nil:
-		return b
-	case b == nil:
-		return a
-	case a.before(*b):
-		return b
+	case comments && activities:
+		return "activity,comment"
+	case comments:
+		return "comment"
+	case activities:
+		return "activity"
 	default:
-		return a
+		return ""
 	}
+}
+
+// takeNewest trims a timelineProbeLimit read down to timelineHardCap and reports
+// whether the probe row proved older rows exist. rows must be ascending, so the
+// newest timelineHardCap entries are the tail.
+func takeNewest[T any](rows []T) ([]T, bool) {
+	if len(rows) <= timelineHardCap {
+		return rows, false
+	}
+	return rows[len(rows)-timelineHardCap:], true
 }
 
 // timelinePaginatedResponse mirrors the wrapper shape produced by the prior
@@ -164,8 +131,10 @@ type timelinePaginatedResponse struct {
 // boundaries, and at observed data sizes (p99 ~30 comments per issue) the
 // cursor machinery was pure overhead.
 //
-// When the hard cap fires the timeline is a window of the NEWEST entries, and
-// the response says so via the X-Timeline-* headers (MUL-5492).
+// When the hard cap fires each list is independently reduced to its newest
+// entries and X-Timeline-Truncated names which kinds were affected. Comment
+// threads are completed afterwards, so a retained reply always arrives with its
+// parent chain even when that chain predates the window (MUL-5492).
 func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
@@ -196,29 +165,42 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	wantWrapped := q.Get("limit") != "" || q.Get("before") != "" ||
 		q.Get("after") != "" || q.Get("around") != ""
 
-	// Each query independently returned the newest timelineHardCap rows of its
-	// own table, so each has its own window floor. Merging two windows with
-	// different floors yields a timeline that looks continuous but, below the
-	// higher floor, contains only one of the two kinds — e.g. comments with no
-	// interleaved activity at all. That is strictly worse than a timeline that
-	// visibly stops, because nothing about it looks wrong.
+	// Each list is capped independently and reports its own truncation. The two
+	// are deliberately NOT clamped to a shared floor.
 	//
-	// Activity is machine-paced and comments are human-paced, so in practice
-	// activity hits its cap first and it is the activity floor that wins. Clamp
-	// both lists to the newest floor so the window returned is a contiguous,
-	// correctly interleaved slice of the timeline with no partial region.
-	comments, commentFloor := takeNewest(comments, commentKey)
-	activities, activityFloor := takeNewest(activities, activityKey)
-	floor := newerFloor(commentFloor, activityFloor)
-	if floor != nil {
-		comments = clampFrom(comments, *floor, commentKey)
-		activities = clampFrom(activities, *floor, activityKey)
+	// An earlier revision did clamp them, to guarantee the returned window was a
+	// contiguous correctly-interleaved slice with no region holding only one of
+	// the two kinds. That traded the wrong way round. Comments are human-paced
+	// (p99 ~30, max ever observed ~1.1k) so they essentially never reach the cap,
+	// while activity is machine-paced and reaches it routinely — so the shared
+	// floor was almost always the ACTIVITY floor cutting away comments that had
+	// been fetched successfully and would have rendered fine. It deleted real
+	// content to buy a cosmetic property, and on a busy issue with thirty
+	// comments it was pure loss.
+	//
+	// Not clamping costs only activity density in the older part of the range,
+	// which is metadata, not content — and it is reported rather than hidden.
+	// It also keeps the comment set from being cut at an arbitrary row, which is
+	// what produced orphaned replies (see backfillCommentParents).
+	comments, commentsTruncated := takeNewest(comments)
+	activities, activitiesTruncated := takeNewest(activities)
 
-		w.Header().Set(HeaderTimelineTruncated, "true")
-		// Formatted with the same helper as TimelineEntry.CreatedAt so a client
-		// can compare the floor against entry timestamps directly, without
-		// having to normalize two different offset representations.
-		w.Header().Set(HeaderTimelineWindowFrom, timestampToString(pgtype.Timestamptz{Time: floor.At, Valid: true}))
+	// A retained reply whose parent fell outside the comment window is invisible
+	// in the UI: the timeline groups top-level entries as "activities + comments
+	// with no parent_id" and looks replies up under their parent, so an orphan
+	// sits in the map with no card to render it (MUL-1847 / #2263 was exactly
+	// this). Pull the missing ancestors back before merging.
+	if commentsTruncated {
+		var err error
+		comments, err = h.backfillCommentParents(ctx, issue.WorkspaceID, comments)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to complete comment threads")
+			return
+		}
+	}
+
+	if kinds := truncatedKinds(commentsTruncated, activitiesTruncated); kinds != "" {
+		w.Header().Set(HeaderTimelineTruncated, kinds)
 	}
 
 	if wantWrapped {
@@ -228,7 +210,7 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		resp := timelinePaginatedResponse{
 			Entries:       entries,
-			HasMoreBefore: floor != nil,
+			HasMoreBefore: commentsTruncated || activitiesTruncated,
 		}
 		// `around=<id>`: locate the anchor in the DESC slice so the legacy
 		// client can scroll-to-highlight without a follow-up request.

@@ -75,11 +75,10 @@ var corsAllowedHeaders = []string{
 // default) — the header arrives on the wire and then disappears, which looks
 // exactly like the server never sent it.
 //
-// Referencing the handler constants rather than re-typing the strings keeps a
+// Referencing the handler constant rather than re-typing the string keeps a
 // rename from quietly switching the signal off (MUL-5492).
 var corsExposedHeaders = []string{
 	handler.HeaderTimelineTruncated,
-	handler.HeaderTimelineWindowFrom,
 }
 
 func allowedOrigins() []string {

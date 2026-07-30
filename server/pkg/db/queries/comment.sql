@@ -17,6 +17,42 @@ SELECT * FROM (
 ) AS recent
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListMissingAncestorComments :many
+-- The ancestors of @ids that are NOT themselves in @ids, walking parent_id
+-- upward to each thread root.
+--
+-- Restores the "every retained reply's parent is in the same set" invariant
+-- after a newest-N window cut a thread in half. Taking the OLDEST n comments
+-- could never do that — a reply is always newer than its parent, so a prefix of
+-- the timeline is closed under "parent of" — but a newest-N window is a suffix
+-- and is not: an old thread root falls outside the window while a fresh reply to
+-- it stays inside.
+--
+-- An orphan is not merely mis-nested, it is invisible. The timeline groups
+-- top-level entries as "activities + comments with no parent_id" and renders
+-- replies by looking them up under their parent, so a reply whose parent is
+-- absent sits in the map with no card to render it (MUL-1847 / #2263). It also
+-- breaks the COMPLETE-thread precondition foldResolvedThreads documents.
+--
+-- Recursive rather than a single parent_id lookup because the schema permits
+-- reply-of-reply; the write path collapses replies to the thread root today but
+-- does not enforce it, and the read paths already handle depth > 1.
+WITH RECURSIVE ancestors AS (
+    SELECT p.*
+    FROM comment p
+    JOIN comment child ON child.parent_id = p.id
+    WHERE child.id = ANY(@ids::uuid[])
+      AND p.issue_id = @issue_id
+      AND p.workspace_id = @workspace_id
+    UNION
+    SELECT p.*
+    FROM comment p
+    JOIN ancestors a ON a.parent_id = p.id
+)
+SELECT a.* FROM ancestors a
+WHERE NOT (a.id = ANY(@ids::uuid[]))
+ORDER BY a.created_at ASC, a.id ASC;
+
 -- name: ListCommentsSinceForIssue :many
 -- Comments created strictly after $3 in chronological order, capped at $4.
 -- Powers the CLI's `--since` agent-polling flow.

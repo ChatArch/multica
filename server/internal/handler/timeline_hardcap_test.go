@@ -80,6 +80,22 @@ func bulkSeedComments(t *testing.T, issueID string, start time.Time, n int) {
 	}
 }
 
+// seedComment inserts a single comment at an exact timestamp, optionally as a
+// reply, and returns its id.
+func seedComment(t *testing.T, issueID string, at time.Time, content string, parentID *string) string {
+	t.Helper()
+	var id string
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at, updated_at, parent_id)
+		VALUES ($1, $2, 'member', $3, $4, 'comment', $5, $5, $6)
+		RETURNING id
+	`, issueID, testWorkspaceID, testUserID, content, at, parentID).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed comment %q: %v", content, err)
+	}
+	return id
+}
+
 func countByType(entries []TimelineEntry) (comments, activities int) {
 	for _, e := range entries {
 		switch e.Type {
@@ -136,28 +152,28 @@ func TestListTimeline_HardCapKeepsNewestActivities(t *testing.T) {
 		t.Errorf("oldest seeded row %s survived the cap; the cap is still trimming the wrong end", got)
 	}
 
-	if got := w.Header().Get(HeaderTimelineTruncated); got != "true" {
-		t.Errorf("%s = %q, want \"true\": truncation must not be silent", HeaderTimelineTruncated, got)
-	}
-	// The floor header must be directly comparable with entry timestamps, so
-	// assert on the exact bytes as well as the instant.
-	if got, want := w.Header().Get(HeaderTimelineWindowFrom), entries[0].CreatedAt; got != want {
-		t.Errorf("%s = %q, want the oldest returned entry %q (identical formatting)", HeaderTimelineWindowFrom, got, want)
+	if got := w.Header().Get(HeaderTimelineTruncated); got != "activity" {
+		t.Errorf("%s = %q, want \"activity\": truncation must not be silent", HeaderTimelineTruncated, got)
 	}
 }
 
-// TestListTimeline_JointWindowHasNoOneSidedRegion covers the failure mode that
-// a naive ASC→DESC flip introduces. The two lists are capped independently, so
-// each has its own floor. Activity is machine-paced and hits the cap first;
-// without a shared floor the region below the activity floor would come back as
-// comments with zero interleaved activity — a history that looks complete and
-// is not.
-func TestListTimeline_JointWindowHasNoOneSidedRegion(t *testing.T) {
-	issueID := createIssueForTimeline(t, "joint window")
+// TestListTimeline_ActivityTruncationDoesNotDropComments replaces an earlier
+// test that asserted the opposite. That test pinned a cross-kind clamp: both
+// lists trimmed to a shared floor so the window was provably contiguous. The
+// clamp was wrong — comments essentially never reach the cap while activity does,
+// so the shared floor was almost always the activity floor deleting comments that
+// had been fetched successfully. Deleting content to buy a cosmetic property is
+// the worse trade, and it is what created orphaned replies.
+//
+// The window is now allowed to hold comments older than the oldest activity. That
+// costs activity density in the older range, which is metadata, and it is
+// reported rather than hidden.
+func TestListTimeline_ActivityTruncationDoesNotDropComments(t *testing.T) {
+	issueID := createIssueForTimeline(t, "activity truncation keeps comments")
 
-	// Comments reach much further back in time than the activity window can.
 	const activityTotal = timelineHardCap + 100
 	activityStart := time.Now().UTC().Add(-time.Duration(activityTotal) * time.Second).Truncate(time.Second)
+	// Comments reach far further back than the activity window can.
 	commentStart := activityStart.Add(-2 * time.Hour)
 
 	bulkSeedActivities(t, issueID, activityStart, activityTotal)
@@ -165,43 +181,80 @@ func TestListTimeline_JointWindowHasNoOneSidedRegion(t *testing.T) {
 
 	w := fetchTimelineRecorder(t, issueID, "")
 	entries := decodeTimelineEntries(t, w)
+	commentCount, activityCount := countByType(entries)
 
-	if got := w.Header().Get(HeaderTimelineTruncated); got != "true" {
-		t.Fatalf("%s = %q, want \"true\"", HeaderTimelineTruncated, got)
+	// Every comment survives even though all 50 predate the oldest activity.
+	if commentCount != 50 {
+		t.Errorf("comment count = %d, want 50: activity truncation must not delete comments", commentCount)
 	}
-	windowFrom := w.Header().Get(HeaderTimelineWindowFrom)
-	if windowFrom == "" {
-		t.Fatal("window floor header missing")
+	if activityCount != timelineHardCap {
+		t.Errorf("activity count = %d, want %d", activityCount, timelineHardCap)
 	}
-	floor := mustParseTS(t, "window floor", windowFrom)
+	// Only the activity list was truncated, and the header says exactly that.
+	if got := w.Header().Get(HeaderTimelineTruncated); got != "activity" {
+		t.Errorf("%s = %q, want \"activity\"", HeaderTimelineTruncated, got)
+	}
+}
 
-	// Every returned entry must sit at or after the reported floor. The 50 old
-	// comments are all older than the activity floor, so all of them must be
-	// clamped away rather than presented as a gap-free history.
-	for i, e := range entries {
-		if at := mustParseTS(t, "entry", e.CreatedAt); at.Before(floor) {
-			t.Fatalf("entry %d (%s at %s) is older than the reported window floor %s: the window is not contiguous",
-				i, e.Type, at, floor)
+// TestListTimeline_NoOrphanedReplies is the regression for the review finding.
+// Scenario: a thread root older than the comment window, a fresh reply to it
+// inside the window. The reply must not come back without its parent — an orphan
+// is invisible in the UI, not merely mis-nested (MUL-1847 / #2263).
+func TestListTimeline_NoOrphanedReplies(t *testing.T) {
+	issueID := createIssueForTimeline(t, "no orphaned replies")
+
+	// An old root, then enough newer comments to push it out of the window,
+	// then a fresh reply to that old root.
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	rootID := seedComment(t, issueID, base, "old thread root", nil)
+	bulkSeedComments(t, issueID, base.Add(time.Minute), timelineHardCap+50)
+	replyID := seedComment(t, issueID, time.Now().UTC().Truncate(time.Second), "fresh reply to old root", &rootID)
+
+	w := fetchTimelineRecorder(t, issueID, "")
+	entries := decodeTimelineEntries(t, w)
+
+	ids := make(map[string]TimelineEntry, len(entries))
+	for _, e := range entries {
+		ids[e.ID] = e
+	}
+
+	if _, ok := ids[replyID]; !ok {
+		t.Fatal("the fresh reply is missing entirely")
+	}
+	if _, ok := ids[rootID]; !ok {
+		t.Error("the reply's parent (an old thread root) was not backfilled: the reply would be invisible in the UI")
+	}
+	assertNoOrphanedReplies(t, entries)
+}
+
+// assertNoOrphanedReplies pins the invariant issue-detail.tsx relies on and
+// foldResolvedThreads requires: every returned reply's parent is in the same set.
+// More valuable than any single scenario — it holds for every shape of response.
+func assertNoOrphanedReplies(t *testing.T, entries []TimelineEntry) {
+	t.Helper()
+	present := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		present[e.ID] = struct{}{}
+	}
+	for _, e := range entries {
+		if e.Type != "comment" || e.ParentID == nil || *e.ParentID == "" {
+			continue
 		}
-	}
-	commentCount, _ := countByType(entries)
-	if commentCount != 0 {
-		t.Errorf("comment count = %d, want 0: every seeded comment predates the activity floor", commentCount)
+		if _, ok := present[*e.ParentID]; !ok {
+			t.Errorf("comment %s references parent %s which is absent from the response", e.ID, *e.ParentID)
+		}
 	}
 }
 
 // TestListTimeline_ExactlyAtCapIsNotTruncated pins the cap+1 probe read. An
-// issue that happens to hold exactly timelineHardCap rows is complete, and
-// reporting it as truncated would also drag the other list's window down to
-// this floor for no reason.
+// issue that happens to hold exactly timelineHardCap rows is complete, so
+// reporting it as truncated would be a lie and would trigger a needless
+// ancestor-backfill query.
 func TestListTimeline_ExactlyAtCapIsNotTruncated(t *testing.T) {
 	issueID := createIssueForTimeline(t, "exactly at cap")
 
 	start := time.Now().UTC().Add(-time.Duration(timelineHardCap) * time.Second).Truncate(time.Second)
 	bulkSeedActivities(t, issueID, start, timelineHardCap)
-	// A comment far older than every activity: it must survive, because the
-	// activity list is at the cap but not past it.
-	bulkSeedComments(t, issueID, start.Add(-time.Hour), 1)
 
 	w := fetchTimelineRecorder(t, issueID, "")
 	entries := decodeTimelineEntries(t, w)
@@ -209,12 +262,9 @@ func TestListTimeline_ExactlyAtCapIsNotTruncated(t *testing.T) {
 	if got := w.Header().Get(HeaderTimelineTruncated); got != "" {
 		t.Errorf("%s = %q, want unset: exactly-at-cap is a complete timeline", HeaderTimelineTruncated, got)
 	}
-	commentCount, activityCount := countByType(entries)
+	_, activityCount := countByType(entries)
 	if activityCount != timelineHardCap {
 		t.Errorf("activity count = %d, want %d", activityCount, timelineHardCap)
-	}
-	if commentCount != 1 {
-		t.Errorf("comment count = %d, want 1: nothing should have been clamped", commentCount)
 	}
 }
 
