@@ -119,6 +119,39 @@ func (q *Queries) IsIssueSubscriber(ctx context.Context, arg IsIssueSubscriberPa
 	return subscribed, err
 }
 
+const listDelegatedMemberSubscribers = `-- name: ListDelegatedMemberSubscribers :many
+SELECT DISTINCT user_id
+FROM issue_subscriber
+WHERE issue_id = ANY ($1::uuid[])
+  AND user_type = 'member'
+  AND reason = 'delegated'
+  AND unsubscribed_at IS NULL
+ORDER BY user_id
+`
+
+// Members holding an ACTIVE delegated subscription on any of the given issues.
+// One batched read replaces the per-issue N+1 the subtree roll-up used to do
+// while collecting recipients. Ordered so a failure is reproducible.
+func (q *Queries) ListDelegatedMemberSubscribers(ctx context.Context, issueIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDelegatedMemberSubscribers, issueIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueSubscribers = `-- name: ListIssueSubscribers :many
 SELECT issue_id, user_type, user_id, reason, created_at, unsubscribed_at, opt_out_scope FROM issue_subscriber
 WHERE issue_id = $1 AND unsubscribed_at IS NULL

@@ -119,3 +119,15 @@ SELECT EXISTS(
     WHERE issue_id = $1 AND user_type = $2 AND user_id = $3
       AND unsubscribed_at IS NULL
 ) AS subscribed;
+
+-- name: ListDelegatedMemberSubscribers :many
+-- Members holding an ACTIVE delegated subscription on any of the given issues.
+-- One batched read replaces the per-issue N+1 the subtree roll-up used to do
+-- while collecting recipients. Ordered so a failure is reproducible.
+SELECT DISTINCT user_id
+FROM issue_subscriber
+WHERE issue_id = ANY (sqlc.arg('issue_ids')::uuid[])
+  AND user_type = 'member'
+  AND reason = 'delegated'
+  AND unsubscribed_at IS NULL
+ORDER BY user_id;

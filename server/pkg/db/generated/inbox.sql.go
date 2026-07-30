@@ -157,6 +157,52 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 	return i, err
 }
 
+const archiveSubtreeSettledForBarrier = `-- name: ArchiveSubtreeSettledForBarrier :many
+UPDATE inbox_item SET archived = true
+WHERE workspace_id = $1
+  AND issue_id = $2
+  AND type = 'subtree_settled'
+  AND details ->> 'barrier_key' = $3::text
+  AND archived = false
+RETURNING recipient_type, recipient_id
+`
+
+type ArchiveSubtreeSettledForBarrierParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	BarrierKey  string      `json:"barrier_key"`
+}
+
+type ArchiveSubtreeSettledForBarrierRow struct {
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+}
+
+// Retire the roll-up for ONE barrier of a parent, freeing its uniqueness slot so
+// a genuine re-settle of that barrier notifies again. Scoped to the barrier
+// rather than the whole parent: reopening a stage-1 child must not silently
+// discard the stage-2 summary, which would then never be re-sent (no further
+// transition INTO settled would occur for already-finished stage-2 children).
+func (q *Queries) ArchiveSubtreeSettledForBarrier(ctx context.Context, arg ArchiveSubtreeSettledForBarrierParams) ([]ArchiveSubtreeSettledForBarrierRow, error) {
+	rows, err := q.db.Query(ctx, archiveSubtreeSettledForBarrier, arg.WorkspaceID, arg.IssueID, arg.BarrierKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ArchiveSubtreeSettledForBarrierRow{}
+	for rows.Next() {
+		var i ArchiveSubtreeSettledForBarrierRow
+		if err := rows.Scan(&i.RecipientType, &i.RecipientID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countUnreadInbox = `-- name: CountUnreadInbox :one
 SELECT count(*) FROM inbox_item
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND read = false AND archived = false
@@ -290,7 +336,7 @@ INSERT INTO inbox_item (
     type, severity, issue_id, title, body,
     actor_type, actor_id, details
 ) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (recipient_type, recipient_id, issue_id)
+ON CONFLICT (recipient_type, recipient_id, issue_id, (details ->> 'barrier_key'))
     WHERE type = 'subtree_settled' AND archived = false
 DO NOTHING
 RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details
@@ -309,14 +355,16 @@ type CreateSubtreeSettledInboxParams struct {
 	Details       []byte      `json:"details"`
 }
 
-// Idempotent insert for the delegated subtree roll-up (MUL-5483). The partial
-// unique index uq_inbox_subtree_settled_active allows at most one un-archived
-// roll-up per (recipient, parent issue), so when the last two siblings settle
-// concurrently and both transactions see a closed barrier, the loser is
-// swallowed here instead of producing a duplicate notification.
+// Idempotent insert for the delegated subtree roll-up (MUL-5483). The conflict
+// target matches uq_inbox_subtree_settled_barrier, so uniqueness is per BARRIER
+// rather than per parent: each closed stage gets its own notification, while two
+// siblings closing the SAME barrier concurrently collapse to one.
 //
-// Returns 0 rows when it was deduped and 1 row when it actually inserted, so the
-// caller only broadcasts inbox:new for a real write.
+// $10 is the details JSON and must carry a non-null 'barrier_key'; the index
+// expression reads it, and a NULL would not collide with itself.
+//
+// Returns 0 rows when deduped and 1 row when it inserted, so the caller only
+// broadcasts inbox:new for a real write.
 func (q *Queries) CreateSubtreeSettledInbox(ctx context.Context, arg CreateSubtreeSettledInboxParams) ([]InboxItem, error) {
 	rows, err := q.db.Query(ctx, createSubtreeSettledInbox,
 		arg.WorkspaceID,

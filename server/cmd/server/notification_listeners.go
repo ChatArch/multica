@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -466,29 +467,65 @@ func notifyIssueSubscribers(
 // reuses the platform's stage frontier rather than a second notion of it.
 func isSettledChildStatus(status string) bool { return settledChildStatuses[status] }
 
+// rollupBarrier identifies the barrier a settling child just closed, and the
+// children that barrier actually covers.
+//
+// Key is the dedupe and display identity. It is "all" for an unstaged sibling
+// set — one implicit barrier — and the stage number for a staged one. Scoping by
+// stage is what lets stage 2 notify after stage 1 already has: a per-parent key
+// let stage 1's row occupy the only slot, and normal stage promotion
+// (backlog -> todo) never archives, so stage 2 was silently swallowed
+// (MUL-5483 review round 3).
+type rollupBarrier struct {
+	Key      string
+	Stage    int32
+	Staged   bool
+	Children []db.Issue
+}
+
+// resolveRollupBarrier returns the barrier `completed` closed, or ok=false when
+// it belongs to none (an unstaged child inside a staged set closes nothing, which
+// mirrors StageBarrierClosedFunc).
+func resolveRollupBarrier(siblings []db.Issue, completed db.Issue) (rollupBarrier, bool) {
+	if !handler.SiblingsAreStaged(siblings) {
+		return rollupBarrier{Key: "all", Children: siblings}, true
+	}
+	if !completed.Stage.Valid {
+		return rollupBarrier{}, false
+	}
+	stage := completed.Stage.Int32
+	// The barrier's own stage, not the whole frontier below it: stages 1..S-1
+	// already reported themselves, so counting them again would overstate what
+	// just finished.
+	var members []db.Issue
+	for _, c := range siblings {
+		if c.Stage.Valid && c.Stage.Int32 == stage {
+			members = append(members, c)
+		}
+	}
+	return rollupBarrier{
+		Key:      strconv.FormatInt(int64(stage), 10),
+		Stage:    stage,
+		Staged:   true,
+		Children: members,
+	}, true
+}
+
 // notifyDelegatedSubtreeSettled emits ONE roll-up notification when a stage
 // barrier closes among a parent's children — the signal that makes the delegated
 // tier's per-child suppression safe rather than lossy.
 //
-// Two things the first cut got wrong (MUL-5483 review round 2):
+// Everything here is scoped to the barrier that just closed, which is the
+// correction from review round 3:
 //
-//  1. RECIPIENTS. It notified only reason='delegated' subscribers of the PARENT,
-//     while the people whose per-child completion was suppressed are the
-//     delegated subscribers of the CHILDREN. Those sets differ in the most
-//     common shape by far — the human created the parent themselves
-//     (reason='creator') and an agent filed the children (reason='delegated') —
-//     so that user got no per-child event, no parent bubble (tierSuppressed
-//     removed them), and no roll-up either: zero completion signal. The
-//     recipient set must be exactly who the tier silenced, which is the union of
-//     delegated members across the children, plus any delegate watching the
-//     parent itself (an agent-created parent).
-//
-//  2. BARRIER. It required EVERY child to be settled, discarding the stage
-//     semantics the design promised. On a serial plan (stage 1 finished, stage 2
-//     still parked in backlog) that means no signal at all until the whole tree
-//     ends. It now shares handler.StageBarrierClosedFunc with the child-done
-//     path, so a staged plan reports per stage and an unstaged one reports once
-//     at the end.
+//   - dedupe identity is (recipient, parent, barrier_key), so a later stage is
+//     not swallowed by an earlier stage's row;
+//   - recipients are the delegates on THAT barrier's children (plus any delegate
+//     watching the parent), not the union across every sibling — a delegate on a
+//     still-parked stage 2 was receiving stage 1's summary;
+//   - the copy and child_count describe that barrier, not the whole tree, so a
+//     staged plan no longer claims "all N sub-issues have finished" while a later
+//     stage sits in backlog.
 func notifyDelegatedSubtreeSettled(
 	ctx context.Context,
 	queries *db.Queries,
@@ -503,16 +540,9 @@ func notifyDelegatedSubtreeSettled(
 	}
 	parentID := parseUUID(*child.ParentIssueID)
 
-	// A child leaving a settled status REOPENS the tree: retire the previous
-	// roll-up so a later genuine re-settle can notify again. Without this the
-	// partial unique index would dedupe against a stale row forever.
-	if settledChildStatuses[prevStatus] && !settledChildStatuses[child.Status] {
-		archiveSubtreeSettledInbox(ctx, queries, bus, workspaceID, *child.ParentIssueID)
-		return
-	}
-	// Only the entering transition can close a barrier. A settled -> settled edit
-	// (in_review -> done) must not re-fire.
-	if settledChildStatuses[prevStatus] || !settledChildStatuses[child.Status] {
+	enteringSettled := !settledChildStatuses[prevStatus] && settledChildStatuses[child.Status]
+	leavingSettled := settledChildStatuses[prevStatus] && !settledChildStatuses[child.Status]
+	if !enteringSettled && !leavingSettled {
 		return
 	}
 
@@ -538,6 +568,18 @@ func notifyDelegatedSubtreeSettled(
 	if !found {
 		return
 	}
+	barrier, ok := resolveRollupBarrier(siblings, completed)
+	if !ok {
+		return
+	}
+
+	// A child leaving a settled status REOPENS its barrier: retire that
+	// barrier's roll-up so a later genuine re-settle can notify again. Scoped to
+	// the barrier so reopening stage 1 does not discard stage 2's summary.
+	if leavingSettled {
+		archiveSubtreeSettledForBarrier(ctx, queries, bus, workspaceID, *child.ParentIssueID, barrier.Key)
+		return
+	}
 	if !handler.StageBarrierClosedFunc(siblings, completed, isSettledChildStatus) {
 		return
 	}
@@ -549,17 +591,29 @@ func notifyDelegatedSubtreeSettled(
 		return
 	}
 
-	recipients := delegatedRollupRecipients(ctx, queries, parentID, siblings)
+	recipients := delegatedRollupRecipients(ctx, queries, parentID, barrier)
 	if len(recipients) == 0 {
 		return
 	}
 	userPrefs := loadUserPrefs(ctx, queries, workspaceID, recipients)
 
-	details, _ := json.Marshal(map[string]any{
+	count := len(barrier.Children)
+	// Every details value is a STRING. The wire contract for inbox details is
+	// string-valued across the whole notification path, and mobile encodes that
+	// as z.record(z.string(), z.string()) — a number there fails the array parse
+	// and drops the ENTIRE inbox list to the empty fallback
+	// (apps/mobile/data/{schemas,api}.ts, MUL-5483 review round 3).
+	detailsMap := map[string]string{
 		"parent_issue_id": *child.ParentIssueID,
-		"child_count":     len(siblings),
-	})
-	body := fmt.Sprintf("All %d sub-issues have finished.", len(siblings))
+		"barrier_key":     barrier.Key,
+		"child_count":     strconv.Itoa(count),
+	}
+	body := fmt.Sprintf("All %d sub-issues have finished.", count)
+	if barrier.Staged {
+		detailsMap["stage"] = barrier.Key
+		body = fmt.Sprintf("Stage %s is complete — %d sub-issues finished.", barrier.Key, count)
+	}
+	details, _ := json.Marshal(detailsMap)
 
 	for _, subID := range recipients {
 		if subID == e.ActorID {
@@ -588,7 +642,7 @@ func notifyDelegatedSubtreeSettled(
 			continue
 		}
 		if len(items) == 0 {
-			continue // deduped by the partial unique index — a concurrent close won
+			continue // deduped — a concurrent close of the same barrier won
 		}
 		resp := inboxItemToResponse(items[0])
 		resp["issue_status"] = parent.Status
@@ -602,66 +656,56 @@ func notifyDelegatedSubtreeSettled(
 	}
 }
 
-// delegatedRollupRecipients returns the members who should receive a subtree
-// roll-up: everyone holding a 'delegated' subscription on the parent or on any
-// of its children. That is precisely the set whose per-child completion
-// deliverToSubscriber suppressed, which is what makes the suppression lossless.
-// Deduped, and ordered deterministically so a failure is reproducible.
+// delegatedRollupRecipients returns the members who should receive this barrier's
+// roll-up: delegates on the parent, plus delegates on the children the barrier
+// covers. That is precisely the set whose per-child completion
+// deliverToSubscriber suppressed, which is what makes the suppression lossless —
+// and no wider, so a delegate on a still-parked later stage is not told that
+// stage finished. One batched query rather than one per child.
 func delegatedRollupRecipients(
 	ctx context.Context,
 	queries *db.Queries,
 	parentID pgtype.UUID,
-	siblings []db.Issue,
+	barrier rollupBarrier,
 ) []string {
-	seen := map[string]bool{}
-	var out []string
-
-	collect := func(issueID pgtype.UUID) {
-		subs, err := queries.ListIssueSubscribers(ctx, issueID)
-		if err != nil {
-			slog.Error("subtree roll-up: failed to list subscribers",
-				"issue_id", util.UUIDToString(issueID), "error", err)
-			return
-		}
-		for _, sub := range subs {
-			if sub.UserType != "member" || sub.Reason != "delegated" {
-				continue
-			}
-			id := util.UUIDToString(sub.UserID)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			out = append(out, id)
-		}
+	ids := make([]pgtype.UUID, 0, len(barrier.Children)+1)
+	ids = append(ids, parentID)
+	for _, c := range barrier.Children {
+		ids = append(ids, c.ID)
 	}
 
-	collect(parentID)
-	for _, sib := range siblings {
-		collect(sib.ID)
+	rows, err := queries.ListDelegatedMemberSubscribers(ctx, ids)
+	if err != nil {
+		slog.Error("subtree roll-up: failed to list delegated subscribers",
+			"parent_id", util.UUIDToString(parentID), "error", err)
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, id := range rows {
+		out = append(out, util.UUIDToString(id))
 	}
 	return out
 }
 
-// archiveSubtreeSettledInbox retires a parent's roll-up notifications, freeing
-// the partial-unique slot so a tree that reopens and finishes again notifies
-// again. Mirrors archiveStaleTaskFailedInbox: best-effort, and it tells affected
-// clients to self-heal.
-func archiveSubtreeSettledInbox(
+// archiveSubtreeSettledForBarrier retires one barrier's roll-up so a reopened
+// barrier that finishes again notifies again. Best-effort, and it tells affected
+// clients to self-heal — mirroring archiveStaleTaskFailedInbox.
+func archiveSubtreeSettledForBarrier(
 	ctx context.Context,
 	queries *db.Queries,
 	bus *events.Bus,
 	workspaceID string,
 	parentIssueID string,
+	barrierKey string,
 ) {
-	rows, err := queries.ArchiveInboxByIssueAndType(ctx, db.ArchiveInboxByIssueAndTypeParams{
+	rows, err := queries.ArchiveSubtreeSettledForBarrier(ctx, db.ArchiveSubtreeSettledForBarrierParams{
 		WorkspaceID: parseUUID(workspaceID),
 		IssueID:     parseUUID(parentIssueID),
-		Type:        "subtree_settled",
+		BarrierKey:  barrierKey,
 	})
 	if err != nil {
 		slog.Error("subtree roll-up: archive on reopen failed",
-			"parent_id", parentIssueID, "error", err)
+			"parent_id", parentIssueID, "barrier_key", barrierKey, "error", err)
 		return
 	}
 	if len(rows) == 0 {

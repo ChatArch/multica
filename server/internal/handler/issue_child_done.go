@@ -344,6 +344,14 @@ func isTerminalChildStatus(status string) bool {
 // siblingsAreStaged reports whether any child in the set carries an explicit
 // stage. A set with no stages is treated as a single implicit stage.
 func siblingsAreStaged(children []db.Issue) bool {
+	return SiblingsAreStaged(children)
+}
+
+// SiblingsAreStaged is the exported form, so callers outside this package derive
+// "is this a staged sibling set" from the same rule the stage frontier uses
+// instead of re-deciding it (MUL-5483: the delegated subtree roll-up needs it to
+// scope its barrier identity per stage).
+func SiblingsAreStaged(children []db.Issue) bool {
 	for _, c := range children {
 		if c.Stage.Valid {
 			return true

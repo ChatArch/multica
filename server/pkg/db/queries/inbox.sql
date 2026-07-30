@@ -136,20 +136,36 @@ WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $
   AND i.issue_id IN (SELECT id FROM issue WHERE status IN ('done', 'cancelled'));
 
 -- name: CreateSubtreeSettledInbox :many
--- Idempotent insert for the delegated subtree roll-up (MUL-5483). The partial
--- unique index uq_inbox_subtree_settled_active allows at most one un-archived
--- roll-up per (recipient, parent issue), so when the last two siblings settle
--- concurrently and both transactions see a closed barrier, the loser is
--- swallowed here instead of producing a duplicate notification.
+-- Idempotent insert for the delegated subtree roll-up (MUL-5483). The conflict
+-- target matches uq_inbox_subtree_settled_barrier, so uniqueness is per BARRIER
+-- rather than per parent: each closed stage gets its own notification, while two
+-- siblings closing the SAME barrier concurrently collapse to one.
 --
--- Returns 0 rows when it was deduped and 1 row when it actually inserted, so the
--- caller only broadcasts inbox:new for a real write.
+-- $10 is the details JSON and must carry a non-null 'barrier_key'; the index
+-- expression reads it, and a NULL would not collide with itself.
+--
+-- Returns 0 rows when deduped and 1 row when it inserted, so the caller only
+-- broadcasts inbox:new for a real write.
 INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details
 ) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (recipient_type, recipient_id, issue_id)
+ON CONFLICT (recipient_type, recipient_id, issue_id, (details ->> 'barrier_key'))
     WHERE type = 'subtree_settled' AND archived = false
 DO NOTHING
 RETURNING *;
+
+-- name: ArchiveSubtreeSettledForBarrier :many
+-- Retire the roll-up for ONE barrier of a parent, freeing its uniqueness slot so
+-- a genuine re-settle of that barrier notifies again. Scoped to the barrier
+-- rather than the whole parent: reopening a stage-1 child must not silently
+-- discard the stage-2 summary, which would then never be re-sent (no further
+-- transition INTO settled would occur for already-finished stage-2 children).
+UPDATE inbox_item SET archived = true
+WHERE workspace_id = $1
+  AND issue_id = $2
+  AND type = 'subtree_settled'
+  AND details ->> 'barrier_key' = sqlc.arg('barrier_key')::text
+  AND archived = false
+RETURNING recipient_type, recipient_id;
