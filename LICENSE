@@ -6,12 +6,11 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
    other applications or as a task management platform for enterprises,
    subject to the following conditions:
 
-   a. Hosted or embedded service: Unless explicitly authorized by Multica
-      in writing, you may not use the Multica source code to provide a
-      hosted service to third parties, or embed Multica as a component of
-      a product or service that is sold, licensed, or otherwise
-      commercially distributed to third parties. Should this condition be
-      met, a commercial license must be obtained from the producer.
+   a. Hosted or embedded service: Unless you have obtained a commercial
+      license from the producer, you may not use the Multica source code
+      to provide a hosted service to third parties, or embed Multica as a
+      component of a product or service that is sold, licensed, or
+      otherwise commercially distributed to third parties.
 
       - This restriction applies to offering Multica (in whole or
         substantial part) as a SaaS platform, a managed service, or as
@@ -19,10 +18,10 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
       - Internal use within a single organization (including multiple
         workspaces) does not require a commercial license.
 
-   b. Branding and copyright information: Unless explicitly authorized by
-      Multica in writing, you may not remove or modify the Multica LOGO,
-      the Multica product name, or the copyright and attribution
-      information displayed by a Multica user interface.
+   b. Branding and copyright information: Unless the producer has granted
+      you a written branding waiver, you may not remove or modify the
+      Multica LOGO, the Multica product name, or the copyright and
+      attribution information displayed by a Multica user interface.
 
       - User Interface Definition: For the purposes of this license, a
         "Multica user interface" means any user interface derived, in whole
@@ -45,6 +44,14 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
       code and in the NOTICE file, and state in your user-facing
       documentation that the product is built on Multica, including a link
       to https://github.com/multica-ai/multica.
+
+   d. Relationship between grants: A branding waiver is not a commercial
+      license and does not permit any use restricted by condition (a). A
+      commercial license does not by itself waive condition (b) or
+      condition (c). Each grant must be obtained from the producer
+      expressly and separately, and neither may be inferred from the other
+      or from the producer's silence, review, or acceptance of your
+      contributions.
 
 2. As a contributor, you should agree that:
 
