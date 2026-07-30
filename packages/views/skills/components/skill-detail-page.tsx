@@ -5,13 +5,13 @@ import {
   AlertCircle,
   AlertTriangle,
   Clock3,
+  Download,
   FileText,
   HardDrive,
   Loader2,
   Lock,
   Plus,
   Save,
-  Sparkles,
   Trash2,
   UserPlus,
   Users,
@@ -255,7 +255,7 @@ function SkillIdentity({
               {isRuntimeOrigin ? (
                 <HardDrive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               ) : (
-                <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <Download className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               )}
               <span className="truncate">{originLabel}</span>
             </span>
