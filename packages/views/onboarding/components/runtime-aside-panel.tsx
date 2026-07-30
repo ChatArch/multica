@@ -3,12 +3,20 @@
 import { useT } from "../../i18n";
 
 /**
- * Shared right-rail aside for Step 3 (runtime).
+ * Shared right-rail aside for Step 3 (runtime), on both the desktop
+ * (runtime-connect FancyView) and web (platform-fork) paths.
  *
- * Same content on both paths — desktop (runtime-connect FancyView)
- * and web (platform-fork). Explains what a runtime is and reassures
- * the user they can swap later. Designed to live inside a two-column
- * editorial shell's `<aside>` column.
+ * Deliberately short. This rail once carried a "Good to know" section
+ * promising the runtime was swappable and that more could be added later —
+ * which is exactly what the step's own lede already says, in a fifth of the
+ * words, on the same screen. It also defined "agent runtime" at length while
+ * the member was looking at a list of named, online runtimes under a headline
+ * reading "This computer is connected"; by then the definition answers a
+ * question they have stopped asking. What remains is the one thing the screen
+ * does not show: what that background process actually is.
+ *
+ * If this rail grows again, put the new sentence in the main column instead —
+ * it is the column members read.
  */
 export function RuntimeAsidePanel() {
   const { t, i18n } = useT("onboarding");
@@ -16,36 +24,13 @@ export function RuntimeAsidePanel() {
     ? "https://multica.ai/docs/zh/install-agent-runtime"
     : "https://multica.ai/docs/install-agent-runtime";
   return (
-    <div className="flex flex-col gap-6">
-      <section>
-        <div className="mb-3 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {t(($) => $.runtime_aside.what_eyebrow)}
-        </div>
-        <p className="text-body leading-[1.6] text-foreground">
-          {t(($) => $.runtime_aside.what_prefix)}
-          <strong className="font-medium text-foreground">{t(($) => $.runtime_aside.what_term)}</strong>
-          {t(($) => $.runtime_aside.what_suffix)}
-        </p>
-      </section>
-
-      <section>
-        <div className="mb-3 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {t(($) => $.runtime_aside.good_eyebrow)}
-        </div>
-        <div className="flex flex-col gap-4">
-          <AsideItem
-            glyph="↻"
-            title={t(($) => $.runtime_aside.swap_title)}
-            body={t(($) => $.runtime_aside.swap_body)}
-          />
-          <AsideItem
-            glyph="∞"
-            title={t(($) => $.runtime_aside.add_more_title)}
-            body={t(($) => $.runtime_aside.add_more_body)}
-          />
-        </div>
-      </section>
-
+    <div className="flex flex-col gap-4">
+      <div className="text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        {t(($) => $.runtime_aside.what_eyebrow)}
+      </div>
+      <p className="text-body leading-[1.6] text-foreground">
+        {t(($) => $.runtime_aside.what_body)}
+      </p>
       <a
         href={installDocHref}
         target="_blank"
@@ -54,33 +39,6 @@ export function RuntimeAsidePanel() {
       >
         {t(($) => $.runtime_aside.learn_more)}
       </a>
-    </div>
-  );
-}
-
-function AsideItem({
-  glyph,
-  title,
-  body,
-}: {
-  glyph: string;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="grid grid-cols-[22px_1fr] gap-3">
-      <div
-        aria-hidden
-        className="flex h-[20px] w-[20px] items-center justify-center text-body text-muted-foreground"
-      >
-        {glyph}
-      </div>
-      <div className="flex flex-col">
-        <div className="text-label font-medium text-foreground">{title}</div>
-        <div className="mt-1 text-caption leading-[1.55] text-muted-foreground">
-          {body}
-        </div>
-      </div>
     </div>
   );
 }

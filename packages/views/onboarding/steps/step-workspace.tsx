@@ -549,16 +549,6 @@ function CreateWorkspaceSide() {
         name={t(($) => $.step_workspace.side_preview_name)}
         slug={t(($) => $.step_workspace.side_preview_slug)}
       />
-
-      <div className="mt-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        {t(($) => $.step_workspace.side_things_eyebrow)}
-      </div>
-      <div className="flex flex-col gap-3.5">
-        <PerkRow>{t(($) => $.step_workspace.perk_assign)}</PerkRow>
-        <PerkRow>{t(($) => $.step_workspace.perk_chat)}</PerkRow>
-        <PerkRow>{t(($) => $.step_workspace.perk_invite)}</PerkRow>
-        <PerkRow>{t(($) => $.step_workspace.perk_switch)}</PerkRow>
-      </div>
     </div>
   );
 }
@@ -572,15 +562,6 @@ function ExistingWorkspaceSide({ workspace }: { workspace: Workspace }) {
       </div>
 
       <WorkspacePreviewCard name={workspace.name} slug={workspace.slug} />
-
-      <div className="mt-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        {t(($) => $.step_workspace.side_next_eyebrow)}
-      </div>
-      <div className="flex flex-col gap-3.5">
-        <PerkRow>{t(($) => $.step_workspace.next_runtime)}</PerkRow>
-        <PerkRow>{t(($) => $.step_workspace.next_agent)}</PerkRow>
-        <PerkRow>{t(($) => $.step_workspace.next_starter)}</PerkRow>
-      </div>
     </div>
   );
 }
@@ -705,20 +686,6 @@ function EntityRow({
       >
         {meta}
       </span>
-    </div>
-  );
-}
-
-function PerkRow({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid grid-cols-[18px_1fr] items-start gap-3">
-      <span
-        aria-hidden
-        className="mt-[11px] h-px w-3 shrink-0 bg-muted-foreground/40"
-      />
-      <div className="text-label leading-[1.55] text-foreground">
-        {children}
-      </div>
     </div>
   );
 }
