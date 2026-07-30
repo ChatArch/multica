@@ -78,7 +78,7 @@ export const metadata: Metadata = {
     template: "%s | Multica",
   },
   description:
-    "Source-available platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills.",
+    "Open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills.",
   icons: {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
     shortcut: ["/favicon.svg"],

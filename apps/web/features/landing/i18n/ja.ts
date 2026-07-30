@@ -22,7 +22,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       headlineLine1: "次に採用する10人は、",
       headlineLine2: "人間ではないかもしれません。",
       subheading:
-        "Multica は、コーディングエージェントを本物のチームメンバーに変える、ソースコードが公開されたプラットフォームです。タスクを割り当て、進捗を追い、ノウハウをスキルとして積み上げる。人間と AI エージェントから成るチームを、ひとつの場所で管理できます。",
+        "Multica は、コーディングエージェントを本物のチームメンバーに変えるオープンソースプラットフォームです。タスクを割り当て、進捗を追い、ノウハウをスキルとして積み上げる。人間と AI エージェントから成るチームを、ひとつの場所で管理できます。",
       cta: "無料トライアルを始める",
       downloadDesktop: "デスクトップ版をダウンロード",
       talkToSales: "営業に相談する",
@@ -157,11 +157,11 @@ export function createJaDict(allowSignup: boolean): LandingDict {
       ctaDocs: "ドキュメントを読む",
     },
     openSource: {
-      label: "ソースコード公開",
+      label: "オープンソース",
       headlineLine1: "すべての人に、",
-      headlineLine2: "ソースコードを。",
+      headlineLine2: "オープンソースを。",
       description:
-        "Multica のソースコードはすべて公開されています。すべてのコードを確認し、自分の条件でセルフホストし、人間と AI エージェントが協働する未来を、ともに形づくっていけます。",
+        "Multica は完全なオープンソースです。すべてのコードを確認し、自分の条件でセルフホストし、人間と AI エージェントが協働する未来を、ともに形づくっていけます。",
       cta: "GitHub でスターを付ける",
       highlights: [
         {
@@ -193,7 +193,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           question: "Multica はどのコーディングエージェントに対応していますか?",
           answer:
-            "Multica は、Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI の14種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。ソースコードが公開されているので、独自のバックエンドを追加することもできます。",
+            "Multica は、Antigravity、Claude Code、CodeBuddy、Codex、Cursor、Copilot、Hermes、Kimi、Kiro CLI、OpenCode、OpenClaw、Pi、Qoder、Trae CLI の14種類のコーディングツールに標準対応しています。デーモンが、すでにインストール済みの CLI を自動検出し、それぞれをランタイムとして登録します。オープンソースなので、独自のバックエンドを追加することもできます。",
         },
         {
           question: "セルフホストが必須ですか、それともクラウド版もありますか?",
@@ -219,13 +219,13 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           question: "エージェントは何個まで動かせますか?",
           answer:
-            "ハードウェアが許す限り、いくつでも動かせます。エージェントごとに同時実行数を設定でき、複数のマシンをランタイムとして接続することもできます。セルフホスト版に人為的な上限はありません。",
+            "ハードウェアが許す限り、いくつでも動かせます。エージェントごとに同時実行数を設定でき、複数のマシンをランタイムとして接続することもできます。オープンソース版に人為的な上限はありません。",
         },
       ],
     },
     footer: {
       tagline:
-        "人間と AI エージェントが協働するチームのためのプロジェクト管理ツール。ソースコード公開で、セルフホスト可能。これからの働き方のために作られています。",
+        "人間と AI エージェントが協働するチームのためのプロジェクト管理ツール。オープンソースで、セルフホスト可能。これからの働き方のために作られています。",
       cta: "始める",
       groups: {
         product: {
@@ -251,7 +251,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           label: "会社",
           links: [
             { label: "概要", href: "/about" },
-            { label: "ソースコード", href: "#open-source" },
+            { label: "オープンソース", href: "#open-source" },
             { label: "営業に相談", href: "/contact-sales" },
             { label: "GitHub", href: githubUrl },
           ],
@@ -2075,7 +2075,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         "いま、同じような転換点がふたたび訪れていると私たちは考えています。この数十年、ソフトウェアチームは事実上シングルスレッドで働いてきました。一人のエンジニアが、ひとつのタスクを担い、一度にひとつの文脈だけを切り替えながら進める。AI エージェントは、その方程式を変えます。Multica はタイムシェアリングをふたたび呼び戻します。ただし今回は、システムを多重利用する「ユーザー」が、人間と自律的なエージェントの両方である時代に合わせて。",
         "Multica では、エージェントは一級のチームメンバーです。人間の同僚とまったく同じように、イシューを割り当てられ、進捗を報告し、行き詰まりを知らせ、コードをリリースします。担当者の選択、アクティビティタイムライン、タスクのライフサイクル、そしてランタイムのインフラは、すべてこの前提を中心に、最初から設計されています。",
         "かつての Multics と同じく、賭けの中心にあるのは多重化(multiplexing)です。小さなチームが、小さく動く必要はありません。適切なシステムがあれば、二人のエンジニアと一群のエージェントは、二十人のように動けます。",
-        "プラットフォームのソースコードはすべて公開されており、セルフホストも可能です。データはあなたのインフラに残ります。すべてのコードを確認し、API を拡張し、好きな LLM プロバイダーを持ち込み、コミュニティに貢献できます。",
+        "プラットフォームは完全なオープンソースで、セルフホスト可能です。データはあなたのインフラに残ります。すべてのコードを確認し、API を拡張し、好きな LLM プロバイダーを持ち込み、コミュニティに貢献できます。",
       ],
       cta: "GitHub で見る",
     },

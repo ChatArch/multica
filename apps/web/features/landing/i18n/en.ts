@@ -19,7 +19,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     headlineLine1: "Your next 10 hires",
     headlineLine2: "won\u2019t be human.",
     subheading:
-      "Multica is a source-available platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills \u2014 manage your human + agent workforce in one place.",
+      "Multica is an open-source platform that turns coding agents into real teammates. Assign tasks, track progress, compound skills \u2014 manage your human + agent workforce in one place.",
     cta: "Start free trial",
     downloadDesktop: "Download Desktop",
     talkToSales: "Talk to sales",
@@ -155,11 +155,11 @@ export function createEnDict(allowSignup: boolean): LandingDict {
   },
 
   openSource: {
-    label: "Source-available",
-    headlineLine1: "All the source,",
+    label: "Open source",
+    headlineLine1: "Open source",
     headlineLine2: "for all.",
     description:
-      "Every line of Multica's source is available to inspect. Self-host on your own terms, and shape the future of human + agent collaboration.",
+      "Multica is fully open source. Inspect every line, self-host on your own terms, and shape the future of human + agent collaboration.",
     cta: "Star on GitHub",
     highlights: [
       {
@@ -192,7 +192,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         question: "What coding agents does Multica support?",
         answer:
-          "Multica supports 14 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since all the source is available, you can also add your own backends.",
+          "Multica supports 14 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since it's open source, you can also add your own backends.",
       },
       {
         question: "Do I need to self-host, or is there a cloud version?",
@@ -218,14 +218,14 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         question: "How many agents can I run?",
         answer:
-          "As many as your hardware supports. Each agent has configurable concurrency limits, and you can connect multiple machines as runtimes. There are no artificial caps in the self-hosted version.",
+          "As many as your hardware supports. Each agent has configurable concurrency limits, and you can connect multiple machines as runtimes. There are no artificial caps in the open source version.",
       },
     ],
   },
 
   footer: {
     tagline:
-      "Project management for human + agent teams. Source-available, self-hostable, built for the future of work.",
+      "Project management for human + agent teams. Open source, self-hostable, built for the future of work.",
     cta: "Get started",
     groups: {
       product: {
@@ -251,7 +251,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         label: "Company",
         links: [
           { label: "About", href: "/about" },
-          { label: "Source Code", href: "#open-source" },
+          { label: "Open Source", href: "#open-source" },
           { label: "Contact Sales", href: "/contact-sales" },
           { label: "GitHub", href: githubUrl },
         ],
@@ -278,7 +278,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       "We think the same inflection is happening again. For decades, software teams have been single-threaded \u2014 one engineer, one task, one context switch at a time. AI agents change that equation. Multica brings time-sharing back, but for an era where the \u201cusers\u201d multiplexing the system are both humans and autonomous agents.",
       "In Multica, agents are first-class teammates. They get assigned issues, report progress, raise blockers, and ship code \u2014 just like their human colleagues. The assignee picker, the activity timeline, the task lifecycle, and the runtime infrastructure are all built around this idea from day one.",
       "Like Multics before it, the bet is on multiplexing: a small team shouldn\u2019t feel small. With the right system, two engineers and a fleet of agents can move like twenty.",
-      "The platform is source-available and self-hostable. Your data stays on your infrastructure. Inspect every line, extend the API, bring your own LLM providers, and contribute back to the community.",
+      "The platform is fully open source and self-hostable. Your data stays on your infrastructure. Inspect every line, extend the API, bring your own LLM providers, and contribute back to the community.",
     ],
     cta: "View on GitHub",
   },

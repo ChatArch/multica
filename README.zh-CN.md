@@ -14,7 +14,7 @@
 
 **你的下一批员工，不是人类。**
 
-代码公开（source-available）的 Managed Agents 平台。<br/>
+开源的 Managed Agents 平台。<br/>
 将编码 Agent 变成真正的队友——分配任务、跟踪进度、积累技能。
 
 [![CI](https://github.com/multica-ai/multica/actions/workflows/ci.yml/badge.svg)](https://github.com/multica-ai/multica/actions/workflows/ci.yml)
@@ -31,7 +31,7 @@
 
 Multica 将编码 Agent 变成真正的队友。像分配给同事一样分配给 Agent——它们会自主接手工作、编写代码、报告阻塞问题、更新状态。
 
-不再需要复制粘贴 prompt，不再需要盯着运行过程。你的 Agent 出现在看板上、参与对话、随着时间积累可复用的技能。可以理解为代码公开（source-available）的 Managed Agents 基础设施——厂商中立、可自部署、专为人类 + AI 团队设计。支持 **Claude Code**、**Codex**、**CodeBuddy**、**GitHub Copilot CLI**、**OpenCode**、**OpenClaw**、**Hermes**、**Pi**、**Cursor Agent**、**Kimi**、**Kiro CLI**、**Antigravity**、**Qoder CLI** 与 **Trae CLI**。
+不再需要复制粘贴 prompt，不再需要盯着运行过程。你的 Agent 出现在看板上、参与对话、随着时间积累可复用的技能。可以理解为开源的 Managed Agents 基础设施——厂商中立、可自部署、专为人类 + AI 团队设计。支持 **Claude Code**、**Codex**、**CodeBuddy**、**GitHub Copilot CLI**、**OpenCode**、**OpenClaw**、**Hermes**、**Pi**、**Cursor Agent**、**Kimi**、**Kiro CLI**、**Antigravity**、**Qoder CLI** 与 **Trae CLI**。
 
 面向更大的团队，Squads（小队）提供稳定的路由层：把任务分给由 Agent 带队的小队，由队长判断谁最适合接手。
 
@@ -175,11 +175,11 @@ make start
 
 iOS 移动端代码位于 [`apps/mobile/`](apps/mobile/)，自己编译装到手机的方法见 [README](apps/mobile/README.md)。
 
-## 许可协议
+## 开源协议
 
-[Multica License](LICENSE)（source-available：Apache 2.0 文本附加限制条款，非 OSI 认定的开源协议），署名信息见 [NOTICE](NOTICE)。
+[Modified Apache 2.0 (with commercial restrictions)](LICENSE)，署名信息见 [NOTICE](NOTICE)。
 
-- 向第三方提供 Multica 功能的托管服务，或将 Multica 嵌入商业分发的产品，需向 producer 取得商业授权；内部使用免费（条款 1a）。
-- 除非取得 producer 的书面品牌豁免，不得移除或修改 Multica 界面中的 LOGO、产品名与署名信息。「界面」按派生关系界定——包含 `apps/web/`、`apps/desktop/`、`apps/mobile/`、`packages/views/`、`packages/ui/`——并覆盖源码、前端容器镜像与编译后的桌面 / 移动端二进制；保留的商标附带一份有限商标许可（条款 1b）。
-- 不使用 Multica 界面的用法（后端、daemon、CLI 或共享库）不受品牌限制，但需保留源码与 [NOTICE](NOTICE) 中的署名；对第三方分发或提供服务时，还需声明基于 Multica 构建并回链本仓库（条款 1c）。
+- 面向第三方的托管服务或嵌入式商业分发，需向 producer 取得商业授权（条款 1a）。
+- 除非取得 producer 的书面品牌豁免，不得移除或修改 Multica 界面中的 LOGO、产品名与署名信息。「界面」按派生关系界定——包含 `apps/web/`、`apps/desktop/`、`apps/mobile/`、`packages/views/`、`packages/ui/`——并覆盖源码、前端容器镜像与编译后的桌面 / 移动端二进制（条款 1b）。
+- 不使用 Multica 界面的用法（只跑 `server/` 后端、daemon 或 CLI）不受品牌限制，但需保留源码与 [NOTICE](NOTICE) 中的署名，并在产品文档中声明基于 Multica 构建且回链本仓库（条款 1c）。
 - 品牌豁免与商业授权是两个独立的授权，互不蕴含（条款 1d）。

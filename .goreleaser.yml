@@ -76,8 +76,7 @@ brews:
     directory: Formula
     homepage: "https://github.com/multica-ai/multica"
     description: "Multica CLI — local agent runtime and management tool for the Multica platform"
-    # No license stanza: the Multica License (source-available, see LICENSE)
-    # has no SPDX identifier, and declaring Apache-2.0 here was inaccurate.
+    license: "Apache-2.0"
     install: |
       bin.install "multica"
     test: |

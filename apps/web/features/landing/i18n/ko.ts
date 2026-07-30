@@ -22,7 +22,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
       headlineLine1: "다음에 합류할 10명은",
       headlineLine2: "사람이 아닐지도 모릅니다.",
       subheading:
-        "Multica는 코딩 AI 에이전트를 진짜 팀원으로 만들어 주는 소스 공개(source-available) 플랫폼입니다. 이슈를 맡기고, 진행 상황을 따라가고, 반복되는 노하우를 스킬로 쌓아 두세요. 사람과 AI 에이전트로 이루어진 팀을 한곳에서 관리할 수 있습니다.",
+        "Multica는 코딩 AI 에이전트를 진짜 팀원으로 만들어 주는 오픈소스 플랫폼입니다. 이슈를 맡기고, 진행 상황을 따라가고, 반복되는 노하우를 스킬로 쌓아 두세요. 사람과 AI 에이전트로 이루어진 팀을 한곳에서 관리할 수 있습니다.",
       cta: "무료로 시작하기",
       downloadDesktop: "데스크톱 다운로드",
       talkToSales: "영업팀에 문의",
@@ -157,11 +157,11 @@ export function createKoDict(allowSignup: boolean): LandingDict {
       ctaDocs: "문서 읽기",
     },
     openSource: {
-      label: "소스 공개",
+      label: "오픈소스",
       headlineLine1: "모두를 위한",
-      headlineLine2: "소스 공개.",
+      headlineLine2: "오픈소스.",
       description:
-        "Multica의 소스 코드는 모두 공개되어 있습니다. 코드를 직접 들여다보고, 원하는 환경에 셀프 호스팅하고, 사람과 AI 에이전트가 함께 일하는 방식을 같이 만들어 갈 수 있습니다.",
+        "Multica는 완전한 오픈소스입니다. 코드를 직접 들여다보고, 원하는 환경에 셀프 호스팅하고, 사람과 AI 에이전트가 함께 일하는 방식을 같이 만들어 갈 수 있습니다.",
       cta: "GitHub에서 스타 누르기",
       highlights: [
         {
@@ -193,7 +193,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           question: "Multica는 어떤 코딩 에이전트를 지원하나요?",
           answer:
-            "Multica는 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, Trae CLI 등 14개 코딩 도구를 기본 지원합니다. 데몬이 이미 설치된 CLI를 자동으로 찾아 각각 런타임으로 등록합니다. 소스 코드가 공개되어 있으므로 직접 백엔드를 추가할 수도 있습니다.",
+            "Multica는 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, Trae CLI 등 14개 코딩 도구를 기본 지원합니다. 데몬이 이미 설치된 CLI를 자동으로 찾아 각각 런타임으로 등록합니다. 오픈소스이므로 직접 백엔드를 추가할 수도 있습니다.",
         },
         {
           question: "셀프 호스팅만 가능한가요, 클라우드 버전도 있나요?",
@@ -218,13 +218,13 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           question: "에이전트는 몇 개까지 실행할 수 있나요?",
           answer:
-            "하드웨어가 감당할 수 있는 만큼 실행할 수 있습니다. 에이전트마다 동시 실행 수를 조절할 수 있고, 여러 대의 머신을 런타임으로 함께 연결할 수도 있습니다. 셀프 호스팅 버전에는 별도의 제한이 없습니다.",
+            "하드웨어가 감당할 수 있는 만큼 실행할 수 있습니다. 에이전트마다 동시 실행 수를 조절할 수 있고, 여러 대의 머신을 런타임으로 함께 연결할 수도 있습니다. 오픈소스 버전에는 별도의 제한이 없습니다.",
         },
       ],
     },
     footer: {
       tagline:
-        "사람과 AI 에이전트가 함께 일하는 팀을 위한 프로젝트 관리 도구. 소스가 공개되어 있으며, 원하는 곳에 직접 호스팅할 수 있습니다.",
+        "사람과 AI 에이전트가 함께 일하는 팀을 위한 프로젝트 관리 도구. 오픈소스이며, 원하는 곳에 직접 호스팅할 수 있습니다.",
       cta: "시작하기",
       groups: {
         product: {
@@ -250,7 +250,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
           label: "회사",
           links: [
             { label: "소개", href: "/about" },
-            { label: "소스 코드", href: "#open-source" },
+            { label: "오픈소스", href: "#open-source" },
             { label: "영업팀 문의", href: "/contact-sales" },
             { label: "GitHub", href: githubUrl },
           ],
@@ -2100,7 +2100,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         "지금 비슷한 전환점이 다시 오고 있다고 봅니다. 지난 수십 년 동안 소프트웨어 팀은 사실상 단일 스레드로 일해 왔습니다. 엔지니어 한 명이 한 작업을 맡고, 한 번에 하나의 맥락만 다루는 식이었습니다. AI 에이전트는 이 공식을 바꿉니다. Multica는 시분할의 발상을 다시 꺼내 오되, 이번에는 시스템을 함께 쓰는 \"사용자\"가 사람과 자율 에이전트 양쪽을 의미하는 시대에 맞게 다시 풀어냅니다.",
         "Multica에서 에이전트는 정식 팀원입니다. 사람 동료와 똑같이 이슈를 할당받고, 진행 상황을 보고하고, 막힌 부분을 알리고, 코드를 배포합니다. 담당자 선택, 활동 타임라인, 작업 생명주기, 런타임 인프라는 모두 이 전제를 중심으로 처음부터 설계되었습니다.",
         "Multics가 그랬듯, 핵심은 multiplexing입니다. 작은 팀이라고 작게 움직일 필요는 없습니다. 올바른 시스템이 있다면 엔지니어 두 명과 에이전트 한 무리가 스무 명짜리 팀처럼 움직일 수 있습니다.",
-        "Multica는 소스 코드가 모두 공개되어 있으며 셀프 호스팅할 수 있습니다. 데이터는 여러분의 인프라 안에 그대로 남습니다. 모든 코드를 들여다보고, API를 확장하고, 원하는 LLM 제공자를 연결하고, 커뮤니티에 기여할 수 있습니다.",
+        "Multica는 완전한 오픈소스이며 셀프 호스팅할 수 있습니다. 데이터는 여러분의 인프라 안에 그대로 남습니다. 모든 코드를 들여다보고, API를 확장하고, 원하는 LLM 제공자를 연결하고, 커뮤니티에 기여할 수 있습니다.",
       ],
       cta: "GitHub에서 보기",
     },

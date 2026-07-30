@@ -675,13 +675,3 @@ Worktree:
 ```bash
 make check-worktree
 ```
-
-## Licensing of Contributions
-
-Multica is distributed under the [Multica License](LICENSE), a
-source-available license. By submitting a contribution to this repository
-you agree to the contribution terms in section 2 of that license: your
-contribution is licensed to the producer and to recipients of Multica
-under the Multica License, may be used commercially, and future versions
-of Multica may be released under adjusted terms. If you cannot agree to
-those terms, do not submit a contribution.
