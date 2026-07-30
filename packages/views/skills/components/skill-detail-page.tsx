@@ -797,20 +797,35 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     }
   }, [fileMap, selectedPath]);
 
-  const isDirty = useMemo(() => {
-    if (!skill) return false;
-    const serverFiles = (skill.files ?? []).map((f: SkillFile) => ({
-      path: f.path,
-      content: f.content,
-    }));
-    const draftFiles = files.map((f) => ({ path: f.path, content: f.content }));
-    return (
-      name.trim() !== skill.name ||
-      description.trim() !== skill.description ||
-      content !== skill.content ||
-      JSON.stringify(draftFiles) !== JSON.stringify(serverFiles)
-    );
+  // Files are matched by id so a rename counts as one changed file, not a
+  // delete plus an add; SKILL.md is its own entry since it lives in `content`.
+  const dirtySummary = useMemo(() => {
+    if (!skill) return { nameChanged: false, descChanged: false, changedFileCount: 0 };
+    const serverFiles: SkillFile[] = skill.files ?? [];
+    const serverById = new Map(serverFiles.map((f) => [f.id, f]));
+    let changedFileCount = content !== skill.content ? 1 : 0;
+    const draftIds = new Set<string>();
+    for (const f of files) {
+      if (f.id) draftIds.add(f.id);
+      const server = f.id ? serverById.get(f.id) : undefined;
+      if (!server || server.path !== f.path || server.content !== f.content) {
+        changedFileCount += 1;
+      }
+    }
+    for (const f of serverFiles) {
+      if (!draftIds.has(f.id)) changedFileCount += 1;
+    }
+    return {
+      nameChanged: name.trim() !== skill.name,
+      descChanged: description.trim() !== skill.description,
+      changedFileCount,
+    };
   }, [skill, name, description, content, files]);
+
+  const isDirty =
+    dirtySummary.nameChanged ||
+    dirtySummary.descChanged ||
+    dirtySummary.changedFileCount > 0;
 
   const seedFromSkill = (s: Skill) => {
     setName(s.name);
@@ -969,6 +984,18 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     );
   }
 
+  // Segments reuse the overview field labels so the pill and the fields it
+  // points at never use different words for the same thing.
+  const changedParts = [
+    dirtySummary.nameChanged ? t(($) => $.detail.overview.name) : null,
+    dirtySummary.descChanged ? t(($) => $.detail.overview.description) : null,
+    dirtySummary.changedFileCount > 0
+      ? t(($) => $.detail.save_bar.changed_files, {
+          count: dirtySummary.changedFileCount,
+        })
+      : null,
+  ].filter((part): part is string => part !== null);
+
   const TABS: { id: DetailView; label: string }[] = [
     { id: "overview", label: t(($) => $.detail.tabs.overview) },
     {
@@ -978,7 +1005,9 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
   ];
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col">
+    // relative: positioning anchor for the floating save pill (page-centered,
+    // same rule as the skills list batch toolbar).
+    <div className="relative flex flex-1 min-h-0 flex-col">
       <BreadcrumbHeader
         segments={[{ href: paths.skills(), label: t(($) => $.page.title) }]}
         leaf={
@@ -1135,55 +1164,49 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         )}
       </div>
 
-      {/* Page-level so it covers edits made on either tab, and always present
-          while editable so committing a change never shifts the layout. */}
-      {canEdit && (
+      {/* Page-level so it covers edits made on either tab. Dirty-only and
+          floating, matching the skills list batch toolbar; anchored to the
+          page root (relative), NOT the viewport. */}
+      {canEdit && isDirty && (
         <div
           role="status"
           aria-live="polite"
-          className="pe-chat-launcher flex shrink-0 flex-wrap items-center gap-2 border-t bg-muted/30 py-2 pl-4 sm:pl-6"
+          className="absolute bottom-6 left-1/2 z-50 flex -translate-x-1/2 animate-in items-center gap-1 rounded-lg border bg-background px-2 py-1.5 fade-in slide-in-from-bottom-2 shadow-lg"
         >
-          {isDirty ? (
-            <>
-              <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-              <span className="text-caption text-muted-foreground">
-                {t(($) => $.detail.save_bar.unsaved)}
-              </span>
-            </>
-          ) : (
-            <span className="text-caption text-muted-foreground">
-              {t(($) => $.detail.save_bar.saved)}
+          <div className="mr-1 flex items-center border-r pl-1 pr-2">
+            <span className="whitespace-nowrap text-caption text-muted-foreground">
+              {t(($) => $.detail.save_bar.changed_summary, {
+                parts: changedParts.join(" · "),
+              })}
             </span>
-          )}
-          <div className="ml-auto flex items-center gap-1.5">
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              onClick={handleDiscard}
-              disabled={!isDirty || saving}
-            >
-              {t(($) => $.detail.save_bar.discard)}
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              onClick={handleSave}
-              disabled={!isDirty || saving || !name.trim()}
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {t(($) => $.detail.save_bar.saving)}
-                </>
-              ) : (
-                <>
-                  <Save className="h-3 w-3" />
-                  {t(($) => $.detail.save_bar.save)}
-                </>
-              )}
-            </Button>
           </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={handleDiscard}
+            disabled={saving}
+          >
+            {t(($) => $.detail.save_bar.discard)}
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+          >
+            {saving ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t(($) => $.detail.save_bar.saving)}
+              </>
+            ) : (
+              <>
+                <Save className="h-3 w-3" />
+                {t(($) => $.detail.save_bar.save)}
+              </>
+            )}
+          </Button>
         </div>
       )}
 

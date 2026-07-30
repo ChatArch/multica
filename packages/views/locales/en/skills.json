@@ -129,11 +129,12 @@
       "body": "Your edits are preserved. Discard to pull their changes, or Save to overwrite."
     },
     "save_bar": {
-      "unsaved": "Unsaved changes — will overwrite the live skill on save",
+      "changed_summary": "Changed: {{parts}}",
+      "changed_files_one": "{{count}} file",
+      "changed_files_other": "{{count}} files",
       "discard": "Discard",
       "save": "Save changes",
-      "saving": "Saving…",
-      "saved": "All changes saved"
+      "saving": "Saving…"
     },
     "not_found": {
       "title": "Skill not found",
