@@ -771,3 +771,47 @@ func TestRegenerateChatQuickActions_ConcurrentRefreshRejected(t *testing.T) {
 		t.Fatalf("concurrent refresh error = %v, want ErrChatQuickActionsBusy", err)
 	}
 }
+
+// TestRegenerateChatQuickActions_DeferredActiveTurnRejected pins the re-review
+// §1 gap: a chat auto-retry armed with a backoff fire_at is inserted 'deferred'
+// (CreateRetryTask; provider_network's final attempt waits ~5s that way). During
+// that window the failed turn has written no assistant row, so the old turn is
+// still latest-persisted and its pills stay clickable — yet the session is about
+// to advance when the retry fires. HasActiveChatTaskForSession must count
+// 'deferred', else the refresh resumes a session the retry moves past and pins
+// the new turn's suggestions onto the old one.
+func TestRegenerateChatQuickActions_DeferredActiveTurnRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "regen deferred chat")
+
+	t1 := sendDirectChat(t, ctx, agentID, sessionID, "first")
+	markTaskRunning(t, ctx, t1)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(t1), completeResult(t, "first reply"), "sess-1", "/tmp/wd", false, ""); err != nil {
+		t.Fatalf("complete turn 1: %v", err)
+	}
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	rows := assistantRows(t, ctx, sessionID)
+	if len(rows) != 1 {
+		t.Fatalf("expected one assistant turn, got %d", len(rows))
+	}
+	m1 := rows[0].ID
+
+	// Turn 2 failed and is waiting out its retry backoff: a deferred task with a
+	// future fire_at and no assistant row yet, so m1 is still latest-persisted.
+	t2 := sendDirectChat(t, ctx, agentID, sessionID, "second")
+	if _, err := testPool.Exec(ctx,
+		`UPDATE agent_task_queue SET status='deferred', fire_at=now() + interval '5 seconds' WHERE id=$1`,
+		t2); err != nil {
+		t.Fatalf("defer turn 2: %v", err)
+	}
+
+	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, parseUUID(testUserID), m1); !errors.Is(err, service.ErrChatQuickActionsBusy) {
+		t.Fatalf("deferred-active regenerate error = %v, want ErrChatQuickActionsBusy", err)
+	}
+}

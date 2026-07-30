@@ -873,7 +873,7 @@ const hasActiveChatTaskForSession = `-- name: HasActiveChatTaskForSession :one
 SELECT EXISTS (
   SELECT 1 FROM agent_task_queue
   WHERE chat_session_id = $1
-    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 ) AS has_active
 `
 
@@ -885,6 +885,13 @@ SELECT EXISTS (
 // second concurrent regenerate would double-spend quota on the same turn. Read
 // inside the same session lock as the enqueue so it cannot race a sibling insert
 // (MUL-5149 review §1/§2).
+//
+// 'deferred' is included: an auto-retry armed with a backoff fire_at is inserted
+// deferred (CreateRetryTask), and provider_network's final chat attempt waits
+// ~5s that way. During that window the failed turn has written no assistant row,
+// so the latest-persisted check still points at the OLD turn — omitting deferred
+// would let a refresh resume a session the retry is about to advance and attach
+// the new turn's suggestions to the old one (MUL-5149 re-review §1).
 func (q *Queries) HasActiveChatTaskForSession(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, hasActiveChatTaskForSession, chatSessionID)
 	var has_active bool

@@ -686,7 +686,7 @@ function QuickActions({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  className="shrink-0 rounded-full text-muted-foreground/70 hover:text-foreground"
+                  className="shrink-0 rounded-full text-faint-foreground hover:text-foreground"
                   disabled={blocked}
                   aria-label={regenerateLabel}
                   onClick={() => void handleRegenerate()}
