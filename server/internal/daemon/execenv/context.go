@@ -756,10 +756,17 @@ func setFrontmatterName(content string, fmStart int, slug string) (result string
 // skill, once on disk, would be advertised by the runtime's native discovery
 // despite the author having hidden it.
 //
-// The anchor on the name value is deliberately preserved. Dropping it is what
-// invalidates a document whose other keys alias it (`description:
-// *skill_name`); keeping it means the alias resolves to the slug, which changes
-// that value but leaves the document loadable.
+// An anchor on the name value needs care in both directions. Simply dropping it
+// strands any `*alias` that referenced it and invalidates the document. Simply
+// keeping it is worse: every alias then resolves to the slug, so a document
+// that expressed a setting by reusing the name's value silently acquires a
+// different setting. `disable-model-invocation: *shared` against
+// `name: &shared "true"` flips from true to false — the same skill-exposing
+// regression as dropping the key outright, just by another route.
+//
+// So aliases are materialized to the value they resolved to *before* the
+// rename, and the anchor is then removed as unreferenced. Every field keeps the
+// value it had; only `name` changes.
 func renameFrontmatterNameViaNode(content, slug string) (string, bool) {
 	fmBody, body, ok := frontmatterParts(content)
 	if !ok {
@@ -785,13 +792,21 @@ func renameFrontmatterNameViaNode(content, slug string) (string, bool) {
 		return "", false
 	}
 
+	// Pin every alias to what it resolves to now, before the rename can change
+	// it out from under them. Done first so the clones capture the original
+	// value rather than the slug.
+	if value.Anchor != "" {
+		materializeAliasesOf(&doc, value)
+	}
+
 	// Collapse whatever the value was (scalar, flow sequence, …) to a plain
-	// string, keeping Anchor so aliases elsewhere still resolve.
+	// string. The anchor goes with it: nothing references it any more.
 	value.Kind = yaml.ScalarNode
 	value.Tag = "!!str"
 	value.Style = 0
 	value.Value = slug
 	value.Content = nil
+	value.Anchor = ""
 
 	marshaled, err := yaml.Marshal(&doc)
 	if err != nil {
@@ -802,6 +817,36 @@ func renameFrontmatterNameViaNode(content, slug string) (string, bool) {
 		return "", false
 	}
 	return rebuilt, true
+}
+
+// materializeAliasesOf replaces every alias node under root that points at
+// target with an inline copy of target's current value, so those fields keep
+// that value even after target is rewritten.
+func materializeAliasesOf(root, target *yaml.Node) {
+	for _, child := range root.Content {
+		if child.Kind == yaml.AliasNode && child.Alias == target {
+			// Each alias gets its own copy; sharing one node would make the
+			// encoder re-introduce an anchor and alias pair.
+			*child = *cloneYAMLNode(target)
+			continue
+		}
+		materializeAliasesOf(child, target)
+	}
+}
+
+// cloneYAMLNode deep-copies a node, stripping anchor/alias identity so the copy
+// is emitted inline rather than as a reference.
+func cloneYAMLNode(n *yaml.Node) *yaml.Node {
+	clone := *n
+	clone.Anchor = ""
+	clone.Alias = nil
+	if len(n.Content) > 0 {
+		clone.Content = make([]*yaml.Node, len(n.Content))
+		for i, child := range n.Content {
+			clone.Content[i] = cloneYAMLNode(child)
+		}
+	}
+	return &clone
 }
 
 // frontmatterNameIs reports whether content's frontmatter parses and its

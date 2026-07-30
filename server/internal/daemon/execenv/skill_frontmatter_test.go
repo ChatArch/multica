@@ -214,6 +214,13 @@ func TestEnsureSkillFrontmatterKeepsPolicyKeysWhenSurgicalRewriteFails(t *testin
 	if custom, _ := fm["custom-key"].(string); custom != "kept" {
 		t.Errorf("custom-key = %#v, want %q\noutput:\n%s", fm["custom-key"], "kept", got)
 	}
+	// The alias resolved to "upstream" before the rename and must still, rather
+	// than following name to the slug. See
+	// TestEnsureSkillFrontmatterKeepsAliasedValuesWhenNameIsRenamed for why
+	// letting it follow is a policy bypass and not just a cosmetic difference.
+	if desc, _ := fm["description"].(string); desc != "upstream" {
+		t.Errorf("aliased description = %#v, want %q\noutput:\n%s", fm["description"], "upstream", got)
+	}
 	// The written file must still read as hidden to the visibility check that
 	// gates whether a skill is advertised.
 	if !skillDisablesModelInvocation(got) {
@@ -221,6 +228,69 @@ func TestEnsureSkillFrontmatterKeepsPolicyKeysWhenSurgicalRewriteFails(t *testin
 	}
 	if !strings.Contains(got, "body") {
 		t.Errorf("body was dropped:\n%s", got)
+	}
+}
+
+// Keeping the anchor alive is not enough: a document can express another
+// setting by *reusing* the name's value, and then renaming the anchored node
+// silently rewrites that setting too. Here `disable-model-invocation` is an
+// alias of a name whose value is "true", so binding the alias to the renamed
+// node turns the skill visible again — the same exposure as dropping the key,
+// reached by a different route.
+//
+// Preserving a key is therefore not the invariant. Preserving each key's
+// resolved *value* is.
+func TestEnsureSkillFrontmatterKeepsAliasedValuesWhenNameIsRenamed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "alias carries the policy value",
+			content: "---\nname: &shared \"true\"\ndisable-model-invocation: *shared\ncustom-key: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "alias nested inside another mapping",
+			content: "---\nname: &shared \"true\"\nmeta:\n  inner: *shared\ndisable-model-invocation: *shared\n---\n\nbody\n",
+		},
+		{
+			name:    "two aliases of the same anchor",
+			content: "---\nname: &shared \"true\"\ndisable-model-invocation: *shared\nother: *shared\n---\n\nbody\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Valid YAML in, so this is the node-rebuild fallback rather than
+			// the invalid-YAML re-synthesis path.
+			parseFrontmatter(t, tc.content)
+
+			// The skill starts out hidden from model invocation...
+			if !skillDisablesModelInvocation(tc.content) {
+				t.Fatalf("fixture is not hidden to begin with; the test proves nothing")
+			}
+
+			got := ensureSkillFrontmatter(tc.content, "my-slug", "")
+
+			// ...and must still be hidden afterwards.
+			if !skillDisablesModelInvocation(got) {
+				t.Errorf("rewrite exposed a hidden skill\noutput:\n%s", got)
+			}
+
+			fm := parseFrontmatter(t, got)
+			if name, _ := fm["name"].(string); name != "my-slug" {
+				t.Errorf("name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+			}
+			if _, stillAliased := fm["disable-model-invocation"]; !stillAliased {
+				t.Errorf("disable-model-invocation disappeared\noutput:\n%s", got)
+			}
+			if strings.Contains(got, "*shared") || strings.Contains(got, "&shared") {
+				t.Errorf("anchor/alias survived instead of being materialized\noutput:\n%s", got)
+			}
+		})
 	}
 }
 
