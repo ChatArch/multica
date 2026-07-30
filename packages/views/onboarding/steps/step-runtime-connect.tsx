@@ -20,7 +20,7 @@ import type { AgentRuntime } from "@multica/core/types";
 import { DragStrip } from "@multica/views/platform";
 import {
   STEP_BLOCK_PADDING,
-  STEP_COLUMN,
+  STEP_FRAME,
   STEP_GUTTER,
   StepShellHeader,
 } from "../components/step-shell";
@@ -234,8 +234,8 @@ function FancyView({
       <StepShellHeader currentStep="runtime" onBack={onBack} />
 
       {/* Scrollable middle — content changes by phase but always wraps
-          at STEP_COLUMN so the 2-column runtime grid has room to
-          breathe without stretching into readability territory.
+          at STEP_FRAME — the same measure as the header — so nine
+          runtimes fit without truncating their names or scrolling.
 
           Skip + Continue sit inline directly below the phase view
           (not in a sticky bottom footer) so the action bar stays
@@ -252,7 +252,7 @@ function FancyView({
             hard cut. */}
         <div
           key={phase}
-          className={cn("animate-onboarding-enter", STEP_COLUMN, STEP_BLOCK_PADDING)}
+          className={cn("animate-onboarding-enter", STEP_FRAME, STEP_BLOCK_PADDING)}
         >
           {phase === "scanning" && <ScanningView />}
           {phase === "found" && (
@@ -331,7 +331,7 @@ function ScanningView() {
       <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
         {t(($) => $.step_runtime.scanning_headline)}
       </h1>
-      <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.scanning_lede_prefix)}
         <span className="font-medium text-foreground">{"Claude Code"}</span>
         {", "}
@@ -341,7 +341,7 @@ function ScanningView() {
         {t(($) => $.step_runtime.scanning_lede_suffix)}
       </p>
       <RemoteComputerNote />
-      <div className="mt-10 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+      <div className="mt-10 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         <SkeletonRuntimeCard />
         <SkeletonRuntimeCard />
       </div>
@@ -380,7 +380,7 @@ function FoundView({
       <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
         {t(($) => $.step_runtime.found_headline)}
       </h1>
-      <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.found_lede)}
       </p>
       <RemoteComputerNote />
@@ -407,7 +407,7 @@ function FoundView({
         />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+      <div className="mt-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {runtimes.map((rt) => (
           <RuntimeCard
             key={rt.id}
@@ -444,7 +444,7 @@ function EmptyView({
           className="mt-2 shrink-0"
         />
       </div>
-      <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.empty_lede_prefix)}
         <span className="font-medium text-foreground">{"Claude Code"}</span>
         {", "}
@@ -477,7 +477,7 @@ function RemoteComputerNote() {
   const { t } = useT("onboarding");
 
   return (
-    <div className="mt-5 flex max-w-[560px] items-start gap-3 rounded-lg border bg-muted/30 px-4 py-3">
+    <div className="mt-5 flex max-w-[620px] items-start gap-3 rounded-lg border bg-muted/30 px-4 py-3">
       <MonitorUp
         aria-hidden
         className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"

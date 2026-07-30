@@ -123,9 +123,10 @@ describe("StepRuntimeConnect", () => {
     renderStep();
     act(() => vi.advanceTimersByTime(25000));
 
-    expect(
-      screen.getByText(/this computer is connected/i),
-    ).toBeInTheDocument();
+    // Assert on the runtime count row rather than headline copy: the phase is
+    // what this test is about, and keying on the headline made a copy edit
+    // look like a behaviour regression.
+    expect(screen.getByText(/1 agent runtime/i)).toBeInTheDocument();
     expect(
       screen.queryByText(/no agent runtime found/i),
     ).not.toBeInTheDocument();
