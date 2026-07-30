@@ -18,6 +18,7 @@ import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 export interface UseIssueActionsResult {
   isPinned: boolean;
   updateField: (updates: Partial<UpdateIssueRequest>) => void;
+  openInNewTab: () => void;
   togglePin: () => void;
   copyLink: () => Promise<void>;
   openCreateSubIssue: () => void;
@@ -108,6 +109,33 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
     },
     [issueId, issueStatus, surfaceActions, updateIssue, openModal, t],
   );
+
+  // Explicit "open it somewhere else" CTA, so the new tab takes focus
+  // (`activate: true`) — the user is asking to move into the new context, not
+  // to stash it for later the way modifier-click does. Same contract as the
+  // table row open and the attachment preview's "Open in new tab".
+  //
+  // Only desktop implements `openInNewTab`; on web it is undefined and we fall
+  // back to a real browser tab via the shareable URL.
+  const openInNewTab = useCallback(() => {
+    if (!issueId) return;
+    // Identifier form, same as copyLink: on web this becomes a real browser
+    // tab at the shareable URL, so it is a link the user sees and may copy out
+    // of the address bar. Opening on the UUID would also make the route
+    // immediately rewrite the fresh tab's URL.
+    const path = paths.issueDetail(issueIdentifier || issueId);
+    if (navigation.openInNewTab) {
+      navigation.openInNewTab(path, issueIdentifier ?? undefined, {
+        activate: true,
+      });
+      return;
+    }
+    window.open(
+      navigation.getShareableUrl(path),
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }, [issueId, issueIdentifier, navigation, paths]);
 
   const togglePin = useCallback(() => {
     if (!issueId) return;
@@ -202,6 +230,7 @@ export function useIssueActions(issue: Issue | null): UseIssueActionsResult {
   return {
     isPinned,
     updateField,
+    openInNewTab,
     togglePin,
     copyLink,
     openCreateSubIssue,
