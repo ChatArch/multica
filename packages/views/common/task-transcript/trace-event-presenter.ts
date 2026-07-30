@@ -96,17 +96,31 @@ function clip(value: string, max: number): string {
 }
 
 /**
+ * Localizable phrasing the presenter cannot produce on its own. This module
+ * stays free of React and i18n so it remains unit-testable in isolation, so the
+ * caller injects the wording instead. Omitting it falls back to English, which
+ * keeps the fallback safe rather than blank.
+ */
+export interface TraceSummaryLabels {
+  /** Phrase a multi-file patch, e.g. `src/a.go +2 more`. */
+  morePaths?: (path: string, count: number) => string;
+}
+
+/**
  * The single most informative argument of a tool call, as one line. Preference
  * order matches what a reviewer scans for first, falling back to the first
  * short string value.
  */
-export function traceToolArgSummary(input: Record<string, unknown> | undefined): string {
+export function traceToolArgSummary(
+  input: Record<string, unknown> | undefined,
+  labels?: TraceSummaryLabels,
+): string {
   if (!input) return "";
   const str = (v: unknown): string => (typeof v === "string" ? v : "");
   if (str(input.query)) return str(input.query);
   // A multi-file patch has no single path field; without this the row's
   // summary would fall through to the generic scan and come back empty.
-  const patch = readPatchSummary(input);
+  const patch = readPatchSummary(input, labels);
   if (patch) return patch;
   if (str(input.file_path)) return shortenTracePath(str(input.file_path));
   if (str(input.path)) return shortenTracePath(str(input.path));
@@ -135,12 +149,12 @@ function collapseWhitespace(value: string | undefined): string {
 }
 
 /** One-line summary for the collapsed row — never contains a newline. */
-export function traceEventSummary(event: TraceEvent): string {
+export function traceEventSummary(event: TraceEvent, labels?: TraceSummaryLabels): string {
   switch (traceEventKind(event)) {
     case "thinking":
       return clip(firstLine(event.content), 200);
     case "tool_use":
-      return traceToolArgSummary(event.input);
+      return traceToolArgSummary(event.input, labels);
     case "tool_result":
       // Unwrap first: the collapsed row is the one people read without
       // clicking, so it must not show transport escaping.
@@ -355,24 +369,33 @@ export function parseUnifiedDiff(diff: string): TraceDiffLine[] {
   if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
 
   const out: TraceDiffLine[] = [];
+  // File headers only exist ahead of the first hunk. Past that point every
+  // line belongs to the file, and "---"/"+++" are ordinary changed lines whose
+  // content happens to start with a dash or plus — a Markdown rule, a nested
+  // patch, a comment banner. Treating them as headers anywhere deleted real
+  // content from the diff.
+  let inHunk = false;
   for (const line of raw) {
-    // File headers carry no content and the path is reported alongside.
-    if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ") ||
-      line === "---" ||
-      line === "+++"
-    ) {
-      continue;
-    }
-    // "\ No newline at end of file" is metadata, not a line of the file.
-    if (line.startsWith("\\")) continue;
     if (line.startsWith("@@")) {
+      inHunk = true;
       out.push({ kind: "gap", text: line });
       continue;
     }
+    if (!inHunk) {
+      if (
+        line.startsWith("diff --git") ||
+        line.startsWith("index ") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ ") ||
+        line === "---" ||
+        line === "+++"
+      ) {
+        continue;
+      }
+    }
+    // "\ No newline at end of file" is metadata, not a line of the file: a
+    // real line starting with a backslash carries a +/-/space prefix first.
+    if (line.startsWith("\\")) continue;
     if (line.startsWith("+")) {
       out.push({ kind: "add", text: line.slice(1) });
       continue;
@@ -443,14 +466,19 @@ function readPatchChanges(input: Record<string, unknown>): TracePatchFile[] | nu
 }
 
 /** First path plus a count, for the collapsed one-line summary. */
-function readPatchSummary(input: Record<string, unknown> | undefined): string {
+function readPatchSummary(
+  input: Record<string, unknown> | undefined,
+  labels?: TraceSummaryLabels,
+): string {
   if (!input) return "";
   const files = readPatchChanges(input);
   if (files === null) return "";
   const first = files[0];
   if (first === undefined) return "";
   const head = shortenTracePath(first.path);
-  return files.length > 1 ? `${head} +${files.length - 1} more` : head;
+  if (files.length === 1) return head;
+  const extra = files.length - 1;
+  return labels?.morePaths?.(head, extra) ?? `${head} +${extra} more`;
 }
 
 function readFileMutation(input: Record<string, unknown>): FileMutation | null {

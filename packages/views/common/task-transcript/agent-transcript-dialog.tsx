@@ -65,7 +65,7 @@ import {
   traceEventSummary,
   traceEventSummaryIsMono,
 } from "./trace-event-presenter";
-import type { TraceDiffLine, TracePatchFile } from "./trace-event-presenter";
+import type { TraceDiffLine, TracePatchFile, TraceSummaryLabels } from "./trace-event-presenter";
 import { highlightBlock, highlightToLines, languageForPath } from "./diff-highlight";
 import { useT } from "../../i18n";
 import "../../editor/styles/code.css";
@@ -1102,7 +1102,14 @@ const TranscriptEventRow = ({
   const kind = traceEventKind(item);
   const color = getEventColor(item);
   const label = traceEventLabel(item);
-  const summary = traceEventSummary(item);
+  // The presenter stays i18n-free, so the localizable phrasing is injected.
+  const summaryLabels = useMemo<TraceSummaryLabels>(
+    () => ({
+      morePaths: (path, count) => t(($) => $.transcript.patch_summary_more, { path, count }),
+    }),
+    [t],
+  );
+  const summary = traceEventSummary(item, summaryLabels);
   const date = useMemo(
     () => (item.created_at ? new Date(item.created_at) : null),
     [item.created_at],

@@ -792,6 +792,7 @@
     "patch_truncated": "... (truncated)",
     "patch_body_truncated": "... (body truncated)",
     "patch_no_content": "(no content reported)",
+    "patch_summary_more": "{{path}} +{{count}} more",
     "status_queued": "Queued",
     "status_dispatched": "Dispatched",
     "status_cancelled": "Cancelled",

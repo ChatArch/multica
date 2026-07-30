@@ -308,7 +308,7 @@ describe("parseUnifiedDiff", () => {
     ]);
   });
 
-  it("drops file headers and no-newline metadata", () => {
+  it("drops file headers ahead of the first hunk", () => {
     const lines = parseUnifiedDiff(
       "diff --git a/x b/x\nindex 111..222 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n",
     );
@@ -316,6 +316,25 @@ describe("parseUnifiedDiff", () => {
       { kind: "gap", text: "@@ -1 +1 @@" },
       { kind: "remove", text: "a" },
       { kind: "add", text: "b" },
+    ]);
+  });
+
+  // Inside a hunk, "---"/"+++" are ordinary changed lines whose content starts
+  // with a dash or plus — a Markdown rule, a nested patch, a comment banner.
+  // Treating them as file headers anywhere silently deleted real content.
+  it("keeps header-like content lines once inside a hunk", () => {
+    expect(parseUnifiedDiff("@@ -1 +1 @@\n--- old markdown\n+++ new markdown\n")).toEqual([
+      { kind: "gap", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "-- old markdown" },
+      { kind: "add", text: "++ new markdown" },
+    ]);
+  });
+
+  it("keeps a removed line that is exactly a Markdown rule", () => {
+    expect(parseUnifiedDiff("@@ -1,2 +1,1 @@\n---\n ok\n")).toEqual([
+      { kind: "gap", text: "@@ -1,2 +1,1 @@" },
+      { kind: "remove", text: "--" },
+      { kind: "context", text: "ok" },
     ]);
   });
 
@@ -473,6 +492,35 @@ describe("traceToolArgSummary / traceEventHasDetail — Codex changes[]", () => 
     expect(
       traceToolArgSummary({ changes: [{ path: "a/b/c/d/e.go", kind: "add", content: "x" }] }),
     ).toBe(".../d/e.go");
+  });
+
+  // The presenter stays i18n-free, so the caller injects the phrasing; the
+  // English form is only the fallback.
+  it("uses injected phrasing for the multi-file count", () => {
+    expect(
+      traceToolArgSummary(
+        {
+          changes: [
+            { path: "src/a.go", kind: "update", diff: "@@\n+x" },
+            { path: "src/b.go", kind: "add", content: "y" },
+          ],
+        },
+        { morePaths: (path, count) => `${path} 等 ${count} 个文件` },
+      ),
+    ).toBe("src/a.go 等 1 个文件");
+  });
+
+  it("does not consult the injected phrasing for a single file", () => {
+    expect(
+      traceToolArgSummary(
+        { changes: [{ path: "only.go", kind: "add", content: "x" }] },
+        {
+          morePaths: () => {
+            throw new Error("must not be called for a single-file patch");
+          },
+        },
+      ),
+    ).toBe("only.go");
   });
 
   it("makes a patch row expandable — the bug was two blank unexpandable rows", () => {
