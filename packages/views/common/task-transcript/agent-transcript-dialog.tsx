@@ -65,7 +65,7 @@ import {
   traceEventSummary,
   traceEventSummaryIsMono,
 } from "./trace-event-presenter";
-import type { TraceDiffLine } from "./trace-event-presenter";
+import type { TraceDiffLine, TracePatchFile } from "./trace-event-presenter";
 import { highlightBlock, highlightToLines, languageForPath } from "./diff-highlight";
 import { useT } from "../../i18n";
 import "../../editor/styles/code.css";
@@ -1221,6 +1221,8 @@ const TranscriptEventRow = ({
               <div className="ml-[72px] rounded-md bg-muted/40">
                 {detail.kind === "diff" ? (
                   <DiffDetailSurface lines={detail.lines} path={detail.path} />
+                ) : detail.kind === "patch" ? (
+                  <PatchDetailSurface files={detail.files} truncated={detail.truncated} />
                 ) : detail.kind === "file" ? (
                   <FileWriteSurface text={detail.text} lineCount={detail.lineCount} path={detail.path} />
                 ) : (
@@ -1325,6 +1327,73 @@ function FileWriteSurface({
     <div>
       <div className="px-3 pt-2 font-mono text-[10px] text-success">+{lineCount}</div>
       <ToolDetailSurface text={redactSecrets(text)} language={languageForPath(path)} />
+    </div>
+  );
+}
+
+/**
+ * A multi-file patch: one section per file, each reusing the single-file
+ * surfaces. Codex's `patch_apply` routinely touches several files in one call,
+ * so collapsing them into a single body would lose which change belongs where.
+ */
+function PatchDetailSurface({
+  files,
+  truncated,
+}: {
+  files: TracePatchFile[];
+  truncated: boolean;
+}) {
+  const { t } = useT("agents");
+  return (
+    <div className="divide-y divide-border/40">
+      {files.map((file, index) => (
+        // Transcript events are immutable once persisted, so index is stable.
+        <div key={`${file.path}:${index}`}>
+          <div className="flex items-center gap-2 px-3 pt-2 font-mono text-[10px]">
+            {file.changeKind && (
+              <span
+                className={cn(
+                  "shrink-0 uppercase",
+                  file.changeKind === "add" && "text-success",
+                  file.changeKind === "delete" && "text-destructive",
+                  file.changeKind === "update" && "text-muted-foreground/70",
+                )}
+              >
+                {file.changeKind}
+              </span>
+            )}
+            <span className="truncate text-muted-foreground">{file.path}</span>
+            {file.movePath && (
+              <>
+                <span className="shrink-0 text-muted-foreground/50" aria-hidden>
+                  →
+                </span>
+                <span className="truncate text-muted-foreground">{file.movePath}</span>
+              </>
+            )}
+          </div>
+          {file.body.kind === "diff" ? (
+            <DiffDetailSurface lines={file.body.lines} path={file.path} />
+          ) : file.body.kind === "file" ? (
+            <FileWriteSurface
+              text={file.body.text}
+              lineCount={file.body.lineCount}
+              path={file.path}
+            />
+          ) : (
+            <div className="px-3 pb-2 pt-1 font-mono text-[11px] text-muted-foreground/60">
+              {file.truncated
+                ? t(($) => $.transcript.patch_body_truncated)
+                : t(($) => $.transcript.patch_no_content)}
+            </div>
+          )}
+        </div>
+      ))}
+      {truncated && (
+        <div className="px-3 py-2 font-mono text-[10px] text-muted-foreground/60">
+          {t(($) => $.transcript.patch_truncated)}
+        </div>
+      )}
     </div>
   );
 }
