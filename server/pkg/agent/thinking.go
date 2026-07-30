@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -487,7 +488,19 @@ func codebuddyHelpOutput(ctx context.Context, executablePath string) string {
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, executablePath, "--help")
 	hideAgentWindow(cmd)
-	out, _ := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// A non-zero exit or a timeout means this is not usable help text, and
+		// CombinedOutput folds stderr in, so the failure message itself would
+		// be returned as if it were help. The canonical case: `codebuddy` is a
+		// `#!/usr/bin/env node` script installed under nvm, and a GUI-launched
+		// daemon does not inherit the interactive PATH, so the shebang fails
+		// and the "output" is `env: node: No such file or directory`. Returning
+		// that made every parser here silently fall back, and caching it pinned
+		// the failure for codebuddyHelpTTL (MUL-5549).
+		slog.Debug("codebuddy --help failed", "path", executablePath, "error", err)
+		return ""
+	}
 	result := string(out)
 
 	if result != "" {
@@ -613,10 +626,11 @@ func ValidateThinkingLevel(ctx context.Context, providerType, executablePath, mo
 	if model == "" && providerType == "codex" {
 		return false, nil
 	}
-	models, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModels(ctx, providerType, executablePath)
 	if err != nil {
 		return false, err
 	}
+	models := catalog.Models
 	target := model
 	if target == "" {
 		// Default model = the entry the catalog marks as Default. If no
@@ -664,11 +678,11 @@ func ValidateServiceTier(ctx context.Context, providerType, executablePath, mode
 	if providerType != "codex" || model == "" {
 		return false, nil
 	}
-	models, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModels(ctx, providerType, executablePath)
 	if err != nil {
 		return false, err
 	}
-	for _, m := range models {
+	for _, m := range catalog.Models {
 		if m.ID != model {
 			continue
 		}
