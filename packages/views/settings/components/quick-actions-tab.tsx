@@ -8,8 +8,10 @@ import {
   Globe,
   Info,
   Lock,
+  MoreHorizontal,
   Pencil,
   Plus,
+  Search,
   Trash2,
   TriangleAlert,
   Zap,
@@ -51,11 +53,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
 import { cn } from "@multica/ui/lib/utils";
 import { AgentPicker } from "../../autopilots/components/pickers/agent-picker";
 import { useT } from "../../i18n";
-import { SettingsTab, SettingsSection } from "./settings-layout";
+import { SettingsTab } from "./settings-layout";
 
 // Quick Actions catalog (MUL-5465).
 //
@@ -64,12 +71,26 @@ import { SettingsTab, SettingsSection } from "./settings-layout";
 // nothing about that. Rows that have never been used sort last, which is also
 // where the "unused" cleanup signal belongs.
 //
-// The visibility badge is the load-bearing UI here. Binding a workspace action
-// to a private agent silently makes it single-user; showing that consequence
-// at bind time is the entire fix for "you publish something nobody else can
-// see and never find out" (decision D6).
+// Layout deliberately mirrors the Labels and Properties tabs: same search +
+// primary-action row, same bordered card, same responsive column grid that
+// collapses to stacked rows under `md`, same overflow menu. These three are
+// the workspace's "catalog of small named things" and reading as one surface
+// matters more than any per-tab cleverness.
 
 const UNUSED_DAYS_THRESHOLD = 90;
+
+/**
+ * A usage figure is only worth flagging once it has had time to be used. A
+ * freshly created action is "never used" by definition, so colouring it on day
+ * one trains people to ignore the colour — the signal has to mean "this has
+ * been sitting here unused", not "this is new".
+ */
+function isStale(action: QuickAction): boolean {
+  const sinceLastUse = daysSince(action.last_used_at);
+  if (sinceLastUse !== null) return sinceLastUse >= UNUSED_DAYS_THRESHOLD;
+  const age = daysSince(action.created_at);
+  return age !== null && age >= UNUSED_DAYS_THRESHOLD;
+}
 
 function daysSince(iso: string | null): number | null {
   if (!iso) return null;
@@ -127,7 +148,7 @@ function TargetLine({ action, t }: { action: QuickAction; t: QuickActionsT }) {
   }
   const mismatched = action.visibility === "public" && action.target_public !== true;
   return (
-    <span className={cn("inline-flex items-center gap-1", mismatched && "text-amber-600 dark:text-amber-400")}>
+    <span className={cn("inline-flex items-center gap-1", mismatched && "text-warning")}>
       {mismatched ? <TriangleAlert className="size-3" /> : null}
       {action.target_name}
       {action.target_public !== true ? ` · ${t(($) => $.quick_actions.target_private)}` : ""}
@@ -169,6 +190,7 @@ export function QuickActionsTab() {
   const wsId = useWorkspaceId();
   const { data: actions = [], isLoading } = useQuery(quickActionListOptions(wsId, true));
 
+  const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<QuickAction | null>(null);
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<QuickAction | null>(null);
@@ -188,6 +210,19 @@ export function QuickActionsTab() {
       }),
     [actions],
   );
+
+  // Name + target search, matching the Labels tab's client-side filter: the
+  // catalog is capped at 30 rows, so there is nothing to gain from a server
+  // round-trip here.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        (a.target_name ?? "").toLowerCase().includes(q),
+    );
+  }, [sorted, query]);
 
   const handleArchiveToggle = async (action: QuickAction) => {
     const next = action.status === "active" ? "archived" : "active";
@@ -213,109 +248,137 @@ export function QuickActionsTab() {
       title={t(($) => $.quick_actions.title)}
       description={t(($) => $.quick_actions.description)}
     >
-      <SettingsSection
-        action={
-          <Button size="sm" onClick={() => setCreating(true)}>
+      <div className="space-y-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t(($) => $.quick_actions.search_placeholder)}
+              className="pl-9"
+            />
+          </div>
+          <Button className="gap-2" onClick={() => setCreating(true)}>
             <Plus className="size-4" />
             {t(($) => $.quick_actions.add)}
           </Button>
-        }
-      >
-        {isLoading ? (
-          <div className="space-y-2">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="h-14 animate-pulse rounded-md bg-muted/50" />
-            ))}
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-surface-border bg-card">
+          <div className="hidden grid-cols-[minmax(10rem,1fr)_minmax(9rem,1fr)_6rem_5rem_7rem_2rem] gap-4 border-b border-surface-border bg-muted/20 px-4 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+            <span>{t(($) => $.quick_actions.columns.name)}</span>
+            <span>{t(($) => $.quick_actions.columns.target)}</span>
+            <span>{t(($) => $.quick_actions.columns.visibility)}</span>
+            <span>{t(($) => $.quick_actions.columns.usage)}</span>
+            <span>{t(($) => $.quick_actions.columns.updated)}</span>
+            <span />
           </div>
-        ) : sorted.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-surface-border px-6 py-10 text-center">
-            <Zap className="mx-auto size-5 text-muted-foreground" />
-            <p className="mt-2 text-sm font-medium">{t(($) => $.quick_actions.empty_title)}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t(($) => $.quick_actions.empty_hint)}
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-surface-border rounded-lg border border-surface-border">
-            {sorted.map((action) => {
-              const idleDays = daysSince(action.last_used_at);
-              const unused = action.use_count === 0 || (idleDays !== null && idleDays >= UNUSED_DAYS_THRESHOLD);
-              return (
-                <div
-                  key={action.id}
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2.5",
-                    action.status !== "active" && "opacity-60",
-                  )}
-                >
-                  <div className="min-w-0 flex-1">
+
+          {isLoading ? (
+            <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+              {t(($) => $.quick_actions.loading)}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <Zap className="mx-auto size-6 text-muted-foreground/60" />
+              <p className="mt-3 text-sm font-medium">
+                {query
+                  ? t(($) => $.quick_actions.no_results)
+                  : t(($) => $.quick_actions.empty_title)}
+              </p>
+              {!query ? (
+                <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+                  {t(($) => $.quick_actions.empty_hint)}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="divide-y divide-surface-border">
+              {filtered.map((action) => {
+                const stale = isStale(action);
+                return (
+                  <div
+                    key={action.id}
+                    className={cn(
+                      "grid gap-2 px-4 py-3 md:grid-cols-[minmax(10rem,1fr)_minmax(9rem,1fr)_6rem_5rem_7rem_2rem] md:items-center md:gap-4",
+                      action.status !== "active" && "opacity-60",
+                    )}
+                  >
                     <div className="flex min-w-0 items-center gap-2">
+                      <Zap className="size-3.5 shrink-0 text-muted-foreground" />
                       <span className="truncate text-sm font-medium">{action.name}</span>
-                      <VisibilityBadge action={action} t={t} />
                       {action.status !== "active" ? (
-                        <Badge variant="outline" className="font-normal">
+                        <Badge variant="outline" className="shrink-0 font-normal">
                           {t(($) => $.quick_actions.archived)}
                         </Badge>
                       ) : null}
                     </div>
-                    <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                      <span className="truncate">
-                        <TargetLine action={action} t={t} />
-                      </span>
-                      <span aria-hidden>·</span>
-                      <span className={cn("shrink-0", unused && "text-amber-600 dark:text-amber-400")}>
-                        {action.use_count === 0
-                          ? t(($) => $.quick_actions.never_used)
-                          : t(($) => $.quick_actions.used_count, { count: action.use_count })}
-                      </span>
+                    <div className="min-w-0 truncate text-xs text-muted-foreground md:text-sm">
+                      <TargetLine action={action} t={t} />
                     </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Tooltip>
-                      <TooltipTrigger
+                    <div className="min-w-0">
+                      <VisibilityBadge action={action} t={t} />
+                    </div>
+                    <span
+                      className={cn(
+                        "text-xs tabular-nums text-muted-foreground md:text-sm",
+                        stale && "text-warning",
+                      )}
+                    >
+                      {action.use_count === 0
+                        ? t(($) => $.quick_actions.never_used)
+                        : t(($) => $.quick_actions.used_count, { count: action.use_count })}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(action.updated_at).toLocaleDateString()}
+                    </span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
                         render={
-                          <Button variant="ghost" size="icon" onClick={() => setEditing(action)}>
-                            <Pencil className="size-4" />
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={t(($) => $.quick_actions.actions_open, { name: action.name })}
+                          >
+                            <MoreHorizontal className="size-4" />
                           </Button>
                         }
                       />
-                      <TooltipContent>{t(($) => $.quick_actions.edit)}</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button variant="ghost" size="icon" onClick={() => handleArchiveToggle(action)}>
-                            {action.status === "active" ? (
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => setEditing(action)}>
+                          <Pencil className="size-4" />
+                          {t(($) => $.quick_actions.edit)}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => void handleArchiveToggle(action)}>
+                          {action.status === "active" ? (
+                            <>
                               <Archive className="size-4" />
-                            ) : (
+                              {t(($) => $.quick_actions.archive)}
+                            </>
+                          ) : (
+                            <>
                               <ArchiveRestore className="size-4" />
-                            )}
-                          </Button>
-                        }
-                      />
-                      <TooltipContent>
-                        {action.status === "active"
-                          ? t(($) => $.quick_actions.archive)
-                          : t(($) => $.quick_actions.unarchive)}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(action)}>
-                            <Trash2 className="size-4" />
-                          </Button>
-                        }
-                      />
-                      <TooltipContent>{t(($) => $.quick_actions.delete)}</TooltipContent>
-                    </Tooltip>
+                              {t(($) => $.quick_actions.unarchive)}
+                            </>
+                          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onClick={() => setDeleteTarget(action)}
+                        >
+                          <Trash2 className="size-4" />
+                          {t(($) => $.quick_actions.delete)}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </SettingsSection>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
 
       <QuickActionDialog
         open={creating || editing !== null}
@@ -416,7 +479,7 @@ function QuickActionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
             {action ? t(($) => $.quick_actions.edit_title) : t(($) => $.quick_actions.create_title)}
@@ -446,6 +509,7 @@ function QuickActionDialog({
                 <button
                   key={option}
                   type="button"
+                  aria-pressed={form.visibility === option}
                   onClick={() => setForm((f) => ({ ...f, visibility: option }))}
                   className={cn(
                     "flex items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors",

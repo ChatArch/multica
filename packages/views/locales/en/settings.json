@@ -3,6 +3,17 @@
     "title": "Quick Actions",
     "description": "Preset an agent and a prompt once, then trigger it from any issue's sidebar with a single click.",
     "add": "New quick action",
+    "search_placeholder": "Search quick actions",
+    "loading": "Loading quick actions…",
+    "no_results": "No quick actions match your search",
+    "actions_open": "Open actions for {{name}}",
+    "columns": {
+      "name": "Name",
+      "target": "Runs as",
+      "visibility": "Who",
+      "usage": "Used",
+      "updated": "Updated"
+    },
     "empty_title": "No quick actions yet",
     "empty_hint": "Create one for the work you ask an agent to do again and again — code review, writing tests, a security pass.",
     "archived": "Archived",

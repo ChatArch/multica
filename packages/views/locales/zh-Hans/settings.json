@@ -3,6 +3,17 @@
     "title": "快捷操作",
     "description": "预先配置好执行的 Agent 和提示词，之后在任意 Issue 侧边栏一键触发。",
     "add": "新建快捷操作",
+    "search_placeholder": "搜索快捷操作",
+    "loading": "正在加载快捷操作…",
+    "no_results": "没有匹配的快捷操作",
+    "actions_open": "打开「{{name}}」的操作菜单",
+    "columns": {
+      "name": "名称",
+      "target": "执行者",
+      "visibility": "可见范围",
+      "usage": "使用",
+      "updated": "更新时间"
+    },
     "empty_title": "还没有快捷操作",
     "empty_hint": "把反复交给 Agent 做的事配置成快捷操作——代码审查、补测试、安全检查。",
     "archived": "已归档",
