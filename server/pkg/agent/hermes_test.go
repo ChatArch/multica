@@ -3392,6 +3392,10 @@ func TestHermesResumeSessionLost(t *testing.T) {
 //	                     persisted provider identity no longer resolves (#6150).
 //	ACP_ACTIVITY=1     — stream one agent_message_chunk before refusing, the
 //	                     legitimate-refusal control case.
+//	ACP_LATE_ACTIVITY=1 — send that chunk AFTER the refusal and after the
+//	                     notification quiet window has elapsed, i.e. in the gap
+//	                     between quiescence and stdin EOF that Hermes really
+//	                     uses for a turn's final message.
 func fakeHermesACPRefusedResumeScript() string {
 	return `#!/bin/sh
 while IFS= read -r line; do
@@ -3419,6 +3423,10 @@ while IFS= read -r line; do
         echo '2026-07-30 13:46:51 [ERROR] acp_adapter.server: prompt: session ses_dead not found' >&2
       fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"refusal"}}\n' "$id"
+      if [ "$ACP_LATE_ACTIVITY" = "1" ]; then
+        sleep 0.6
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Sorry, I will not do that."}}}}\n' "$sid"
+      fi
       exit 0
       ;;
   esac
@@ -3532,6 +3540,32 @@ func TestHermesBackendKeepsSessionOnRefusalAfterActivity(t *testing.T) {
 	}
 	if result.ResumeRejected {
 		t.Error("ResumeRejected = true, want false — the agent ran, so a fresh session is not the cure")
+	}
+}
+
+// TestHermesBackendKeepsSessionOnRefusalWithLateActivity is the timing
+// false-positive guard. The notification quiet window closing does not end the
+// turn — stdin EOF and the pipe drain do, and Hermes legitimately delivers a
+// turn's final chunk in that gap (see
+// TestHermesBackendDrainsLateFinalNotificationAfterPromptResponse). Deciding
+// "no activity" at the quiescence boundary instead of after the drain would
+// discard this healthy session and re-run the turn.
+func TestHermesBackendKeepsSessionOnRefusalWithLateActivity(t *testing.T) {
+	t.Parallel()
+
+	result := runHermesRefusedResume(t,
+		ExecOptions{ResumeSessionID: "ses_dead"},
+		map[string]string{"ACP_LATE_ACTIVITY": "1"},
+	)
+
+	if result.Output == "" {
+		t.Fatal("late chunk never reached the result; the fixture is not exercising the drain gap")
+	}
+	if result.SessionID != "ses_dead" {
+		t.Errorf("session id = %q, want the resumed id preserved", result.SessionID)
+	}
+	if result.ResumeRejected {
+		t.Error("ResumeRejected = true, want false — the agent answered, only late")
 	}
 }
 

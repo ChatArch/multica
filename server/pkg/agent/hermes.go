@@ -349,11 +349,10 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		// Set when session/prompt reported a no-op refusal on a resumed
-		// session — Hermes' way of saying the session is gone. Applied after
-		// the provider-error promotion below so a captured provider error
-		// stays the user-visible reason.
-		var resumeLost bool
+		// The stop reason session/prompt reported, when it answered at all.
+		// Read once the turn has fully settled — see the resumed-session check
+		// after the provider-error promotion below.
+		var promptStopReason string
 		effectiveModel := strings.TrimSpace(opts.Model)
 		// The model id the runtime reports as current right after
 		// session/new or session/resume. Used to skip a redundant
@@ -551,10 +550,9 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		} else {
 			// The prompt completed. Check if we got a promptDone result
 			// from the response parsing.
-			var stopReason string
 			select {
 			case pr := <-promptDone:
-				stopReason = pr.stopReason
+				promptStopReason = pr.stopReason
 				if pr.stopReason == "cancelled" {
 					finalStatus = "aborted"
 					finalError = "hermes cancelled the prompt"
@@ -568,10 +566,6 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			default:
 			}
 			waitForHermesNotificationQuiescence(runCtx, activity, readerDone)
-			// Quiescence first: a late chunk still counts as activity, so the
-			// zero-activity half of the predicate must not be read before the
-			// drain window closes.
-			resumeLost = hermesResumeSessionLost(opts.ResumeSessionID, stopReason, turnActivity.Load())
 		}
 
 		duration := time.Since(startTime)
@@ -617,14 +611,25 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// give-up turn that lands before a tool call stays visible.
 		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
-		// A resumed session Hermes could not rebuild. Runs after the promotion
-		// above on purpose: when the sniffer captured why the rebuild failed
-		// (e.g. the provider identity the session persisted no longer
-		// resolves), that message is far more useful to the user than the
-		// generic one here, so we only supply a reason when nothing else did.
-		// Without this, such a turn reports "completed" with empty output — a
-		// task that silently did nothing at all.
-		if resumeLost {
+		// A resumed session Hermes could not rebuild.
+		//
+		// Evaluated HERE, not at the quiescence boundary above: the quiet
+		// window closing does not end the turn. stdin EOF and the pipe drain
+		// do, and Hermes legitimately delivers a turn's final chunk in that
+		// gap — TestHermesBackendDrainsLateFinalNotificationAfterPromptResponse
+		// exists because of it. Deciding earlier would freeze
+		// turnActivity == 0 while a real answer was still in flight and
+		// discard a healthy session (plus re-run the turn) for a runtime that
+		// merely answered slowly. By this point streamingCurrentTurn is off
+		// and every accepted update has been counted, so the reading is final.
+		//
+		// Runs after the promotion above on purpose: when the sniffer captured
+		// why the rebuild failed (e.g. the provider identity the session
+		// persisted no longer resolves), that message is far more useful to the
+		// user than the generic one here, so we only supply a reason when
+		// nothing else did. Without this, such a turn reports "completed" with
+		// empty output — a task that silently did nothing at all.
+		if hermesResumeSessionLost(opts.ResumeSessionID, promptStopReason, turnActivity.Load()) {
 			b.cfg.Logger.Warn("resumed session refused with no agent activity; treating it as gone and clearing the session id so the daemon retries fresh",
 				"backend", "hermes",
 				"session_id", sessionID,
