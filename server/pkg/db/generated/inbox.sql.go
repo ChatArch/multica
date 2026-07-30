@@ -159,20 +159,28 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 
 const archiveSubtreeSettledScope = `-- name: ArchiveSubtreeSettledScope :many
 UPDATE inbox_item SET archived = true
-WHERE workspace_id = $1
-  AND issue_id = $2
-  AND type = 'subtree_settled'
-  AND details ->> 'barrier_scope' = $3::text
-  AND details ->> 'barrier_key' <> $4::text
-  AND archived = false
+WHERE inbox_item.workspace_id = $1
+  AND inbox_item.issue_id = $2
+  AND inbox_item.type = 'subtree_settled'
+  AND inbox_item.archived = false
+  AND inbox_item.details ->> 'barrier_key' <> $3::text
+  AND (
+    inbox_item.details ->> 'barrier_scope' = $4::text
+    OR NOT EXISTS (
+        SELECT 1 FROM issue c
+        WHERE c.parent_issue_id = $2
+          AND ((inbox_item.details ->> 'barrier_scope') = 'all'
+               OR c.stage::text = (inbox_item.details ->> 'barrier_scope'))
+    )
+  )
 RETURNING recipient_type, recipient_id
 `
 
 type ArchiveSubtreeSettledScopeParams struct {
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 	IssueID      pgtype.UUID `json:"issue_id"`
-	BarrierScope string      `json:"barrier_scope"`
 	KeepKey      string      `json:"keep_key"`
+	BarrierScope string      `json:"barrier_scope"`
 }
 
 type ArchiveSubtreeSettledScopeRow struct {
@@ -180,28 +188,27 @@ type ArchiveSubtreeSettledScopeRow struct {
 	RecipientID   pgtype.UUID `json:"recipient_id"`
 }
 
-// Retire the active roll-ups for ONE barrier of a parent, optionally keeping the
-// one whose barrier_key matches @keep_key.
+// Retire active roll-ups for a parent, keeping the one whose barrier_key matches
+// @keep_key (pass ” to keep none).
 //
-// Keyed on barrier_SCOPE ('all', or the stage number) rather than barrier_key,
-// because a barrier's membership changes over its life: barrier_key embeds a
-// hash of the children it covered, so retiring "this barrier's summary" cannot
-// be expressed as an exact key match.
+// Two things are retired:
 //
-//   - keep_key = ” retires everything for the barrier — used when it reopens
-//     (a child leaves a settled status) or when a new child joins it.
-//   - keep_key = the row about to be written retires only SUPERSEDED summaries,
-//     so the inbox never holds two contradictory counts for the same barrier,
-//     while a concurrent close of the identical membership is left for the
-//     unique index to dedupe instead of being archived and re-inserted.
+//  1. the named barrier itself — used when it reopens, when a new child joins it,
+//     and to drop a superseded summary before writing a fresh one;
+//  2. any barrier whose scope NO LONGER EXISTS among the parent's children.
 //
-// Scoped to one barrier so reopening stage 1 never discards stage 2's summary.
+// (2) is what covers a child moving BETWEEN scopes. The mover's old scope cannot
+// be named from the new state, and issue:updated carries no prev_stage /
+// prev_parent to name it with — but "no child carries stage 1 any more" is
+// derivable from current state alone, so the orphaned stage-1 summary is
+// collected without needing to observe the transition. A scope that still has
+// children is untouched, so reopening stage 1 never discards stage 2's summary.
 func (q *Queries) ArchiveSubtreeSettledScope(ctx context.Context, arg ArchiveSubtreeSettledScopeParams) ([]ArchiveSubtreeSettledScopeRow, error) {
 	rows, err := q.db.Query(ctx, archiveSubtreeSettledScope,
 		arg.WorkspaceID,
 		arg.IssueID,
-		arg.BarrierScope,
 		arg.KeepKey,
+		arg.BarrierScope,
 	)
 	if err != nil {
 		return nil, err
@@ -353,7 +360,21 @@ INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details
-) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
+)
+SELECT $1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue c
+    WHERE c.parent_issue_id = $5
+      AND ($11::text = 'all'
+           OR c.stage::text = $11::text)
+      AND NOT (c.id = ANY ($12::uuid[]))
+)
+AND (
+    SELECT count(*) FROM issue c
+    WHERE c.parent_issue_id = $5
+      AND ($11::text = 'all'
+           OR c.stage::text = $11::text)
+) = cardinality($12::uuid[])
 ON CONFLICT (recipient_type, recipient_id, issue_id, (details ->> 'barrier_key'))
     WHERE type = 'subtree_settled' AND archived = false
 DO NOTHING
@@ -361,28 +382,36 @@ RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_
 `
 
 type CreateSubtreeSettledInboxParams struct {
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	RecipientType string      `json:"recipient_type"`
-	RecipientID   pgtype.UUID `json:"recipient_id"`
-	Severity      string      `json:"severity"`
-	IssueID       pgtype.UUID `json:"issue_id"`
-	Title         string      `json:"title"`
-	Body          pgtype.Text `json:"body"`
-	ActorType     pgtype.Text `json:"actor_type"`
-	ActorID       pgtype.UUID `json:"actor_id"`
-	Details       []byte      `json:"details"`
+	WorkspaceID   pgtype.UUID   `json:"workspace_id"`
+	RecipientType string        `json:"recipient_type"`
+	RecipientID   pgtype.UUID   `json:"recipient_id"`
+	Severity      string        `json:"severity"`
+	IssueID       pgtype.UUID   `json:"issue_id"`
+	Title         string        `json:"title"`
+	Body          pgtype.Text   `json:"body"`
+	ActorType     pgtype.Text   `json:"actor_type"`
+	ActorID       pgtype.UUID   `json:"actor_id"`
+	Details       []byte        `json:"details"`
+	BarrierScope  string        `json:"barrier_scope"`
+	MemberIds     []pgtype.UUID `json:"member_ids"`
 }
 
-// Idempotent insert for the delegated subtree roll-up (MUL-5483). The conflict
-// target matches uq_inbox_subtree_settled_barrier, so uniqueness is per BARRIER
-// rather than per parent: each closed stage gets its own notification, while two
-// siblings closing the SAME barrier concurrently collapse to one.
+// Idempotent AND membership-guarded insert for the delegated subtree roll-up.
 //
-// $10 is the details JSON and must carry a non-null 'barrier_key'; the index
-// expression reads it, and a NULL would not collide with itself.
+// The guard is the point. The caller snapshots the barrier's children, judges the
+// frontier, then writes — and a child created in that window used to let it write
+// "the batch is finished" from a stale snapshot while new work was in flight.
+// An out-of-band hook cannot close that window; only re-checking membership in
+// the SAME statement as the write can. So the insert lands only if the barrier's
+// CURRENT children still equal the snapshot the caller judged
+// (@member_ids): no extras, and the same cardinality so a deletion is caught too.
 //
-// Returns 0 rows when deduped and 1 row when it inserted, so the caller only
-// broadcasts inbox:new for a real write.
+// Scope predicate mirrors resolveRollupBarrier: an unstaged set ('all') covers
+// every child; a staged set covers only children carrying that stage, so a NULL
+// stage is excluded — the comparison yields NULL, which is not true.
+//
+// ON CONFLICT still dedupes a concurrent close of the IDENTICAL membership; the
+// guard handles a membership that moved. Returns 0 rows when either fired.
 func (q *Queries) CreateSubtreeSettledInbox(ctx context.Context, arg CreateSubtreeSettledInboxParams) ([]InboxItem, error) {
 	rows, err := q.db.Query(ctx, createSubtreeSettledInbox,
 		arg.WorkspaceID,
@@ -395,6 +424,8 @@ func (q *Queries) CreateSubtreeSettledInbox(ctx context.Context, arg CreateSubtr
 		arg.ActorType,
 		arg.ActorID,
 		arg.Details,
+		arg.BarrierScope,
+		arg.MemberIds,
 	)
 	if err != nil {
 		return nil, err

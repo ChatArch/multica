@@ -136,48 +136,75 @@ WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $
   AND i.issue_id IN (SELECT id FROM issue WHERE status IN ('done', 'cancelled'));
 
 -- name: CreateSubtreeSettledInbox :many
--- Idempotent insert for the delegated subtree roll-up (MUL-5483). The conflict
--- target matches uq_inbox_subtree_settled_barrier, so uniqueness is per BARRIER
--- rather than per parent: each closed stage gets its own notification, while two
--- siblings closing the SAME barrier concurrently collapse to one.
+-- Idempotent AND membership-guarded insert for the delegated subtree roll-up.
 --
--- $10 is the details JSON and must carry a non-null 'barrier_key'; the index
--- expression reads it, and a NULL would not collide with itself.
+-- The guard is the point. The caller snapshots the barrier's children, judges the
+-- frontier, then writes — and a child created in that window used to let it write
+-- "the batch is finished" from a stale snapshot while new work was in flight.
+-- An out-of-band hook cannot close that window; only re-checking membership in
+-- the SAME statement as the write can. So the insert lands only if the barrier's
+-- CURRENT children still equal the snapshot the caller judged
+-- (@member_ids): no extras, and the same cardinality so a deletion is caught too.
 --
--- Returns 0 rows when deduped and 1 row when it inserted, so the caller only
--- broadcasts inbox:new for a real write.
+-- Scope predicate mirrors resolveRollupBarrier: an unstaged set ('all') covers
+-- every child; a staged set covers only children carrying that stage, so a NULL
+-- stage is excluded — the comparison yields NULL, which is not true.
+--
+-- ON CONFLICT still dedupes a concurrent close of the IDENTICAL membership; the
+-- guard handles a membership that moved. Returns 0 rows when either fired.
 INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details
-) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
+)
+SELECT $1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue c
+    WHERE c.parent_issue_id = $5
+      AND (sqlc.arg('barrier_scope')::text = 'all'
+           OR c.stage::text = sqlc.arg('barrier_scope')::text)
+      AND NOT (c.id = ANY (sqlc.arg('member_ids')::uuid[]))
+)
+AND (
+    SELECT count(*) FROM issue c
+    WHERE c.parent_issue_id = $5
+      AND (sqlc.arg('barrier_scope')::text = 'all'
+           OR c.stage::text = sqlc.arg('barrier_scope')::text)
+) = cardinality(sqlc.arg('member_ids')::uuid[])
 ON CONFLICT (recipient_type, recipient_id, issue_id, (details ->> 'barrier_key'))
     WHERE type = 'subtree_settled' AND archived = false
 DO NOTHING
 RETURNING *;
 
 -- name: ArchiveSubtreeSettledScope :many
--- Retire the active roll-ups for ONE barrier of a parent, optionally keeping the
--- one whose barrier_key matches @keep_key.
+-- Retire active roll-ups for a parent, keeping the one whose barrier_key matches
+-- @keep_key (pass '' to keep none).
 --
--- Keyed on barrier_SCOPE ('all', or the stage number) rather than barrier_key,
--- because a barrier's membership changes over its life: barrier_key embeds a
--- hash of the children it covered, so retiring "this barrier's summary" cannot
--- be expressed as an exact key match.
+-- Two things are retired:
 --
---   * keep_key = '' retires everything for the barrier — used when it reopens
---     (a child leaves a settled status) or when a new child joins it.
---   * keep_key = the row about to be written retires only SUPERSEDED summaries,
---     so the inbox never holds two contradictory counts for the same barrier,
---     while a concurrent close of the identical membership is left for the
---     unique index to dedupe instead of being archived and re-inserted.
+--  1. the named barrier itself — used when it reopens, when a new child joins it,
+--     and to drop a superseded summary before writing a fresh one;
+--  2. any barrier whose scope NO LONGER EXISTS among the parent's children.
 --
--- Scoped to one barrier so reopening stage 1 never discards stage 2's summary.
+-- (2) is what covers a child moving BETWEEN scopes. The mover's old scope cannot
+-- be named from the new state, and issue:updated carries no prev_stage /
+-- prev_parent to name it with — but "no child carries stage 1 any more" is
+-- derivable from current state alone, so the orphaned stage-1 summary is
+-- collected without needing to observe the transition. A scope that still has
+-- children is untouched, so reopening stage 1 never discards stage 2's summary.
 UPDATE inbox_item SET archived = true
-WHERE workspace_id = $1
-  AND issue_id = $2
-  AND type = 'subtree_settled'
-  AND details ->> 'barrier_scope' = sqlc.arg('barrier_scope')::text
-  AND details ->> 'barrier_key' <> sqlc.arg('keep_key')::text
-  AND archived = false
+WHERE inbox_item.workspace_id = $1
+  AND inbox_item.issue_id = $2
+  AND inbox_item.type = 'subtree_settled'
+  AND inbox_item.archived = false
+  AND inbox_item.details ->> 'barrier_key' <> sqlc.arg('keep_key')::text
+  AND (
+    inbox_item.details ->> 'barrier_scope' = sqlc.arg('barrier_scope')::text
+    OR NOT EXISTS (
+        SELECT 1 FROM issue c
+        WHERE c.parent_issue_id = $2
+          AND ((inbox_item.details ->> 'barrier_scope') = 'all'
+               OR c.stage::text = (inbox_item.details ->> 'barrier_scope'))
+    )
+  )
 RETURNING recipient_type, recipient_id;

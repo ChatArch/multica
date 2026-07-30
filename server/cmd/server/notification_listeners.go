@@ -660,6 +660,11 @@ func notifyDelegatedSubtreeSettled(
 	// than archiving and re-inserting it.
 	archiveSubtreeSettledScope(ctx, queries, bus, workspaceID, *child.ParentIssueID, barrier.Scope, barrier.Key)
 
+	memberIDs := make([]pgtype.UUID, 0, len(barrier.Children))
+	for _, c := range barrier.Children {
+		memberIDs = append(memberIDs, c.ID)
+	}
+
 	for _, subID := range recipients {
 		if subID == e.ActorID {
 			continue
@@ -668,6 +673,13 @@ func notifyDelegatedSubtreeSettled(
 			continue
 		}
 		items, err := queries.CreateSubtreeSettledInbox(ctx, db.CreateSubtreeSettledInboxParams{
+			// Re-checked inside the INSERT: the summary lands only if the
+			// barrier's children still match the snapshot judged above. A child
+			// created between that read and this write moves the membership and
+			// the write is skipped rather than announcing a finished batch while
+			// new work is in flight (MUL-5483 review round 5).
+			BarrierScope:  barrier.Scope,
+			MemberIds:     memberIDs,
 			WorkspaceID:   parseUUID(workspaceID),
 			RecipientType: "member",
 			RecipientID:   parseUUID(subID),
@@ -687,7 +699,10 @@ func notifyDelegatedSubtreeSettled(
 			continue
 		}
 		if len(items) == 0 {
-			continue // deduped — a concurrent close of the same barrier won
+			// Either deduped (a concurrent close of the identical membership) or
+			// the membership guard rejected a stale snapshot. Both mean "do not
+			// announce", so there is nothing to broadcast.
+			continue
 		}
 		resp := inboxItemToResponse(items[0])
 		resp["issue_status"] = parent.Status
