@@ -1482,7 +1482,16 @@ export function TableView({
           // keepPreviousData alone cannot bridge a changed table query inside
           // useQueries. Retain the last settled head per structural branch to
           // keep the previous table painted while the new query is pending.
-          ...(placeholder ? { placeholderData: () => placeholder } : {}),
+          //
+          // Passed as a VALUE, not a closure. QueryObserver reuses the previous
+          // placeholder result only while `options.placeholderData` compares
+          // equal BY REFERENCE to the previous render's, so `() => placeholder`
+          // — a fresh arrow on every rebuild of this array — forced the
+          // placeholder to be recomputed and the result re-derived on every
+          // render. The value comes from a ref Map and is already stable, and
+          // the closure ignored both of the arguments the function form
+          // receives, so the two forms are equivalent (MUL-5477).
+          ...(placeholder ? { placeholderData: placeholder } : {}),
           enabled:
             (branch.groupKey === null ||
               !collapsedGroupSet.has(branch.groupKey)) &&
