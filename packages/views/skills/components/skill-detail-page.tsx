@@ -10,6 +10,7 @@ import {
   HardDrive,
   Loader2,
   Lock,
+  Pencil,
   Plus,
   Save,
   Trash2,
@@ -252,8 +253,12 @@ function SkillIdentity({
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground sm:ml-auto">
           {originLabel && (
             <span className="inline-flex min-w-0 items-center gap-1.5">
+              {/* Same three-way split as the list's Source column: runtime,
+                  created here, imported. */}
               {isRuntimeOrigin ? (
                 <HardDrive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              ) : origin?.type === "manual" ? (
+                <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               ) : (
                 <Download className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               )}
