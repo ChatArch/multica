@@ -91,6 +91,28 @@ describe("useCanonicalIssue", () => {
   // The whole point of `initialData` over a post-resolve cache seed: the
   // canonical query must never observe an empty cache and start its own fetch.
   // A seed from an effect runs after that decision.
+  // The common path: an in-app link carries the UUID, the route rewrites the
+  // address bar to the identifier, and that rewrite re-renders this hook with
+  // the identifier as its segment. Without the identifier-keyed seed the
+  // resolution query missed and re-fetched an issue already in hand, so one
+  // issue open cost two requests.
+  it("costs no extra request when the URL is rewritten to the identifier", async () => {
+    const { result, rerender } = renderHook(
+      ({ routeId }: { routeId: string }) => useCanonicalIssue("ws-1", routeId),
+      { wrapper: createWrapper(qc), initialProps: { routeId: ISSUE_UUID } },
+    );
+
+    await waitFor(() => expect(result.current.issue).toEqual(issue));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+
+    rerender({ routeId: "TRS-134" });
+
+    await waitFor(() => expect(result.current.canonicalId).toBe(ISSUE_UUID));
+    expect(result.current.issue).toEqual(issue);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
   it("opens an identifier URL with exactly one request", async () => {
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
       wrapper: createWrapper(qc),
