@@ -116,3 +116,39 @@ func TestValidateQuickActionAssignee(t *testing.T) {
 		t.Fatal("a blank assignee id must be rejected")
 	}
 }
+
+// TestValidateQuickActionPromptRejectsTriggerMentions locks the one-action /
+// one-target invariant (MUL-5465, review finding #3).
+//
+// The prompt is appended verbatim to a comment that then runs through the
+// normal mention pipeline, so an agent or squad mention inside it would
+// enqueue a SECOND target beside the configured one — and the sidebar only
+// reports the first outcome, so the extra run would be invisible at the click.
+// Issue and member mentions are harmless (they render as links and enqueue
+// nothing) and stay allowed.
+func TestValidateQuickActionPromptRejectsTriggerMentions(t *testing.T) {
+	const id = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+	for _, tc := range []struct {
+		name    string
+		prompt  string
+		wantErr bool
+	}{
+		{"plain prose", "review this code", false},
+		{"an @ that is not mention markup", "ask @someone on the team", false},
+		{"issue mention is a link, not a trigger", "see [MUL-1](mention://issue/" + id + ")", false},
+		{"member mention is a link, not a trigger", "ask [@Jia](mention://member/" + id + ")", false},
+		{"agent mention would enqueue a second target", "also [@Nova](mention://agent/" + id + ")", true},
+		{"squad mention would enqueue a second target", "also [@Core](mention://squad/" + id + ")", true},
+		{"@all would fan out", "[@all](mention://all/all)", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateQuickActionPrompt(tc.prompt)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %q to be rejected", tc.prompt)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %q to be accepted, got %v", tc.prompt, err)
+			}
+		})
+	}
+}

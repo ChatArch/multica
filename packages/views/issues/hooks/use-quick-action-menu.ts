@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef } from "react";
+import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -49,8 +50,15 @@ export function useQuickActionMenu(issueId: string) {
     [issueId],
   );
 
+  // The extension runs outside React's tree, so it reports failures back here
+  // rather than rendering anything itself. Without this a failed pick left the
+  // command text sitting in the composer with no explanation.
+  const onRenderError = useCallback((error: unknown) => {
+    toast.error(error instanceof Error ? error.message : String(error));
+  }, []);
+
   return useMemo(
-    () => ({ getQuickActions, renderQuickAction }),
-    [getQuickActions, renderQuickAction],
+    () => ({ getQuickActions, renderQuickAction, onRenderError }),
+    [getQuickActions, renderQuickAction, onRenderError],
   );
 }

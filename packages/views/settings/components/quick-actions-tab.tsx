@@ -266,7 +266,7 @@ export function QuickActionsTab() {
         </div>
 
         <div className="overflow-hidden rounded-lg border border-surface-border bg-card">
-          <div className="hidden grid-cols-[minmax(10rem,1fr)_minmax(9rem,1fr)_6rem_5rem_7rem_2rem] gap-4 border-b border-surface-border bg-muted/20 px-4 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+          <div className="hidden grid-cols-[minmax(10rem,1fr)_minmax(9rem,1fr)_6rem_5rem_7rem_2rem] gap-4 border-b border-surface-border bg-muted/20 px-4 py-2.5 text-caption font-medium text-muted-foreground md:grid">
             <span>{t(($) => $.quick_actions.columns.name)}</span>
             <span>{t(($) => $.quick_actions.columns.target)}</span>
             <span>{t(($) => $.quick_actions.columns.visibility)}</span>
@@ -276,19 +276,19 @@ export function QuickActionsTab() {
           </div>
 
           {isLoading ? (
-            <div className="px-4 py-12 text-center text-sm text-muted-foreground">
+            <div className="px-4 py-12 text-center text-body text-muted-foreground">
               {t(($) => $.quick_actions.loading)}
             </div>
           ) : filtered.length === 0 ? (
             <div className="px-4 py-12 text-center">
               <Zap className="mx-auto size-6 text-muted-foreground/60" />
-              <p className="mt-3 text-sm font-medium">
+              <p className="mt-3 text-body font-medium">
                 {query
                   ? t(($) => $.quick_actions.no_results)
                   : t(($) => $.quick_actions.empty_title)}
               </p>
               {!query ? (
-                <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+                <p className="mx-auto mt-1 max-w-sm text-caption text-muted-foreground">
                   {t(($) => $.quick_actions.empty_hint)}
                 </p>
               ) : null}
@@ -307,14 +307,14 @@ export function QuickActionsTab() {
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <Zap className="size-3.5 shrink-0 text-muted-foreground" />
-                      <span className="truncate text-sm font-medium">{action.name}</span>
+                      <span className="truncate text-body font-medium">{action.name}</span>
                       {action.status !== "active" ? (
                         <Badge variant="outline" className="shrink-0 font-normal">
                           {t(($) => $.quick_actions.archived)}
                         </Badge>
                       ) : null}
                     </div>
-                    <div className="min-w-0 truncate text-xs text-muted-foreground md:text-sm">
+                    <div className="min-w-0 truncate text-caption text-muted-foreground md:text-body">
                       <TargetLine action={action} t={t} />
                     </div>
                     <div className="min-w-0">
@@ -322,7 +322,7 @@ export function QuickActionsTab() {
                     </div>
                     <span
                       className={cn(
-                        "text-xs tabular-nums text-muted-foreground md:text-sm",
+                        "text-caption tabular-nums text-muted-foreground md:text-body",
                         stale && "text-warning",
                       )}
                     >
@@ -330,7 +330,7 @@ export function QuickActionsTab() {
                         ? t(($) => $.quick_actions.never_used)
                         : t(($) => $.quick_actions.used_count, { count: action.use_count })}
                     </span>
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-caption text-muted-foreground">
                       {new Date(action.updated_at).toLocaleDateString()}
                     </span>
                     <DropdownMenu>
@@ -524,12 +524,12 @@ function QuickActionDialog({
                     <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   )}
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium">
+                    <span className="block text-body font-medium">
                       {option === "public"
                         ? t(($) => $.quick_actions.visibility_public)
                         : t(($) => $.quick_actions.visibility_private)}
                     </span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                    <span className="mt-0.5 block text-caption text-muted-foreground">
                       {option === "public"
                         ? t(($) => $.quick_actions.visibility_public_hint)
                         : t(($) => $.quick_actions.visibility_private_hint)}
@@ -552,7 +552,7 @@ function QuickActionDialog({
                 target the team cannot invoke. Saying so here turns a 400 into
                 an expectation set before the user hits Save. */}
             {form.visibility === "public" ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 {t(($) => $.quick_actions.public_target_hint)}
               </p>
             ) : null}
@@ -568,11 +568,11 @@ function QuickActionDialog({
               onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
             />
             {templateToken !== null ? (
-              <p className="text-xs text-destructive">
+              <p className="text-caption text-destructive">
                 {t(($) => $.quick_actions.template_not_supported, { token: templateToken })}
               </p>
             ) : (
-              <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <p className="inline-flex items-center gap-1 text-caption text-muted-foreground">
                 <Info className="size-3" />
                 {t(($) => $.quick_actions.prompt_hint)}
               </p>

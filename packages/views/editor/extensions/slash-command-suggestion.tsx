@@ -19,7 +19,11 @@ import { isImeComposing } from "@multica/core/utils";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
-import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import {
+  createSuggestionPopupRender,
+  isPickerAcceptKey,
+  pickerNavigationDirection,
+} from "./suggestion-popup";
 import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 
 const MAX_ITEMS = 20;
@@ -86,14 +90,13 @@ export const SlashCommandList = forwardRef<
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
       if (isImeComposing(event)) return false;
-      if (event.key === "ArrowUp") {
+      // Arrow keys plus the Ctrl+N/J/P/K aliases the command bar accepts —
+      // see pickerNavigationDirection.
+      const direction = pickerNavigationDirection(event);
+      if (direction !== null) {
         if (items.length === 0) return false;
-        setSelectedIndex((i) => (i + items.length - 1) % items.length);
-        return true;
-      }
-      if (event.key === "ArrowDown") {
-        if (items.length === 0) return false;
-        setSelectedIndex((i) => (i + 1) % items.length);
+        const delta = direction === "next" ? 1 : items.length - 1;
+        setSelectedIndex((i) => (i + delta) % items.length);
         return true;
       }
       // Enter is the canonical accept; plain Tab is an additive alias (see
@@ -110,7 +113,7 @@ export const SlashCommandList = forwardRef<
   if (items.length === 0) {
     if (hideOnEmpty) return null;
     return (
-      <div className="rounded-md border bg-popover p-2 text-xs text-muted-foreground shadow-md">
+      <div className="rounded-md border bg-popover p-2 text-caption text-muted-foreground shadow-md">
         {t(($) =>
           query.trim()
             ? $.slash_command.no_results
@@ -141,7 +144,7 @@ export const SlashCommandList = forwardRef<
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
-            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-xs transition-colors ${
+            className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-caption transition-colors ${
               selectedIndex === index ? "bg-accent" : "hover:bg-accent/50"
             }`}
             onClick={() => selectItem(index)}
@@ -305,6 +308,12 @@ export interface BuiltinCommandSuggestionOptions {
    * inserting a half-rendered prompt.
    */
   renderQuickAction?: (quickActionId: string) => Promise<string>;
+  /**
+   * Called when renderQuickAction rejects. The extension cannot show UI of its
+   * own — a ProseMirror command runs outside React's tree — so the host turns
+   * this into a toast. Without it a failed pick is completely silent.
+   */
+  onRenderError?: (error: unknown) => void;
 }
 
 export function createBuiltinCommandSuggestion(
@@ -323,23 +332,38 @@ export function createBuiltinCommandSuggestion(
       if (isQuickActionItem(props)) {
         const render = options.renderQuickAction;
         if (!render) return;
-        // Drop the "/query" text first so the composer never shows the raw
-        // command while the render is in flight.
-        editor.chain().focus().deleteRange(range).run();
         const id = quickActionIdFromItem(props);
+
+        // The "/query" text is deliberately left in place while the request is
+        // in flight. Deleting first meant a failed or slow render destroyed
+        // what the user typed with nothing to show for it, and the insert then
+        // landed wherever the caret happened to be by the time it resolved.
         void render(id)
           .then((content) => {
             if (!content) return;
-            editor.chain().focus().insertContent(content).run();
+            // The document may have changed during the request. Only replace
+            // the original range if it still holds the slash query we started
+            // from; otherwise fall back to the caret so a stale offset can
+            // never overwrite unrelated text the user typed meanwhile.
+            const stillValid =
+              range.to <= editor.state.doc.content.size &&
+              editor.state.doc.textBetween(range.from, range.to).startsWith("/");
+            const chain = editor.chain().focus();
+            if (stillValid) {
+              chain.insertContentAt({ from: range.from, to: range.to }, content).run();
+            } else {
+              chain.insertContent(content).run();
+            }
             window.getSelection()?.collapseToEnd();
           })
-          .catch(() => {
-            // Swallow: the composer already has the command text removed and
-            // the user can retype. Surfacing a toast from inside a ProseMirror
-            // command would fire outside React's tree.
+          .catch((error: unknown) => {
+            // The command text is still there, so the user can retry or edit
+            // it by hand; the host surfaces why nothing was inserted.
+            options.onRenderError?.(error);
           });
         return;
       }
+
       // Insert the plain-text prefix (e.g. "/note ") rather than a rich node,
       // so a menu selection and a hand-typed command are byte-identical and the
       // backend can detect the marker with a simple prefix match. The trailing

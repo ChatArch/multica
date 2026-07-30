@@ -70,7 +70,7 @@ export function QuickActionsSection({ issueId }: { issueId: string }) {
       <button
         type="button"
         className={cn(
-          "mb-2 flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-accent/70",
+          "mb-2 flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors hover:bg-accent/70",
           !open && "text-muted-foreground hover:text-foreground",
         )}
         onClick={() => setOpen(!open)}
@@ -96,7 +96,7 @@ export function QuickActionsSection({ issueId }: { issueId: string }) {
           {hiddenCount > 0 ? (
             <button
               type="button"
-              className="w-full rounded-md px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+              className="w-full rounded-md px-2 py-1 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
               onClick={() => setShowAll(true)}
             >
               {t(($) => $.detail.quick_actions_more, { count: hiddenCount })}
@@ -200,7 +200,7 @@ function QuickActionRow({
         disabled={running}
         onClick={() => void handleRun()}
         className={cn(
-          "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+          "group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body transition-colors",
           "hover:bg-accent/70 disabled:cursor-default disabled:opacity-60",
         )}
       >

@@ -95,11 +95,34 @@ For file uploads and attachments, configure S3 and (optionally) CloudFront:
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Static credentials. When both are unset, the AWS SDK default credential chain is used |
 | `AWS_ENDPOINT_URL` | Custom S3-compatible endpoint (e.g. MinIO, R2, B2). Setting this defaults to path-style URLs for backward compatibility |
 | `S3_USE_PATH_STYLE` | Optional S3 addressing mode. Leave empty for the default (`true` when `AWS_ENDPOINT_URL` is set, `false` for AWS S3). Set `false` for S3-compatible providers that require virtual-hosted-style URLs |
-| `ATTACHMENT_DOWNLOAD_MODE` | Attachment download behavior: `auto` (default), `cloudfront`, `presign`, or `proxy`. Use `proxy` for private buckets behind Docker/VPC-only endpoints such as `http://rustfs:9000` |
+| `ATTACHMENT_DOWNLOAD_MODE` | Attachment download behavior: `auto` (default), `cloudfront`, `presign`, or `proxy`. Use `proxy` for private buckets behind Docker/VPC-only endpoints such as `http://rustfs:9000`. Avatars follow the same policy — see below |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | TTL for CloudFront signed URLs and S3 presigned download URLs (default: `30m`) |
 | `CLOUDFRONT_DOMAIN` | CloudFront distribution domain — when set, public URLs use this host instead of the S3 host |
 | `CLOUDFRONT_KEY_PAIR_ID` | CloudFront key pair ID for signed URLs |
 | `CLOUDFRONT_PRIVATE_KEY` | CloudFront private key (PEM format) |
+
+#### Avatars on a private bucket
+
+User / agent / squad / workspace avatars are stored as the raw storage object
+URL. When the bucket is public — a public `CLOUDFRONT_DOMAIN`, or the default
+local-disk backend — that URL is served to clients unchanged.
+
+When the bucket is private and no public CDN domain is configured (S3 with
+Block Public Access, R2, MinIO), the API instead serves avatars from
+`/api/avatars/<signature>/<key>` and resolves each request through
+`ATTACHMENT_DOWNLOAD_MODE` — a presigned redirect, a CloudFront-signed
+redirect, or a proxied body. The signature in the path is what authorizes the
+read: an auth-gated URL cannot be used as an `<img src>` from the Desktop app
+or a split-origin frontend, because the session cookie is `SameSite=Strict`.
+
+Only image objects resolve through this route, and only ones that are
+*avatar-class*: a standalone upload not attached to an issue, comment, chat, or
+task. Pointing an `avatar_url` at a file someone attached to an issue is
+rejected when it is set and 404s if it was already stored, so a private image
+cannot be turned into a public link by way of the avatar field.
+
+No configuration is required, and avatars uploaded before this behavior
+existed are fixed without a backfill.
 
 ### Cookies
 

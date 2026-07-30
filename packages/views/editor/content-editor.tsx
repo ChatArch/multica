@@ -601,6 +601,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],
           renderQuickAction: (id: string) =>
             quickActionMenuRef.current?.renderQuickAction?.(id) ?? Promise.resolve(""),
+          onRenderError: (error: unknown) =>
+            quickActionMenuRef.current?.onRenderError?.(error),
         },
         resolveIssueIdentifierRef,
       }),
@@ -639,7 +641,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
           },
         },
         attributes: {
-          class: cn("flex-1 rich-text-editor text-sm outline-none", className),
+          class: cn("flex-1 rich-text-editor text-body outline-none", className),
         },
       },
     });

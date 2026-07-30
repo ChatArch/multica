@@ -294,6 +294,36 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.4.14",
+        date: "2026-07-29",
+        title: "Faster agents, safer files, and a smoother Issue table",
+        changes: [],
+        features: [
+          "Agent CLIs installed after startup now appear automatically without restarting the daemon.",
+          "Agent owners can now reveal and update their own agent's environment variables.",
+        ],
+        improvements: [
+          "Switching runtimes now shows available models much faster.",
+          "The Issue table now resizes, reorders, loads, and scrolls more smoothly.",
+          "Light-mode secondary text is now easier to read.",
+          "CJK headlines, italics, and desktop code now use clearer typography.",
+          "Live task timers no longer shift as seconds update.",
+          "Self-hosting guides now cover cookies and same-origin setups.",
+        ],
+        fixes: [
+          "Images, avatars, and downloads now work with private and proxy storage.",
+          "Pasting @ or / no longer opens mention or command menus.",
+          "Agent tasks recover when a provider rejects damaged session history.",
+          "Hermes sessions now resume after daemon restarts.",
+          "CodeBuddy planning no longer leaves headless tasks waiting for confirmation.",
+          "@all no longer prevents an explicitly mentioned agent from running.",
+          "Members no longer see private agents in dashboard breakdowns.",
+          "Agent concurrency settings now reject values that prevent task pickup.",
+          "Channel replies from ACP agents now contain only the final answer.",
+          "Silent OpenClaw failures on Windows now explain what to check.",
+        ],
+      },
+      {
         version: "0.4.13",
         date: "2026-07-28",
         title: "Claude Code resumes without rewriting its cache, plus usage insights",

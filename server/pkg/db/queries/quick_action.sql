@@ -58,6 +58,15 @@ RETURNING *;
 -- workspace_id is a SQL-layer tenant guard, matching DeleteComment.
 DELETE FROM quick_action WHERE id = $1 AND workspace_id = $2;
 
+-- name: DeletePrivateQuickActionsByCreator :exec
+-- Run when a member leaves or is removed. A private action is visible and
+-- runnable ONLY by its creator, so once they are gone nobody can see it, run
+-- it, or clean it up — while it still counts against the workspace's active
+-- limit. Public actions are workspace furniture and deliberately survive their
+-- author's departure.
+DELETE FROM quick_action
+WHERE workspace_id = $1 AND created_by_id = $2 AND visibility = 'private';
+
 -- name: TouchQuickActionUsage :exec
 -- Best-effort usage telemetry, written after a successful run. Deliberately
 -- not part of the run transaction: a failed counter bump must never lose the

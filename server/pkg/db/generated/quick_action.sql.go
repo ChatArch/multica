@@ -86,6 +86,26 @@ func (q *Queries) CreateQuickAction(ctx context.Context, arg CreateQuickActionPa
 	return i, err
 }
 
+const deletePrivateQuickActionsByCreator = `-- name: DeletePrivateQuickActionsByCreator :exec
+DELETE FROM quick_action
+WHERE workspace_id = $1 AND created_by_id = $2 AND visibility = 'private'
+`
+
+type DeletePrivateQuickActionsByCreatorParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatedByID pgtype.UUID `json:"created_by_id"`
+}
+
+// Run when a member leaves or is removed. A private action is visible and
+// runnable ONLY by its creator, so once they are gone nobody can see it, run
+// it, or clean it up — while it still counts against the workspace's active
+// limit. Public actions are workspace furniture and deliberately survive their
+// author's departure.
+func (q *Queries) DeletePrivateQuickActionsByCreator(ctx context.Context, arg DeletePrivateQuickActionsByCreatorParams) error {
+	_, err := q.db.Exec(ctx, deletePrivateQuickActionsByCreator, arg.WorkspaceID, arg.CreatedByID)
+	return err
+}
+
 const deleteQuickAction = `-- name: DeleteQuickAction :exec
 DELETE FROM quick_action WHERE id = $1 AND workspace_id = $2
 `

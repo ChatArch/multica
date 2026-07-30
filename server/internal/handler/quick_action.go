@@ -63,6 +63,22 @@ const (
 // open to enabling variables later without touching stored data.
 var quickActionTemplateTokenRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
+// quickActionTriggerMentionRe catches mention markup that would enqueue a
+// target of its own.
+//
+// The prompt is appended verbatim to a comment that then runs through the
+// normal mention pipeline, so an agent/squad mention inside it enqueues a
+// SECOND target alongside the configured one. That breaks the invariant the
+// whole permission model rests on — "a public action runs exactly the target
+// it was validated against" — and the sidebar only reports the first outcome,
+// so the extra run is invisible at the click. Rejecting at write time keeps
+// one action equal to one target.
+//
+// Only trigger-capable kinds are refused. `mention://issue/...` and
+// `mention://member/...` render as links and enqueue nothing, so a prompt may
+// legitimately point at an issue or name a person.
+var quickActionTriggerMentionRe = regexp.MustCompile(`mention://(agent|squad|all)/`)
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -147,6 +163,9 @@ func validateQuickActionPrompt(raw string) (string, error) {
 	}
 	if token := quickActionTemplateTokenRe.FindString(prompt); token != "" {
 		return "", fmt.Errorf("template variables are not supported yet; remove %s — the agent already reads this issue", token)
+	}
+	if quickActionTriggerMentionRe.MatchString(prompt) {
+		return "", fmt.Errorf("the prompt cannot @mention an agent or squad; a quick action runs exactly the one target it is bound to")
 	}
 	return prompt, nil
 }
@@ -264,26 +283,125 @@ func (h *Handler) agentInvocableByEveryone(ctx context.Context, agent db.Agent) 
 	return false
 }
 
-func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction) QuickActionResponse {
-	target := h.resolveQuickActionTarget(ctx, qa)
+// quickActionCatalog is a batched resolver for the list endpoint.
+//
+// The single-row path issues a GetAgent (plus GetSquad) AND a
+// ListAgentInvocationTargets per action. At the 30-action cap that is 60-90
+// sequential round-trips on every sidebar and settings load. This loads the
+// workspace's agents, squads, and invocation targets in THREE queries and
+// answers from memory. Workspaces are small-team scale, so listing all agents
+// costs less than thirty point lookups.
+type quickActionCatalog struct {
+	agents map[string]db.Agent
+	squads map[string]db.Squad
+	// publicAgents holds agent ids every workspace member may invoke.
+	publicAgents map[string]bool
+}
 
-	resp := QuickActionResponse{
-		ID:            uuidToString(qa.ID),
-		WorkspaceID:   uuidToString(qa.WorkspaceID),
-		Name:          qa.Name,
-		Description:   qa.Description,
-		AssigneeType:  qa.AssigneeType,
-		AssigneeID:    uuidToString(qa.AssigneeID),
-		Prompt:        qa.Prompt,
-		Visibility:    qa.Visibility,
-		Status:        qa.Status,
-		LastUsedAt:    timestampToPtr(qa.LastUsedAt),
-		UseCount:      qa.UseCount,
-		CreatedByID:   uuidToString(qa.CreatedByID),
-		CreatedAt:     timestampToString(qa.CreatedAt),
-		UpdatedAt:     timestampToString(qa.UpdatedAt),
-		TargetMissing: !target.Found,
+func (h *Handler) loadQuickActionCatalog(ctx context.Context, workspaceID pgtype.UUID) quickActionCatalog {
+	cat := quickActionCatalog{
+		agents:       map[string]db.Agent{},
+		squads:       map[string]db.Squad{},
+		publicAgents: map[string]bool{},
 	}
+
+	agents, err := h.Queries.ListAgents(ctx, workspaceID)
+	if err != nil {
+		// Degrade to "target unresolved" rather than failing the whole list:
+		// the catalog is display metadata, and the run path re-checks
+		// everything that matters anyway.
+		return cat
+	}
+	agentIDs := make([]pgtype.UUID, 0, len(agents))
+	for _, a := range agents {
+		cat.agents[uuidToString(a.ID)] = a
+		agentIDs = append(agentIDs, a.ID)
+	}
+
+	if squads, err := h.Queries.ListSquads(ctx, workspaceID); err == nil {
+		for _, sq := range squads {
+			cat.squads[uuidToString(sq.ID)] = sq
+		}
+	}
+
+	if len(agentIDs) > 0 {
+		targets, err := h.Queries.ListAgentInvocationTargetsByAgentIDs(ctx, agentIDs)
+		if err == nil {
+			for _, t := range targets {
+				if t.TargetType == "workspace" {
+					cat.publicAgents[uuidToString(t.AgentID)] = true
+				}
+			}
+		}
+	}
+	return cat
+}
+
+// resolve mirrors resolveQuickActionTarget + agentInvocableByEveryone, but
+// entirely from the pre-loaded maps. The two must agree; the shared shape of
+// quickActionTarget is what keeps them honest.
+func (c quickActionCatalog) resolve(qa db.QuickAction) (quickActionTarget, bool) {
+	if qa.AssigneeType == "squad" {
+		squad, ok := c.squads[uuidToString(qa.AssigneeID)]
+		if !ok || squad.ArchivedAt.Valid {
+			return quickActionTarget{}, false
+		}
+		leader, ok := c.agents[uuidToString(squad.LeaderID)]
+		if !ok {
+			return quickActionTarget{}, false
+		}
+		name := squad.Name
+		return quickActionTarget{Agent: leader, Name: name, Found: true},
+			c.publicAgents[uuidToString(leader.ID)] && leader.PermissionMode == "public_to"
+	}
+	agent, ok := c.agents[uuidToString(qa.AssigneeID)]
+	if !ok {
+		return quickActionTarget{}, false
+	}
+	return quickActionTarget{Agent: agent, Name: agent.Name, Found: true},
+		c.publicAgents[uuidToString(agent.ID)] && agent.PermissionMode == "public_to"
+}
+
+// quickActionToResponseFrom builds a row's response off the batched catalog.
+func quickActionToResponseFrom(qa db.QuickAction, cat quickActionCatalog) QuickActionResponse {
+	resp := baseQuickActionResponse(qa)
+	target, targetPublic := cat.resolve(qa)
+	resp.TargetMissing = !target.Found
+	if target.Found {
+		resp.TargetName = target.Name
+		resp.TargetPublic = targetPublic
+	}
+	return resp
+}
+
+// baseQuickActionResponse maps the stored columns. Target metadata is layered
+// on by whichever resolver the caller used.
+func baseQuickActionResponse(qa db.QuickAction) QuickActionResponse {
+	return QuickActionResponse{
+		ID:           uuidToString(qa.ID),
+		WorkspaceID:  uuidToString(qa.WorkspaceID),
+		Name:         qa.Name,
+		Description:  qa.Description,
+		AssigneeType: qa.AssigneeType,
+		AssigneeID:   uuidToString(qa.AssigneeID),
+		Prompt:       qa.Prompt,
+		Visibility:   qa.Visibility,
+		Status:       qa.Status,
+		LastUsedAt:   timestampToPtr(qa.LastUsedAt),
+		UseCount:     qa.UseCount,
+		CreatedByID:  uuidToString(qa.CreatedByID),
+		CreatedAt:    timestampToString(qa.CreatedAt),
+		UpdatedAt:    timestampToString(qa.UpdatedAt),
+	}
+}
+
+// quickActionToResponse is the single-row path, used by create/update where
+// exactly one action is being returned and a batch would be pointless. The
+// list endpoint uses quickActionToResponseFrom instead.
+func (h *Handler) quickActionToResponse(ctx context.Context, qa db.QuickAction) QuickActionResponse {
+	resp := baseQuickActionResponse(qa)
+	target := h.resolveQuickActionTarget(ctx, qa)
+	resp.TargetMissing = !target.Found
 	if target.Found {
 		resp.TargetName = target.Name
 		resp.TargetPublic = h.agentInvocableByEveryone(ctx, target.Agent)
@@ -316,6 +434,36 @@ func (h *Handler) requireQuickActionActor(w http.ResponseWriter, r *http.Request
 		return "", "", false
 	}
 	return workspaceID, userID, true
+}
+
+// loadReachableQuickAction fetches an action and enforces the ONE rule that
+// governs who may touch a private one: it belongs to its creator and nobody
+// else, whatever they know its id.
+//
+// This exists because the check used to be inline and only in RunQuickAction.
+// Update and Render reached rows by (id, workspace) alone, so any member who
+// learned a UUID — an action-created comment carries one — could rewrite or
+// read back another member's private prompt. Centralizing it means a new
+// endpoint cannot forget the rule by omission.
+//
+// A private action the caller does not own reports 404, not 403: whether a
+// given UUID exists is itself not the caller's business.
+func (h *Handler) loadReachableQuickAction(
+	w http.ResponseWriter,
+	r *http.Request,
+	id, workspaceID pgtype.UUID,
+	userID string,
+) (db.QuickAction, bool) {
+	qa, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: id, WorkspaceID: workspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "quick action not found")
+		return db.QuickAction{}, false
+	}
+	if qa.Visibility == "private" && uuidToString(qa.CreatedByID) != userID {
+		writeError(w, http.StatusNotFound, "quick action not found")
+		return db.QuickAction{}, false
+	}
+	return qa, true
 }
 
 // requirePublicQuickActionRole gates writes that leave an action `public`.
@@ -360,9 +508,10 @@ func (h *Handler) ListQuickActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	catalog := h.loadQuickActionCatalog(r.Context(), wsUUID)
 	out := make([]QuickActionResponse, 0, len(rows))
 	for _, qa := range rows {
-		out = append(out, h.quickActionToResponse(r.Context(), qa))
+		out = append(out, quickActionToResponseFrom(qa, catalog))
 	}
 	writeJSON(w, http.StatusOK, ListQuickActionsResponse{QuickActions: out})
 }
@@ -442,7 +591,7 @@ func (h *Handler) CreateQuickAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
-	workspaceID, _, ok := h.requireQuickActionActor(w, r)
+	workspaceID, userID, ok := h.requireQuickActionActor(w, r)
 	if !ok {
 		return
 	}
@@ -454,9 +603,8 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	existing, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: idUUID, WorkspaceID: wsUUID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "quick action not found")
+	existing, ok := h.loadReachableQuickAction(w, r, idUUID, wsUUID, userID)
+	if !ok {
 		return
 	}
 
@@ -471,11 +619,12 @@ func (h *Handler) UpdateQuickAction(w http.ResponseWriter, r *http.Request) {
 	// member could rewrite the prompt behind a workspace-wide button.
 	visibility := existing.Visibility
 	if req.Visibility != nil {
-		visibility, err = normalizeQuickActionVisibility(*req.Visibility)
+		normalized, err := normalizeQuickActionVisibility(*req.Visibility)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		visibility = normalized
 	}
 	if (visibility == "public" || existing.Visibility == "public") && !h.requirePublicQuickActionRole(w, r, workspaceID) {
 		return
@@ -575,9 +724,8 @@ func (h *Handler) DeleteQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	existing, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: idUUID, WorkspaceID: wsUUID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "quick action not found")
+	existing, ok := h.loadReachableQuickAction(w, r, idUUID, wsUUID, userID)
+	if !ok {
 		return
 	}
 	// A public action is workspace furniture; a private one belongs to its
@@ -651,9 +799,8 @@ func (h *Handler) RenderQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	qa, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: idUUID, WorkspaceID: issue.WorkspaceID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "quick action not found")
+	qa, ok := h.loadReachableQuickAction(w, r, idUUID, issue.WorkspaceID, userID)
+	if !ok {
 		return
 	}
 
@@ -710,18 +857,12 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	qa, err := h.Queries.GetQuickAction(r.Context(), db.GetQuickActionParams{ID: idUUID, WorkspaceID: issue.WorkspaceID})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "quick action not found")
+	qa, ok := h.loadReachableQuickAction(w, r, idUUID, issue.WorkspaceID, userID)
+	if !ok {
 		return
 	}
 	if qa.Status != "active" {
 		writeError(w, http.StatusBadRequest, "quick action is archived")
-		return
-	}
-	// A private action is its creator's; nobody else can reach it even by id.
-	if qa.Visibility == "private" && uuidToString(qa.CreatedByID) != userID {
-		writeError(w, http.StatusNotFound, "quick action not found")
 		return
 	}
 
