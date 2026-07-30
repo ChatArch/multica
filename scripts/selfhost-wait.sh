@@ -3,14 +3,14 @@
 # Shared by `make selfhost` and `make selfhost-build`.
 #
 # Why the host port is read back from Compose instead of re-derived here: the
-# Makefile `include`s .env, and GNU Make lets an assignment in an included
-# makefile override a real environment variable (without -e), while Compose does
-# the opposite — the environment beats .env. Since .env.example ships
-# BACKEND_PORT uncommented, a port passed through the environment
-# (`BACKEND_PORT=9000 make selfhost`) was invisible to the recipe: the health
-# check polled 8080 while the stack was published on 9000, so a healthy install
-# reported "still starting" and printed the wrong backend URL. `docker compose
-# port` is the only authority on the published host port, so ask it.
+# recipes used to probe `${PORT:-8080}` while Compose published `${BACKEND_PORT:-8080}`.
+# Two different variables as the source of truth means any config where they
+# disagree breaks — `.env` setting PORT with BACKEND_PORT unset probed the custom
+# port while the stack sat on 8080, and `make selfhost PORT=8080` over a .env
+# with BACKEND_PORT=9100 probed 8080 while the stack sat on 9100, hammering the
+# wrong port for 60s and then reporting "Services are still starting" on a
+# healthy install. `docker compose port` is the only authority on what Compose
+# actually published, so ask it rather than re-deriving the answer.
 
 set -euo pipefail
 

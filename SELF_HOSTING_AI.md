@@ -64,9 +64,15 @@ make selfhost-stop
 
 If the default ports (8080/3000) are in use:
 
-1. Edit `.env` and change `PORT` and `FRONTEND_PORT`
+1. Edit `.env` and change `PORT` and `FRONTEND_PORT`. These are host ports; the
+   containers keep listening on 8080/3000 internally, so no rebuild is needed.
+   Edit the file rather than passing the values on the command line — `.env` is
+   included by the Makefile and overrides the environment.
 2. Run `make selfhost`
 3. Run `multica setup self-host --port <PORT> --frontend-port <FRONTEND_PORT>`
+
+`BACKEND_PORT` is an optional alias that overrides `PORT` for the backend. If
+both are set to different values, `make selfhost` says which one it used.
 
 ## Troubleshooting
 

@@ -16,10 +16,10 @@
 # Frontend: http://localhost:${FRONTEND_PORT:-3000}
 # Backend:  http://localhost:${BACKEND_PORT:-${PORT:-8080}}
 #
-# BACKEND_PORT / FRONTEND_PORT are HOST ports only. The containers always listen
-# on 8080 / 3000 internally, so changing them never needs a rebuild. BACKEND_PORT
-# falls back to PORT so that setting either one in .env works, matching
-# Makefile and scripts/local-env.sh.
+# The published values above are HOST ports; the containers always listen on
+# 8080 / 3000 internally, so changing them never needs a rebuild. PORT is the
+# variable to edit — BACKEND_PORT is an optional alias that overrides it, and
+# this chain matches Makefile and scripts/local-env.sh.
 
 name: multica
 

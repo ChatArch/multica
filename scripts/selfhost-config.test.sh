@@ -140,4 +140,208 @@ require_env \
   "$(resolve_make_public_url "$explicit_worktree_env")" \
   "https://api.explicit.example"
 
+# ---------------------------------------------------------------------------
+# Host port consistency (regression for #6145)
+#
+# The health check and the success message must use the port Compose actually
+# published. The recipes used to probe ${PORT:-8080} while Compose published
+# ${BACKEND_PORT:-8080} — two sources of truth, so any config where they
+# disagreed hammered the wrong port for 60s and then reported "Services are
+# still starting" on a healthy stack.
+#
+# These cases drive the real `make selfhost` recipe. The docker stub does NOT
+# get told what to publish: on `up` it asks the real `docker compose config` to
+# interpolate the compose file with the environment the recipe actually handed
+# it, records that, and answers `port` from the recording. So the assertion
+# crosses environment -> make -> compose -> report for real, and a stub that
+# agreed with a broken recipe could not make it pass.
+# ---------------------------------------------------------------------------
+
+stub_dir="$tmp_dir/bin"
+mkdir -p "$stub_dir"
+
+cat >"$stub_dir/docker" <<'STUB'
+#!/usr/bin/env bash
+# `docker compose` stub. Derives the published host ports from the real compose
+# interpolation of the environment this invocation received, so the recorded
+# answer is whatever the recipe truly asked Compose for.
+set -uo pipefail
+args=("$@")
+sub=""
+subidx=0
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+  up | pull | port | version | logs | down | build)
+    sub=${args[i]}
+    subidx=$i
+    break
+    ;;
+  esac
+done
+files=()
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [ "${args[i]}" = "-f" ]; then files+=(-f "${args[i + 1]}"); fi
+done
+case "$sub" in
+version) echo "2.30.0" ;;
+up)
+  "$REAL_DOCKER" compose "${files[@]}" config --format json 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  const config = JSON.parse(raw);
+  for (const service of ["backend", "frontend"]) {
+    console.log(service + "=" + config.services[service].ports[0].published);
+  }
+});
+' >>"$STUB_PUBLISHED_RECORD"
+  ;;
+port)
+  service=${args[subidx + 1]}
+  published=$(grep "^${service}=" "$STUB_PUBLISHED_RECORD" 2>/dev/null | tail -n 1 | cut -d= -f2)
+  if [ -z "$published" ]; then exit 1; fi
+  printf '127.0.0.1:%s\n' "$published"
+  ;;
+*) : ;;
+esac
+exit 0
+STUB
+
+cat >"$stub_dir/curl" <<'STUB'
+#!/usr/bin/env bash
+# Records probed URLs and always reports a healthy backend.
+set -uo pipefail
+for arg in "$@"; do
+  case "$arg" in
+  http*) printf '%s\n' "$arg" >>"$STUB_CURL_LOG" ;;
+  esac
+done
+exit 0
+STUB
+
+chmod +x "$stub_dir/docker" "$stub_dir/curl"
+
+# Throwaway checkout so the recipe never touches this repo's own .env.
+recipe_dir="$tmp_dir/recipe"
+mkdir -p "$recipe_dir/scripts"
+cp Makefile .env.example docker-compose.selfhost.yml docker-compose.selfhost.build.yml "$recipe_dir/"
+cp scripts/selfhost-wait.sh scripts/selfhost-preflight.sh "$recipe_dir/scripts/"
+
+record="$tmp_dir/published"
+curl_log="$tmp_dir/probed"
+real_docker="$(command -v docker)"
+
+# Runs `make <target>` against the stubs after applying a sed script to .env.
+# Remaining args are passed through to make (environment assignments must be
+# given as VAR=value before the target via `env`, make variables after it).
+run_recipe() {
+  local target=$1 env_mutation=$2 shell_env=$3 make_args=$4
+
+  cp "$recipe_dir/.env.example" "$recipe_dir/.env"
+  if [ -n "$env_mutation" ]; then
+    sed "$env_mutation" "$recipe_dir/.env" >"$recipe_dir/.env.tmp"
+    mv "$recipe_dir/.env.tmp" "$recipe_dir/.env"
+  fi
+  : >"$record"
+  : >"$curl_log"
+
+  (
+    cd "$recipe_dir" || exit 1
+    eval "env PATH=\"$stub_dir:\$PATH\" \
+      REAL_DOCKER=\"$real_docker\" \
+      STUB_PUBLISHED_RECORD=\"$record\" \
+      STUB_CURL_LOG=\"$curl_log\" \
+      $shell_env make $target $make_args"
+  )
+}
+
+published_port() {
+  grep "^$1=" "$record" | tail -n 1 | cut -d= -f2
+}
+
+probed_port() {
+  sed -n '1s#http://localhost:\([0-9]*\)/health#\1#p' "$curl_log"
+}
+
+require_consistent() {
+  local label=$1 expected=$2
+  local published probed
+  published=$(published_port backend)
+  probed=$(probed_port)
+
+  if [ "$published" != "$expected" ] || [ "$probed" != "$expected" ]; then
+    echo "[$label] host port disagreement"
+    echo "  expected published and probed port: $expected"
+    echo "  compose published: ${published:-<none>}"
+    echo "  health check probed: ${probed:-<none>}"
+    exit 1
+  fi
+}
+
+# PORT is the value to edit, so editing it must move the published port and the
+# probe together. Fails on the old recipe, which probed 9100 while Compose
+# published 8080.
+run_recipe selfhost 's/^PORT=8080/PORT=9100/' '' '' >/dev/null
+require_consistent 'PORT edited in .env' 9100
+
+# BACKEND_PORT remains an alias that overrides PORT.
+run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=9200/' '' '' >/dev/null
+require_consistent 'BACKEND_PORT alias in .env' 9200
+
+# A make command-line override must not desync the probe from Compose. Fails on
+# the old recipe, which probed 8080 while Compose published 9100.
+run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=9100/' '' 'PORT=8080' >/dev/null
+require_consistent 'make PORT=8080 over BACKEND_PORT=9100' 9100
+
+# With no alias pinned in .env, an alias from the environment survives make's
+# include and takes effect end to end.
+run_recipe selfhost '' 'BACKEND_PORT=9300' '' >/dev/null
+require_consistent 'BACKEND_PORT from the environment' 9300
+
+# The env file stays authoritative for values it does set, so an environment
+# PORT is ignored — but it must be reported rather than silently dropped.
+env_ignored_output="$(run_recipe selfhost '' 'PORT=9500' '')"
+require_consistent 'PORT from the environment is overridden by .env' 8080
+require_config "$env_ignored_output" 'PORT=9500 from your environment is ignored;'
+
+# Defaults stay 8080/3000.
+run_recipe selfhost '' '' '' >/dev/null
+require_consistent 'defaults' 8080
+if [ "$(published_port frontend)" != "3000" ]; then
+  echo "default frontend host port should be 3000, got $(published_port frontend)"
+  exit 1
+fi
+
+# selfhost-build resolves the port the same way.
+run_recipe selfhost-build 's/^PORT=8080/PORT=9400/' '' '' >/dev/null
+require_consistent 'selfhost-build with PORT edited' 9400
+
+# Config that cannot take effect must be reported, not silently dropped.
+preflight_output="$(run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=8080/;s/^PORT=8080/PORT=9100/' '' '')"
+require_config "$preflight_output" 'BACKEND_PORT wins for the backend, so PORT=9100 is ignored.'
+
+preflight_output="$(run_recipe selfhost '' 'FRONTEND_PORT=3100' '')"
+require_config "$preflight_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
+
+# A clean default run must stay quiet.
+quiet_output="$(run_recipe selfhost '' '' '')"
+if grep -Fq 'is ignored' <<<"$quiet_output"; then
+  echo "default configuration must not emit ignored-port warnings:"
+  echo "$quiet_output"
+  exit 1
+fi
+
+# The recipes must delegate instead of re-deriving the port.
+for expected_call in 'bash scripts/selfhost-wait.sh official' 'bash scripts/selfhost-wait.sh build'; do
+  if ! grep -Fq "$expected_call" Makefile; then
+    echo "Makefile must call the shared wait script: $expected_call"
+    exit 1
+  fi
+done
+if grep -n 'localhost:$${PORT' Makefile; then
+  echo "The self-host recipes must not re-derive the backend host port from \$PORT."
+  echo "Use scripts/selfhost-wait.sh, which reads the published port from Compose."
+  exit 1
+fi
+
 echo "self-host env derivation ok"

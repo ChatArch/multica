@@ -138,10 +138,10 @@ If the frontend and backend are served from different hostnames, `COOKIE_DOMAIN`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `8080` | Backend server port. In the Docker Compose self-host stack the backend container always listens on `8080` internally; `PORT` there acts as a fallback for `BACKEND_PORT` (the host port). |
-| `BACKEND_PORT` | Value of `PORT`, else `8080` | **Host** port the backend is published on by `docker-compose.selfhost.yml`. Takes precedence over `PORT`. Changing it needs no rebuild. |
+| `PORT` | `8080` | Backend port — the one to edit. It is the port the backend process listens on for a local/bare run, and the host port the Compose self-host stack publishes. In Compose the container always listens on `8080` internally, so changing this needs no rebuild. |
+| `BACKEND_PORT` | Value of `PORT` | Optional alias that overrides `PORT` for the backend, in `Makefile`, `scripts/local-env.sh` and `docker-compose.selfhost.yml` alike. Leave it unset unless the host port must differ from the port the process listens on. `API_PORT` and `SERVER_PORT` are further aliases. |
 | `METRICS_ADDR` | empty | Optional Prometheus metrics listener, for example `127.0.0.1:9090` |
-| `FRONTEND_PORT` | `3000` | **Host** port the frontend is published on. The container always listens on `3000` internally. |
+| `FRONTEND_PORT` | `3000` | Frontend port. Host port in Compose; the container always listens on `3000` internally. |
 | `CORS_ALLOWED_ORIGINS` | Value of `FRONTEND_ORIGIN` | Comma-separated list of allowed origins. Governs **both** the HTTP CORS allowlist **and** the WebSocket `Origin` check. A browser origin that isn't listed here (and isn't `localhost`) has its real-time WebSocket upgrade rejected with `403`, so live updates stop working until a manual refresh. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 

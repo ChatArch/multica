@@ -4,9 +4,27 @@ MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
 
+# Port values as they arrived from the real environment, captured before the env
+# file is included. Including a makefile overrides environment variables, so
+# after the include there is no way to tell that `PORT=9000 make selfhost` was
+# ever asked for. The self-host preflight uses these to say so out loud instead
+# of silently ignoring the request. Detection only — the env file stays
+# authoritative.
+SHELL_ENV_PORT := $(if $(filter environment,$(origin PORT)),$(PORT))
+SHELL_ENV_BACKEND_PORT := $(if $(filter environment,$(origin BACKEND_PORT)),$(BACKEND_PORT))
+SHELL_ENV_FRONTEND_PORT := $(if $(filter environment,$(origin FRONTEND_PORT)),$(FRONTEND_PORT))
+
 ifneq ($(wildcard $(ENV_FILE)),)
 include $(ENV_FILE)
 endif
+
+# Same idea for the env file itself: PORT is rewritten just below, so capture
+# what the file asked for while it is still visible.
+ENV_FILE_PORT := $(if $(filter file,$(origin PORT)),$(PORT))
+ENV_FILE_BACKEND_PORT := $(if $(filter file,$(origin BACKEND_PORT)),$(BACKEND_PORT))
+ENV_FILE_API_PORT := $(if $(filter file,$(origin API_PORT)),$(API_PORT))
+ENV_FILE_SERVER_PORT := $(if $(filter file,$(origin SERVER_PORT)),$(SERVER_PORT))
+ENV_FILE_FRONTEND_PORT := $(if $(filter file,$(origin FRONTEND_PORT)),$(FRONTEND_PORT))
 
 POSTGRES_DB ?= multica
 POSTGRES_USER ?= multica
@@ -63,6 +81,21 @@ define REQUIRE_COMPOSE
 	esac
 endef
 
+# Surfaces port configuration that would be ignored. See the script header and
+# the SHELL_ENV_* / ENV_FILE_* captures at the top of this file.
+define REQUIRE_PORT_CONTRACT
+	@ENV_FILE="$(ENV_FILE)" \
+		SHELL_ENV_PORT="$(SHELL_ENV_PORT)" \
+		SHELL_ENV_BACKEND_PORT="$(SHELL_ENV_BACKEND_PORT)" \
+		SHELL_ENV_FRONTEND_PORT="$(SHELL_ENV_FRONTEND_PORT)" \
+		ENV_FILE_PORT="$(ENV_FILE_PORT)" \
+		ENV_FILE_BACKEND_PORT="$(ENV_FILE_BACKEND_PORT)" \
+		ENV_FILE_API_PORT="$(ENV_FILE_API_PORT)" \
+		ENV_FILE_SERVER_PORT="$(ENV_FILE_SERVER_PORT)" \
+		ENV_FILE_FRONTEND_PORT="$(ENV_FILE_FRONTEND_PORT)" \
+		bash scripts/selfhost-preflight.sh
+endef
+
 # Default target changed from selfhost to help: bare `make` now prints this help
 # instead of launching a full Docker Compose build, which is safer for onboarding.
 .DEFAULT_GOAL := help
@@ -81,6 +114,7 @@ makehelp: help ## Alias for `make help`
 
 selfhost: ## Create .env if needed, then pull and start the official self-hosted images
 	$(REQUIRE_COMPOSE)
+	$(REQUIRE_PORT_CONTRACT)
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
 		cp .env.example .env; \
@@ -114,6 +148,7 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 
 selfhost-build: ## Build backend/web from the current checkout and start the self-hosted stack
 	$(REQUIRE_COMPOSE)
+	$(REQUIRE_PORT_CONTRACT)
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
 		cp .env.example .env; \
