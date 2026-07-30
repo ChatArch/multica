@@ -383,6 +383,73 @@ require_absent 'redundant alias with the same value' "$redundant_output" 'Set bu
 preflight_output="$(run_recipe selfhost '' 'FRONTEND_PORT=3100' '')"
 require_config "$preflight_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
 
+# ---------------------------------------------------------------------------
+# Explicit empty assignments
+#
+# `BACKEND_PORT=` in the env file is a distinct input from an absent one: make
+# lets it override the same variable from the environment, and it drops out of
+# the alias chain instead of setting a port. Reading existence off the value made
+# the preflight name the shadowed environment value as the winner — the opposite
+# of what actually started up.
+# ---------------------------------------------------------------------------
+
+# The winner the preflight reports, so it can be checked against reality.
+reported_backend_winner() {
+  local output=$1 reported
+  reported=$(sed -n 's/.*backend host port resolves to \([0-9][0-9]*\) .*/\1/p' <<<"$output" | head -n 1)
+  if [ -z "$reported" ]; then
+    reported=$(sed -n 's/.*backend host port resolves to the \([0-9][0-9]*\) default.*/\1/p' <<<"$output" | head -n 1)
+  fi
+  printf '%s' "$reported"
+}
+
+require_reported_winner() {
+  local label=$1 output=$2 expected=$3 reported
+  reported=$(reported_backend_winner "$output")
+
+  if [ "$reported" != "$expected" ]; then
+    echo "[$label] the preflight reported a different winner than the stack uses"
+    echo "  reported:  ${reported:-<none>}"
+    echo "  actual:    $expected"
+    echo "Observed:"
+    echo "$output"
+    exit 1
+  fi
+}
+
+# An empty alias in the env file shadows the environment and does not win, so the
+# chain must fall through to PORT — and the shadowed input must be listed.
+empty_alias_output="$(
+  run_recipe selfhost 's/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'BACKEND_PORT=9000' ''
+)"
+require_consistent 'empty BACKEND_PORT in .env over shell BACKEND_PORT' 8080
+require_reported_winner 'empty BACKEND_PORT in .env' "$empty_alias_output" 8080
+require_config "$empty_alias_output" 'resolves to 8080 from PORT (.env)'
+require_config "$empty_alias_output" 'BACKEND_PORT=9000 (environment)'
+require_absent 'empty BACKEND_PORT in .env' "$empty_alias_output" 'resolves to 9000'
+
+# Emptying every link of the chain falls back to the documented default, and the
+# shadowed environment value is still reported.
+all_empty_output="$(
+  run_recipe selfhost 's/^PORT=8080/PORT=/;s/^# BACKEND_PORT=8080/BACKEND_PORT=/' 'PORT=9000' ''
+)"
+require_consistent 'every chain variable emptied in .env' 8080
+require_reported_winner 'every chain variable emptied in .env' "$all_empty_output" 8080
+require_config "$all_empty_output" 'resolves to the 8080 default'
+require_config "$all_empty_output" 'PORT=9000 (environment)'
+
+# Same for the frontend, which has no aliases: an empty assignment shadows the
+# environment and Compose falls back to 3000.
+empty_frontend_output="$(
+  run_recipe selfhost 's/^FRONTEND_PORT=3000/FRONTEND_PORT=/' 'FRONTEND_PORT=3100' ''
+)"
+if [ "$(published_port frontend)" != "3000" ]; then
+  echo "an empty FRONTEND_PORT in .env must fall back to 3000, got $(published_port frontend)"
+  exit 1
+fi
+require_config "$empty_frontend_output" 'FRONTEND_PORT=3100 from your environment is ignored;'
+require_config "$empty_frontend_output" 'resolves to the 3000 default'
+
 # A clean default run must stay quiet.
 quiet_output="$(run_recipe selfhost '' '' '')"
 for noise in 'Set but unused' 'is ignored' 'resolves to'; do

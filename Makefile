@@ -4,29 +4,31 @@ MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
 
+SELFHOST_PORT_VARS := PORT BACKEND_PORT API_PORT SERVER_PORT FRONTEND_PORT
+
 # Port values as they arrived from the real environment, captured before the env
 # file is included. Including a makefile overrides environment variables, so
 # after the include there is no way to tell that `PORT=9000 make selfhost` was
 # ever asked for. The self-host preflight uses these to say so out loud instead
 # of silently ignoring the request. Detection only — the env file stays
 # authoritative.
-SHELL_ENV_PORT := $(if $(filter environment,$(origin PORT)),$(PORT))
-SHELL_ENV_BACKEND_PORT := $(if $(filter environment,$(origin BACKEND_PORT)),$(BACKEND_PORT))
-SHELL_ENV_API_PORT := $(if $(filter environment,$(origin API_PORT)),$(API_PORT))
-SHELL_ENV_SERVER_PORT := $(if $(filter environment,$(origin SERVER_PORT)),$(SERVER_PORT))
-SHELL_ENV_FRONTEND_PORT := $(if $(filter environment,$(origin FRONTEND_PORT)),$(FRONTEND_PORT))
+$(foreach v,$(SELFHOST_PORT_VARS),\
+	$(eval SHELL_ENV_$(v) := $(if $(filter environment,$(origin $(v))),$($(v)))))
 
 ifneq ($(wildcard $(ENV_FILE)),)
 include $(ENV_FILE)
 endif
 
-# Same idea for the env file itself: PORT is rewritten just below, so capture
-# what the file asked for while it is still visible.
-ENV_FILE_PORT := $(if $(filter file,$(origin PORT)),$(PORT))
-ENV_FILE_BACKEND_PORT := $(if $(filter file,$(origin BACKEND_PORT)),$(BACKEND_PORT))
-ENV_FILE_API_PORT := $(if $(filter file,$(origin API_PORT)),$(API_PORT))
-ENV_FILE_SERVER_PORT := $(if $(filter file,$(origin SERVER_PORT)),$(SERVER_PORT))
-ENV_FILE_FRONTEND_PORT := $(if $(filter file,$(origin FRONTEND_PORT)),$(FRONTEND_PORT))
+# Same idea for the env file itself: PORT is rewritten and FRONTEND_PORT gets a
+# default just below, so capture what the file asked for while it is still
+# visible. Existence is tracked separately from the value because an explicit
+# empty assignment (`BACKEND_PORT=`) is a real, distinct input: make lets it
+# override the environment, and it drops the variable out of the alias chain
+# rather than setting a port. Inferring "unset" from an empty value would make
+# the preflight report the shadowed environment value as the winner.
+$(foreach v,$(SELFHOST_PORT_VARS),\
+	$(eval ENV_FILE_$(v) := $(if $(filter file,$(origin $(v))),$($(v)))) \
+	$(eval ENV_FILE_$(v)_IS_SET := $(if $(filter file,$(origin $(v))),1)))
 
 POSTGRES_DB ?= multica
 POSTGRES_USER ?= multica
@@ -87,16 +89,7 @@ endef
 # the SHELL_ENV_* / ENV_FILE_* captures at the top of this file.
 define REQUIRE_PORT_CONTRACT
 	@ENV_FILE="$(ENV_FILE)" \
-		SHELL_ENV_PORT="$(SHELL_ENV_PORT)" \
-		SHELL_ENV_BACKEND_PORT="$(SHELL_ENV_BACKEND_PORT)" \
-		SHELL_ENV_API_PORT="$(SHELL_ENV_API_PORT)" \
-		SHELL_ENV_SERVER_PORT="$(SHELL_ENV_SERVER_PORT)" \
-		SHELL_ENV_FRONTEND_PORT="$(SHELL_ENV_FRONTEND_PORT)" \
-		ENV_FILE_PORT="$(ENV_FILE_PORT)" \
-		ENV_FILE_BACKEND_PORT="$(ENV_FILE_BACKEND_PORT)" \
-		ENV_FILE_API_PORT="$(ENV_FILE_API_PORT)" \
-		ENV_FILE_SERVER_PORT="$(ENV_FILE_SERVER_PORT)" \
-		ENV_FILE_FRONTEND_PORT="$(ENV_FILE_FRONTEND_PORT)" \
+		$(foreach v,$(SELFHOST_PORT_VARS),SHELL_ENV_$(v)="$(SHELL_ENV_$(v))" ENV_FILE_$(v)="$(ENV_FILE_$(v))" ENV_FILE_$(v)_IS_SET="$(ENV_FILE_$(v)_IS_SET)") \
 		bash scripts/selfhost-preflight.sh
 endef
 
