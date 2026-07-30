@@ -134,3 +134,22 @@ WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND 
 UPDATE inbox_item i SET archived = true
 WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false
   AND i.issue_id IN (SELECT id FROM issue WHERE status IN ('done', 'cancelled'));
+
+-- name: CreateSubtreeSettledInbox :many
+-- Idempotent insert for the delegated subtree roll-up (MUL-5483). The partial
+-- unique index uq_inbox_subtree_settled_active allows at most one un-archived
+-- roll-up per (recipient, parent issue), so when the last two siblings settle
+-- concurrently and both transactions see a closed barrier, the loser is
+-- swallowed here instead of producing a duplicate notification.
+--
+-- Returns 0 rows when it was deduped and 1 row when it actually inserted, so the
+-- caller only broadcasts inbox:new for a real write.
+INSERT INTO inbox_item (
+    workspace_id, recipient_type, recipient_id,
+    type, severity, issue_id, title, body,
+    actor_type, actor_id, details
+) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (recipient_type, recipient_id, issue_id)
+    WHERE type = 'subtree_settled' AND archived = false
+DO NOTHING
+RETURNING *;

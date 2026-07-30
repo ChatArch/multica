@@ -368,9 +368,25 @@ func siblingsAreStaged(children []db.Issue) bool {
 //     parked in `backlog`, so they cannot fire out of order; the caller's
 //     idempotency guard collapses any duplicate wake.
 func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
+	return StageBarrierClosedFunc(children, completed, isTerminalChildStatus)
+}
+
+// StageBarrierClosedFunc is stageBarrierClosed with the "finished" predicate
+// supplied by the caller, exported so other packages reuse this exact stage
+// frontier instead of reimplementing it.
+//
+// The predicate is a parameter because two consumers legitimately disagree about
+// what finished means. The child-done system comment asks "did this stage close"
+// and uses isTerminalChildStatus (done/cancelled). The delegated subtree roll-up
+// (cmd/server) asks "does this child still need work" and must also count
+// in_review, since that is where an agent parks completed work — the dominant
+// completion state in this product. Sharing the frontier while parameterizing
+// the predicate keeps stage semantics in one place and lets neither consumer
+// drift from it (MUL-5483 review round 2).
+func StageBarrierClosedFunc(children []db.Issue, completed db.Issue, finished func(string) bool) bool {
 	if !siblingsAreStaged(children) {
 		for _, c := range children {
-			if !isTerminalChildStatus(c.Status) {
+			if !finished(c.Status) {
 				return false
 			}
 		}
@@ -386,7 +402,7 @@ func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
 		if !c.Stage.Valid {
 			continue // unstaged children are ignored by the frontier
 		}
-		if c.Stage.Int32 <= s && !isTerminalChildStatus(c.Status) {
+		if c.Stage.Int32 <= s && !finished(c.Status) {
 			return false
 		}
 	}

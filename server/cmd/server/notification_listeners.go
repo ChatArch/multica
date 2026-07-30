@@ -461,18 +461,34 @@ func notifyIssueSubscribers(
 	return notified, tierSuppressed
 }
 
-// notifyDelegatedSubtreeSettled emits ONE roll-up notification to a parent's
-// delegated subscribers when the last open child settles — the barrier that
-// makes the delegated tier's per-child suppression safe rather than lossy.
+// isSettledChildStatus reports whether a child no longer needs work. Passed as
+// the "finished" predicate to handler.StageBarrierClosedFunc so the roll-up
+// reuses the platform's stage frontier rather than a second notion of it.
+func isSettledChildStatus(status string) bool { return settledChildStatuses[status] }
+
+// notifyDelegatedSubtreeSettled emits ONE roll-up notification when a stage
+// barrier closes among a parent's children — the signal that makes the delegated
+// tier's per-child suppression safe rather than lossy.
 //
-// Without it, suppressing per-child completion would simply lose the signal;
-// with it, a 30-child tree produces one "your agent finished this" instead of
-// thirty. It fires only on the transition that CLOSES the barrier, so a tree
-// that settles one child at a time still notifies exactly once.
+// Two things the first cut got wrong (MUL-5483 review round 2):
 //
-// Scope is deliberately narrow: only reason='delegated' members of the PARENT.
-// Direct subscribers already receive per-child status changes through the
-// existing bubble, and changing that is a separate product decision.
+//  1. RECIPIENTS. It notified only reason='delegated' subscribers of the PARENT,
+//     while the people whose per-child completion was suppressed are the
+//     delegated subscribers of the CHILDREN. Those sets differ in the most
+//     common shape by far — the human created the parent themselves
+//     (reason='creator') and an agent filed the children (reason='delegated') —
+//     so that user got no per-child event, no parent bubble (tierSuppressed
+//     removed them), and no roll-up either: zero completion signal. The
+//     recipient set must be exactly who the tier silenced, which is the union of
+//     delegated members across the children, plus any delegate watching the
+//     parent itself (an agent-created parent).
+//
+//  2. BARRIER. It required EVERY child to be settled, discarding the stage
+//     semantics the design promised. On a serial plan (stage 1 finished, stage 2
+//     still parked in backlog) that means no signal at all until the whole tree
+//     ends. It now shares handler.StageBarrierClosedFunc with the child-done
+//     path, so a staged plan reports per stage and an unstaged one reports once
+//     at the end.
 func notifyDelegatedSubtreeSettled(
 	ctx context.Context,
 	queries *db.Queries,
@@ -485,13 +501,21 @@ func notifyDelegatedSubtreeSettled(
 	if child.ParentIssueID == nil || *child.ParentIssueID == "" {
 		return
 	}
-	// Only the entering transition closes a barrier. A settled → settled edit
-	// (in_review → done) must not re-fire the roll-up.
+	parentID := parseUUID(*child.ParentIssueID)
+
+	// A child leaving a settled status REOPENS the tree: retire the previous
+	// roll-up so a later genuine re-settle can notify again. Without this the
+	// partial unique index would dedupe against a stale row forever.
+	if settledChildStatuses[prevStatus] && !settledChildStatuses[child.Status] {
+		archiveSubtreeSettledInbox(ctx, queries, bus, workspaceID, *child.ParentIssueID)
+		return
+	}
+	// Only the entering transition can close a barrier. A settled -> settled edit
+	// (in_review -> done) must not re-fire.
 	if settledChildStatuses[prevStatus] || !settledChildStatuses[child.Status] {
 		return
 	}
 
-	parentID := parseUUID(*child.ParentIssueID)
 	siblings, err := queries.ListChildIssues(ctx, parentID)
 	if err != nil {
 		slog.Error("subtree roll-up: failed to list siblings",
@@ -501,10 +525,21 @@ func notifyDelegatedSubtreeSettled(
 	if len(siblings) == 0 {
 		return
 	}
-	for _, s := range siblings {
-		if !settledChildStatuses[s.Status] {
-			return // barrier still open
+	// The completed row must come from the same snapshot the barrier is judged
+	// on, so its stage matches what StageBarrierClosedFunc sees.
+	var completed db.Issue
+	found := false
+	for _, sib := range siblings {
+		if util.UUIDToString(sib.ID) == child.ID {
+			completed, found = sib, true
+			break
 		}
+	}
+	if !found {
+		return
+	}
+	if !handler.StageBarrierClosedFunc(siblings, completed, isSettledChildStatus) {
+		return
 	}
 
 	parent, err := queries.GetIssue(ctx, parentID)
@@ -514,23 +549,11 @@ func notifyDelegatedSubtreeSettled(
 		return
 	}
 
-	subs, err := queries.ListIssueSubscribers(ctx, parentID)
-	if err != nil {
-		slog.Error("subtree roll-up: failed to list parent subscribers",
-			"parent_id", *child.ParentIssueID, "error", err)
+	recipients := delegatedRollupRecipients(ctx, queries, parentID, siblings)
+	if len(recipients) == 0 {
 		return
 	}
-
-	var memberIDs []string
-	for _, sub := range subs {
-		if sub.UserType == "member" && sub.Reason == "delegated" {
-			memberIDs = append(memberIDs, util.UUIDToString(sub.UserID))
-		}
-	}
-	if len(memberIDs) == 0 {
-		return
-	}
-	userPrefs := loadUserPrefs(ctx, queries, workspaceID, memberIDs)
+	userPrefs := loadUserPrefs(ctx, queries, workspaceID, recipients)
 
 	details, _ := json.Marshal(map[string]any{
 		"parent_issue_id": *child.ParentIssueID,
@@ -538,21 +561,20 @@ func notifyDelegatedSubtreeSettled(
 	})
 	body := fmt.Sprintf("All %d sub-issues have finished.", len(siblings))
 
-	for _, subID := range memberIDs {
+	for _, subID := range recipients {
 		if subID == e.ActorID {
 			continue
 		}
 		if prefs, ok := userPrefs[subID]; ok && isNotifMuted(prefs, "subtree_settled") {
 			continue
 		}
-		item, err := queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+		items, err := queries.CreateSubtreeSettledInbox(ctx, db.CreateSubtreeSettledInboxParams{
 			WorkspaceID:   parseUUID(workspaceID),
 			RecipientType: "member",
 			RecipientID:   parseUUID(subID),
-			Type:          "subtree_settled",
 			Severity:      "info",
 			// Point at the PARENT: the roll-up is about the tree, and the parent
-			// is where the user can see every child at once.
+			// is where every child is visible at once.
 			IssueID:   parentID,
 			Title:     parent.Title,
 			Body:      util.StrToText(body),
@@ -565,7 +587,10 @@ func notifyDelegatedSubtreeSettled(
 				"subscriber_id", subID, "error", err)
 			continue
 		}
-		resp := inboxItemToResponse(item)
+		if len(items) == 0 {
+			continue // deduped by the partial unique index — a concurrent close won
+		}
+		resp := inboxItemToResponse(items[0])
 		resp["issue_status"] = parent.Status
 		bus.Publish(events.Event{
 			Type:        protocol.EventInboxNew,
@@ -573,6 +598,95 @@ func notifyDelegatedSubtreeSettled(
 			ActorType:   e.ActorType,
 			ActorID:     e.ActorID,
 			Payload:     map[string]any{"item": resp},
+		})
+	}
+}
+
+// delegatedRollupRecipients returns the members who should receive a subtree
+// roll-up: everyone holding a 'delegated' subscription on the parent or on any
+// of its children. That is precisely the set whose per-child completion
+// deliverToSubscriber suppressed, which is what makes the suppression lossless.
+// Deduped, and ordered deterministically so a failure is reproducible.
+func delegatedRollupRecipients(
+	ctx context.Context,
+	queries *db.Queries,
+	parentID pgtype.UUID,
+	siblings []db.Issue,
+) []string {
+	seen := map[string]bool{}
+	var out []string
+
+	collect := func(issueID pgtype.UUID) {
+		subs, err := queries.ListIssueSubscribers(ctx, issueID)
+		if err != nil {
+			slog.Error("subtree roll-up: failed to list subscribers",
+				"issue_id", util.UUIDToString(issueID), "error", err)
+			return
+		}
+		for _, sub := range subs {
+			if sub.UserType != "member" || sub.Reason != "delegated" {
+				continue
+			}
+			id := util.UUIDToString(sub.UserID)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+
+	collect(parentID)
+	for _, sib := range siblings {
+		collect(sib.ID)
+	}
+	return out
+}
+
+// archiveSubtreeSettledInbox retires a parent's roll-up notifications, freeing
+// the partial-unique slot so a tree that reopens and finishes again notifies
+// again. Mirrors archiveStaleTaskFailedInbox: best-effort, and it tells affected
+// clients to self-heal.
+func archiveSubtreeSettledInbox(
+	ctx context.Context,
+	queries *db.Queries,
+	bus *events.Bus,
+	workspaceID string,
+	parentIssueID string,
+) {
+	rows, err := queries.ArchiveInboxByIssueAndType(ctx, db.ArchiveInboxByIssueAndTypeParams{
+		WorkspaceID: parseUUID(workspaceID),
+		IssueID:     parseUUID(parentIssueID),
+		Type:        "subtree_settled",
+	})
+	if err != nil {
+		slog.Error("subtree roll-up: archive on reopen failed",
+			"parent_id", parentIssueID, "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	// Payload shape must match the existing inbox:batch-archived contract
+	// (InboxBatchArchivedPayload in packages/core/types/events.ts) — recipient_id
+	// plus a count — or the client handler cannot read it.
+	counts := map[string]int{}
+	for _, r := range rows {
+		if r.RecipientType != "member" {
+			continue
+		}
+		counts[util.UUIDToString(r.RecipientID)]++
+	}
+	for recipientID, count := range counts {
+		bus.Publish(events.Event{
+			Type:        protocol.EventInboxBatchArchived,
+			WorkspaceID: workspaceID,
+			Payload: map[string]any{
+				"recipient_id": recipientID,
+				"count":        int64(count),
+				"issue_id":     parentIssueID,
+				"reason":       "subtree_reopened",
+			},
 		})
 	}
 }

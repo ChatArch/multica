@@ -284,6 +284,86 @@ func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams
 	return i, err
 }
 
+const createSubtreeSettledInbox = `-- name: CreateSubtreeSettledInbox :many
+INSERT INTO inbox_item (
+    workspace_id, recipient_type, recipient_id,
+    type, severity, issue_id, title, body,
+    actor_type, actor_id, details
+) VALUES ($1, $2, $3, 'subtree_settled', $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (recipient_type, recipient_id, issue_id)
+    WHERE type = 'subtree_settled' AND archived = false
+DO NOTHING
+RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details
+`
+
+type CreateSubtreeSettledInboxParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+	Severity      string      `json:"severity"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	Title         string      `json:"title"`
+	Body          pgtype.Text `json:"body"`
+	ActorType     pgtype.Text `json:"actor_type"`
+	ActorID       pgtype.UUID `json:"actor_id"`
+	Details       []byte      `json:"details"`
+}
+
+// Idempotent insert for the delegated subtree roll-up (MUL-5483). The partial
+// unique index uq_inbox_subtree_settled_active allows at most one un-archived
+// roll-up per (recipient, parent issue), so when the last two siblings settle
+// concurrently and both transactions see a closed barrier, the loser is
+// swallowed here instead of producing a duplicate notification.
+//
+// Returns 0 rows when it was deduped and 1 row when it actually inserted, so the
+// caller only broadcasts inbox:new for a real write.
+func (q *Queries) CreateSubtreeSettledInbox(ctx context.Context, arg CreateSubtreeSettledInboxParams) ([]InboxItem, error) {
+	rows, err := q.db.Query(ctx, createSubtreeSettledInbox,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.Severity,
+		arg.IssueID,
+		arg.Title,
+		arg.Body,
+		arg.ActorType,
+		arg.ActorID,
+		arg.Details,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []InboxItem{}
+	for rows.Next() {
+		var i InboxItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.RecipientType,
+			&i.RecipientID,
+			&i.Type,
+			&i.Severity,
+			&i.IssueID,
+			&i.Title,
+			&i.Body,
+			&i.Read,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Details,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getInboxItem = `-- name: GetInboxItem :one
 SELECT id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details FROM inbox_item
 WHERE id = $1
