@@ -102,7 +102,7 @@ function isDetailView(value: string | null): value is DetailView {
 // File path validation + inline add
 // ---------------------------------------------------------------------------
 
-function useValidateNewFilePath() {
+export function useValidateNewFilePath() {
   const { t } = useT("skills");
   return (path: string, existing: string[]): string => {
     const p = path.trim();
@@ -111,6 +111,17 @@ function useValidateNewFilePath() {
     if (p.split("/").includes("..")) return t(($) => $.detail.add_file.errors.double_dot);
     if (p === SKILL_MD) return t(($) => $.detail.add_file.errors.reserved);
     if (existing.includes(p)) return t(($) => $.detail.add_file.errors.exists);
+    // Directories are inferred from paths, not stored, so a file named after
+    // one merges into that folder's node when the tree is built — it drops off
+    // the rail while still sitting in the draft. Rejected in both directions:
+    // a file cannot take a folder's name, and cannot take a name that an
+    // existing file is already nested under.
+    if (existing.some((other) => other.startsWith(`${p}/`))) {
+      return t(($) => $.detail.add_file.errors.is_directory);
+    }
+    if (existing.some((other) => p.startsWith(`${other}/`))) {
+      return t(($) => $.detail.add_file.errors.under_file);
+    }
     return "";
   };
 }
@@ -456,6 +467,7 @@ function FilesTab({
   onAddFile,
   onCancelAddFile,
   onDeleteFile,
+  onRenameFile,
   onContentChange,
 }: {
   filePaths: string[];
@@ -469,12 +481,24 @@ function FilesTab({
   onStartAddFile: () => void;
   onAddFile: (path: string) => void;
   onCancelAddFile: () => void;
-  onDeleteFile: () => void;
+  onDeleteFile: (path?: string) => void;
+  onRenameFile: (from: string, to: string) => void;
   onContentChange: (content: string) => void;
 }) {
   const { t } = useT("skills");
+  const validatePath = useValidateNewFilePath();
   const supportingPaths = filePaths.filter((p) => p !== SKILL_MD);
   const isMd = isMarkdownPath(selectedPath);
+  // Absent for read-only viewers so the tree never offers an action it would
+  // then refuse. SKILL.md is excluded inside the tree by reservedPath.
+  const treeActions = canEdit
+    ? {
+        validatePath,
+        onRename: onRenameFile,
+        onDelete: onDeleteFile,
+        reservedPath: SKILL_MD,
+      }
+    : undefined;
 
   return (
     <div className="flex min-h-full flex-col md:h-full md:flex-row">
@@ -501,6 +525,7 @@ function FilesTab({
         </p>
         {supportingPaths.length > 0 ? (
           <FileTree
+            actions={treeActions}
             filePaths={supportingPaths}
             selectedPath={selectedPath}
             onSelect={onSelectPath}
@@ -574,7 +599,7 @@ function FilesTab({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      onClick={onDeleteFile}
+                      onClick={() => onDeleteFile()}
                       className="text-muted-foreground hover:text-destructive"
                       aria-label={t(($) => $.detail.delete_file)}
                     >
@@ -864,10 +889,22 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     setAddingFile(false);
   };
 
-  const handleDeleteFile = () => {
-    if (selectedPath === SKILL_MD) return;
-    setFiles((prev) => prev.filter((f) => f.path !== selectedPath));
-    setSelectedPath(SKILL_MD);
+  // Defaults to the open file so the editor's own delete button keeps working;
+  // the tree passes the row that was acted on, which need not be the open one.
+  const handleDeleteFile = (path: string = selectedPath) => {
+    if (path === SKILL_MD) return;
+    setFiles((prev) => prev.filter((f) => f.path !== path));
+    if (path === selectedPath) setSelectedPath(SKILL_MD);
+  };
+
+  const handleRenameFile = (from: string, to: string) => {
+    if (from === SKILL_MD) return;
+    setFiles((prev) =>
+      prev.map((f) => (f.path === from ? { ...f, path: to } : f)),
+    );
+    // Follow the file: the rail is keyed by path, so leaving the selection on
+    // the old one would land on a row that no longer exists.
+    if (from === selectedPath) setSelectedPath(to);
   };
 
   const handleFileContentChange = (newContent: string) => {
@@ -1092,6 +1129,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
             onAddFile={handleAddFile}
             onCancelAddFile={() => setAddingFile(false)}
             onDeleteFile={handleDeleteFile}
+            onRenameFile={handleRenameFile}
             onContentChange={handleFileContentChange}
           />
         )}

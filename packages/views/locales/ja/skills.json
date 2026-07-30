@@ -6,10 +6,22 @@
     "new_skill": "新規スキル",
     "search_placeholder": "スキルを検索…",
     "scopes": {
-      "all": { "label": "すべて", "description": "このワークスペースのすべてのスキル" },
-      "used": { "label": "使用中", "description": "1 つ以上のエージェントに割り当てられたスキル" },
-      "unused": { "label": "未使用", "description": "どのエージェントにも割り当てられていないスキル" },
-      "mine": { "label": "自分が作成", "description": "あなたが作成したスキル" }
+      "all": {
+        "label": "すべて",
+        "description": "このワークスペースのすべてのスキル"
+      },
+      "used": {
+        "label": "使用中",
+        "description": "1 つ以上のエージェントに割り当てられたスキル"
+      },
+      "unused": {
+        "label": "未使用",
+        "description": "どのエージェントにも割り当てられていないスキル"
+      },
+      "mine": {
+        "label": "自分が作成",
+        "description": "あなたが作成したスキル"
+      }
     },
     "empty": {
       "title": "まだスキルがありません",
@@ -145,7 +157,9 @@
         "absolute": "絶対パスは使用できません。",
         "double_dot": "パスに「..」を含めることはできません。",
         "reserved": "SKILL.md はメインファイル用に予約されています。",
-        "exists": "このパスにはすでにファイルが存在します。"
+        "exists": "このパスにはすでにファイルが存在します。",
+        "is_directory": "同名のフォルダーが既に存在します",
+        "under_file": "その場所はすでにファイルが使用しています"
       }
     },
     "header": {
@@ -298,7 +312,12 @@
     "conflict_name_still_exists": "その名前はすでに存在します。別の名前を選択するか、スキップしてください。"
   },
   "file_tree": {
-    "no_files": "ファイルなし"
+    "no_files": "ファイルなし",
+    "actions": {
+      "label": "{{path}} の操作",
+      "rename": "名前を変更",
+      "delete": "削除"
+    }
   },
   "file_viewer": {
     "no_content": "*まだ内容がありません*",

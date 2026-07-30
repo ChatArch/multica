@@ -6,10 +6,22 @@
     "new_skill": "새 스킬",
     "search_placeholder": "스킬 검색...",
     "scopes": {
-      "all": { "label": "전체", "description": "이 워크스페이스의 모든 스킬" },
-      "used": { "label": "사용 중", "description": "하나 이상의 에이전트에 할당된 스킬" },
-      "unused": { "label": "미사용", "description": "어떤 에이전트에도 할당되지 않은 스킬" },
-      "mine": { "label": "내가 만든 스킬", "description": "내가 생성한 스킬" }
+      "all": {
+        "label": "전체",
+        "description": "이 워크스페이스의 모든 스킬"
+      },
+      "used": {
+        "label": "사용 중",
+        "description": "하나 이상의 에이전트에 할당된 스킬"
+      },
+      "unused": {
+        "label": "미사용",
+        "description": "어떤 에이전트에도 할당되지 않은 스킬"
+      },
+      "mine": {
+        "label": "내가 만든 스킬",
+        "description": "내가 생성한 스킬"
+      }
     },
     "empty": {
       "title": "아직 스킬이 없습니다",
@@ -145,7 +157,9 @@
         "absolute": "절대 경로는 사용할 수 없습니다.",
         "double_dot": "경로에 \"..\"을(를) 포함할 수 없습니다.",
         "reserved": "SKILL.md는 메인 파일용으로 예약되어 있습니다.",
-        "exists": "이 경로에 이미 파일이 있습니다."
+        "exists": "이 경로에 이미 파일이 있습니다.",
+        "is_directory": "같은 이름의 폴더가 이미 있습니다",
+        "under_file": "해당 위치는 이미 파일이 사용 중입니다"
       }
     },
     "header": {
@@ -298,7 +312,12 @@
     "conflict_name_still_exists": "해당 이름이 이미 있습니다. 다른 이름을 선택하거나 건너뛰세요."
   },
   "file_tree": {
-    "no_files": "파일 없음"
+    "no_files": "파일 없음",
+    "actions": {
+      "label": "{{path}} 작업",
+      "rename": "이름 변경",
+      "delete": "삭제"
+    }
   },
   "file_viewer": {
     "no_content": "*아직 내용이 없습니다*",

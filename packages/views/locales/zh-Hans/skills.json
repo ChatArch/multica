@@ -157,7 +157,9 @@
         "absolute": "不允许绝对路径。",
         "double_dot": "路径不能包含 \"..\"。",
         "reserved": "SKILL.md 已为主文件保留。",
-        "exists": "该路径已存在文件。"
+        "exists": "该路径已存在文件。",
+        "is_directory": "已有同名文件夹",
+        "under_file": "该位置已被一个文件占用"
       }
     },
     "header": {
@@ -310,7 +312,12 @@
     "conflict_name_still_exists": "这个名称仍然已存在。请换一个名称或跳过。"
   },
   "file_tree": {
-    "no_files": "无文件"
+    "no_files": "无文件",
+    "actions": {
+      "label": "{{path}} 的操作",
+      "rename": "重命名",
+      "delete": "删除"
+    }
   },
   "file_viewer": {
     "no_content": "*暂无内容*",
