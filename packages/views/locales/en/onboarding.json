@@ -107,11 +107,6 @@
     "hint_pick": "Pick one to continue — or skip if you'd rather not say.",
     "hint_continue": "Looks good. Hit Continue when you're ready."
   },
-  "runtime_aside": {
-    "what_eyebrow": "What's an agent runtime?",
-    "what_body": "The background process that pairs this computer with one AI coding tool — Claude Code, Codex, and so on — and actually runs your agent's work.",
-    "learn_more": "Learn about agent runtimes →"
-  },
   "cli_install": {
     "copy_aria": "Copy",
     "intro": "You'll need an agent runtime on this computer (Claude Code, Codex, Cursor, …) for it to run your agent. Also works on servers and remote dev boxes.",
@@ -178,28 +173,6 @@
     "slug_reserved_error": "That workspace URL is reserved and cannot be used.",
     "slug_conflict_toast": "Choose a different workspace URL",
     "create_failed_toast": "Failed to create workspace",
-    "side_create_eyebrow": "What lives inside a workspace",
-    "side_existing_eyebrow": "Your workspace",
-    "side_preview_name": "Your workspace",
-    "side_preview_slug": "workspace",
-    "preview": {
-      "inbox_label": "Inbox",
-      "inbox_meta": "your notifications",
-      "issues_label": "Issues",
-      "issues_meta": "shared task board",
-      "agents_label": "Agents",
-      "agents_meta": "your AI teammates",
-      "projects_label": "Projects",
-      "projects_meta": "group related issues",
-      "autopilot_label": "Autopilot",
-      "autopilot_meta": "scheduled automation",
-      "runtimes_label": "Runtimes",
-      "runtimes_meta": "where agents run",
-      "skills_label": "Skills",
-      "skills_meta": "reusable playbooks",
-      "more_label": "And more",
-      "more_meta": "and more"
-    },
     "creation_disabled_eyebrow": "Workspace creation is disabled",
     "creation_disabled_headline": "Ask your administrator for an invitation.",
     "creation_disabled_lede": "This Multica instance does not allow new workspaces to be created. Once an administrator invites you to a workspace, accept the invitation and refresh to continue.",

@@ -107,11 +107,6 @@
     "hint_pick": "选一项继续 —— 不想说也可以跳过。",
     "hint_continue": "可以了。准备好就点继续。"
   },
-  "runtime_aside": {
-    "what_eyebrow": "什么是 agent 运行时？",
-    "what_body": "电脑上的一个后台进程，配上一款 AI 编程工具（Claude Code、Codex 等），你的智能体接到的活儿实际由它执行。",
-    "learn_more": "了解 agent 运行时 →"
-  },
   "cli_install": {
     "copy_aria": "复制",
     "intro": "这台电脑上需要装一个 agent 运行时（Claude Code、Codex、Cursor 等）才能运行你的智能体。也支持服务器和远程开发机。",
@@ -178,28 +173,6 @@
     "slug_reserved_error": "该工作区 URL 是系统保留的，无法使用。",
     "slug_conflict_toast": "请换一个工作区 URL",
     "create_failed_toast": "创建工作区失败",
-    "side_create_eyebrow": "工作区里有什么",
-    "side_existing_eyebrow": "你的工作区",
-    "side_preview_name": "你的工作区",
-    "side_preview_slug": "workspace",
-    "preview": {
-      "inbox_label": "收件箱",
-      "inbox_meta": "你的通知",
-      "issues_label": "Issues",
-      "issues_meta": "共享任务面板",
-      "agents_label": "智能体",
-      "agents_meta": "你的 AI 队友",
-      "projects_label": "项目",
-      "projects_meta": "把相关 issue 分组",
-      "autopilot_label": "自动化",
-      "autopilot_meta": "定时自动化",
-      "runtimes_label": "运行时",
-      "runtimes_meta": "智能体跑的地方",
-      "skills_label": "Skills",
-      "skills_meta": "可复用的剧本",
-      "more_label": "更多",
-      "more_meta": "等等"
-    },
     "creation_disabled_eyebrow": "已禁用创建工作区",
     "creation_disabled_headline": "请联系管理员邀请你加入工作区。",
     "creation_disabled_lede": "该 Multica 实例不允许创建新的工作区。等管理员把你邀请到某个工作区后，接受邀请并刷新即可继续。",

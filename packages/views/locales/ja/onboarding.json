@@ -107,11 +107,6 @@
     "hint_pick": "ひとつ選んで続けてください。答えたくない場合はスキップできます。",
     "hint_continue": "いい感じです。準備ができたら「続ける」を押してください。"
   },
-  "runtime_aside": {
-    "what_eyebrow": "エージェントランタイムとは?",
-    "what_body": "Claude Code や Codex などの AI コーディングツール 1 つと組み合わさる、コンピュータ上のバックグラウンドプロセスです。エージェントの仕事を実際に実行します。",
-    "learn_more": "エージェントランタイムについて学ぶ →"
-  },
   "cli_install": {
     "copy_aria": "コピー",
     "intro": "エージェントを実行するには、このコンピュータにエージェントランタイム(Claude Code、Codex、Cursor など)が必要です。サーバーやリモート開発環境でも動作します。",
@@ -178,28 +173,6 @@
     "slug_reserved_error": "そのワークスペース URL は予約済みのため使用できません。",
     "slug_conflict_toast": "別のワークスペース URL を選んでください",
     "create_failed_toast": "ワークスペースを作成できませんでした",
-    "side_create_eyebrow": "ワークスペースの中にあるもの",
-    "side_existing_eyebrow": "あなたのワークスペース",
-    "side_preview_name": "あなたのワークスペース",
-    "side_preview_slug": "workspace",
-    "preview": {
-      "inbox_label": "インボックス",
-      "inbox_meta": "あなたの通知",
-      "issues_label": "イシュー",
-      "issues_meta": "共有のタスクボード",
-      "agents_label": "エージェント",
-      "agents_meta": "あなたの AI チームメイト",
-      "projects_label": "プロジェクト",
-      "projects_meta": "関連するイシューをまとめる",
-      "autopilot_label": "オートパイロット",
-      "autopilot_meta": "スケジュールされた自動化",
-      "runtimes_label": "ランタイム",
-      "runtimes_meta": "エージェントが動く場所",
-      "skills_label": "スキル",
-      "skills_meta": "再利用できるプレイブック",
-      "more_label": "その他",
-      "more_meta": "さらに多くの機能"
-    },
     "creation_disabled_eyebrow": "ワークスペースの作成は無効です",
     "creation_disabled_headline": "管理者に招待を依頼してください。",
     "creation_disabled_lede": "この Multica インスタンスでは新しいワークスペースを作成できません。管理者からワークスペースに招待されたら、招待を承諾して更新し、続けてください。",

@@ -17,7 +17,6 @@ import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
 import { DragStrip } from "@multica/views/platform";
 import { StepHeader } from "../components/step-header";
-import { RuntimeAsidePanel } from "../components/runtime-aside-panel";
 import { CompactRuntimeRow } from "../components/compact-runtime-row";
 import { useRuntimePicker } from "../components/use-runtime-picker";
 import { useT } from "../../i18n";
@@ -106,89 +105,78 @@ export function StepPlatformFork({
   })();
 
   return (
-    <div className="animate-onboarding-enter grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
-      {/* Left — DragStrip + 3-region app shell */}
-      <div className="flex min-h-0 flex-col">
-        <DragStrip />
+    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
+      <DragStrip />
 
-        <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
-          {onBack ? (
-            <button
-              type="button"
-              onClick={onBack}
-              className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              {t(($) => $.common.back)}
-            </button>
-          ) : (
-            <span aria-hidden className="w-0" />
-          )}
-          <div className="flex-1">
-            <StepHeader currentStep="runtime" />
-          </div>
-        </header>
-
-        <main
-          ref={mainRef}
-          style={fadeStyle}
-          className="min-h-0 flex-1 overflow-y-auto"
-        >
-          <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
-            <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-              {t(($) => $.step_platform.eyebrow)}
-            </div>
-            <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-              {t(($) => $.step_platform.headline)}
-            </h1>
-            <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
-              {t(($) => $.step_platform.lede)}
-            </p>
-
-            <div className="mt-10 flex max-w-[560px] flex-col gap-3.5">
-              <ForkPrimary onClick={pickDesktop} downloaded={downloaded} />
-
-              <ForkAlt
-                title={t(($) => $.step_platform.cli_title)}
-                subtitle={t(($) => $.step_platform.cli_subtitle)}
-                actionLabel={t(($) => $.step_platform.cli_action)}
-                onAction={handleOpenCli}
-              />
-
-              <ForkAlt
-                title={t(($) => $.step_platform.cloud_title)}
-                subtitle={t(($) => $.step_platform.cloud_subtitle)}
-                actionLabel={t(($) => $.step_platform.cloud_action)}
-                disabled
-              />
-            </div>
-
-            {/* Inline action bar — hint on the left, Skip on the right.
-                Advancement for the CLI path is owned by the CLI
-                dialog's own "Connect & continue" button; Skip creates
-                the single self-serve onboarding issue. */}
-            <div className="mt-8 flex max-w-[560px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <span
-                aria-live="polite"
-                className="text-caption text-muted-foreground"
-              >
-                {footerHint}
-              </span>
-              <Button variant="secondary" onClick={() => onNext(null)}>
-                {t(($) => $.step_runtime.skip)}
-              </Button>
-            </div>
-          </div>
-        </main>
-      </div>
-
-      {/* Right — always-visible aside */}
-      <aside className="hidden min-h-0 border-l bg-muted/40 lg:flex lg:flex-col">
-        <DragStrip />
-        <div className="min-h-0 flex-1 overflow-y-auto px-12 py-12">
-          <RuntimeAsidePanel />
+      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t(($) => $.common.back)}
+          </button>
+        ) : (
+          <span aria-hidden className="w-0" />
+        )}
+        <div className="flex-1">
+          <StepHeader currentStep="runtime" />
         </div>
-      </aside>
+      </header>
+
+      <main
+        ref={mainRef}
+        style={fadeStyle}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
+          <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            {t(($) => $.step_platform.eyebrow)}
+          </div>
+          <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+            {t(($) => $.step_platform.headline)}
+          </h1>
+          <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
+            {t(($) => $.step_platform.lede)}
+          </p>
+
+          <div className="mt-10 flex max-w-[560px] flex-col gap-3.5">
+            <ForkPrimary onClick={pickDesktop} downloaded={downloaded} />
+
+            <ForkAlt
+              title={t(($) => $.step_platform.cli_title)}
+              subtitle={t(($) => $.step_platform.cli_subtitle)}
+              actionLabel={t(($) => $.step_platform.cli_action)}
+              onAction={handleOpenCli}
+            />
+
+            <ForkAlt
+              title={t(($) => $.step_platform.cloud_title)}
+              subtitle={t(($) => $.step_platform.cloud_subtitle)}
+              actionLabel={t(($) => $.step_platform.cloud_action)}
+              disabled
+            />
+          </div>
+
+          {/* Inline action bar — hint on the left, Skip on the right.
+              Advancement for the CLI path is owned by the CLI
+              dialog's own "Connect & continue" button; Skip creates
+              the single self-serve onboarding issue. */}
+          <div className="mt-8 flex max-w-[560px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <span
+              aria-live="polite"
+              className="text-caption text-muted-foreground"
+            >
+              {footerHint}
+            </span>
+            <Button variant="secondary" onClick={() => onNext(null)}>
+              {t(($) => $.step_runtime.skip)}
+            </Button>
+          </div>
+        </div>
+      </main>
 
       <CliInstallDialog
         open={dialog === "cli"}

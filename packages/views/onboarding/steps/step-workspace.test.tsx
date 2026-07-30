@@ -129,8 +129,8 @@ describe("StepWorkspace — DISABLE_WORKSPACE_CREATION gate", () => {
     ).not.toBeInTheDocument();
 
     // Resume picker still shows the existing workspace card (its name
-    // appears multiple times across avatar / card / side panel — at least
-    // one is enough to know the card is rendered), but the "Create a new
+    // appears in both the avatar and the card label — at least one is
+    // enough to know the card is rendered), but the "Create a new
     // workspace" radio card is gone entirely.
     expect(screen.getAllByText("Acme").length).toBeGreaterThan(0);
     expect(

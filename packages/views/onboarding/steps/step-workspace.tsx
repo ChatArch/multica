@@ -1,21 +1,7 @@
 "use client";
 
 import { type ReactNode, useRef, useState } from "react";
-import {
-  ArrowLeft,
-  ArrowRight,
-  Bot,
-  Dices,
-  FolderKanban,
-  Inbox,
-  ListTodo,
-  Lock,
-  MoreHorizontal,
-  Monitor,
-  Plus,
-  Zap,
-} from "lucide-react";
-import { SkillIcon } from "../../skills/lib/skill-icon";
+import { ArrowLeft, ArrowRight, Dices, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -46,9 +32,10 @@ import { isReservedSlug } from "@multica/core/paths";
  * Step 2 — create your first workspace, or continue with one set up in
  * an earlier session.
  *
- * Shares Questionnaire's editorial two-column skeleton: 3-region app
- * shell on the left, side panel on the right. One **unified footer CTA**
- * handles both paths — `Open X` when the user picks an existing
+ * Single full-width column, like every other step: a 3-region app shell
+ * (header / scrolling middle / footer) with the form centred in it. One
+ * **unified footer CTA** handles both paths — `Open X` when the user picks
+ * an existing
  * workspace, `Create X` when they name a new one. The name / slug
  * fields are inlined here (not via the shared `CreateWorkspaceForm`)
  * because the footer-driven interaction needs externalized submit; the
@@ -91,7 +78,7 @@ export function StepWorkspace({
   const urlHost = workspaceUrlHost(useConfigStore((s) => s.daemonAppUrl));
   // Single source of truth for "can the user reach the create path on this
   // instance?" — drives the resume-mode picker, the eyebrow/headline/lede
-  // copy, the side panel, and the footer CTA so the disabled state can't
+  // copy and the footer CTA so the disabled state can't
   // leak a clickable create affordance even if /api/config arrives late
   // (#3433 review feedback).
   const workspaceCreationAllowed = !workspaceCreationDisabled;
@@ -304,125 +291,105 @@ export function StepWorkspace({
   );
 
   return (
-    <div className="animate-onboarding-enter grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
-      {/* Left column — DragStrip + 3-region app shell */}
-      <div className="flex min-h-0 flex-col">
-        <DragStrip />
-        <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
-          {onBack ? (
-            <button
-              type="button"
-              onClick={onBack}
-              disabled={isCreating}
-              className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              {t(($) => $.common.back)}
-            </button>
-          ) : (
-            <span aria-hidden className="w-0" />
-          )}
-          <div className="flex-1">
-            <StepHeader currentStep="workspace" />
+    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
+      <DragStrip />
+      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={isCreating}
+            className="flex items-center gap-1.5 text-body text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t(($) => $.common.back)}
+          </button>
+        ) : (
+          <span aria-hidden className="w-0" />
+        )}
+        <div className="flex-1">
+          <StepHeader currentStep="workspace" />
+        </div>
+      </header>
+
+      <main
+        ref={mainRef}
+        style={fadeStyle}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
+          <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
+            {reusing
+              ? workspaceCreationAllowed
+                ? t(($) => $.step_workspace.eyebrow_resume)
+                : t(($) => $.step_workspace.creation_disabled_eyebrow_resume)
+              : workspaceCreationAllowed
+                ? t(($) => $.step_workspace.eyebrow_first)
+                : t(($) => $.step_workspace.creation_disabled_eyebrow)}
           </div>
-        </header>
+          <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+            {reusing
+              ? workspaceCreationAllowed
+                ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
+                : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
+              : workspaceCreationAllowed
+                ? t(($) => $.step_workspace.headline_first)
+                : t(($) => $.step_workspace.creation_disabled_headline)}
+          </h1>
+          <p className="mt-4 text-body-lg leading-[1.55] text-foreground">
+            {reusing
+              ? workspaceCreationAllowed
+                ? t(($) => $.step_workspace.lede_resume)
+                : t(($) => $.step_workspace.creation_disabled_lede_resume)
+              : workspaceCreationAllowed
+                ? t(($) => $.step_workspace.lede_first)
+                : t(($) => $.step_workspace.creation_disabled_lede)}
+          </p>
 
-        <main
-          ref={mainRef}
-          style={fadeStyle}
-          className="min-h-0 flex-1 overflow-y-auto"
-        >
-          <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
-            <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-              {reusing
-                ? workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.eyebrow_resume)
-                  : t(($) => $.step_workspace.creation_disabled_eyebrow_resume)
-                : workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.eyebrow_first)
-                  : t(($) => $.step_workspace.creation_disabled_eyebrow)}
-            </div>
-            <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-              {reusing
-                ? workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
-                  : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
-                : workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.headline_first)
-                  : t(($) => $.step_workspace.creation_disabled_headline)}
-            </h1>
-            <p className="mt-4 text-body-lg leading-[1.55] text-foreground">
-              {reusing
-                ? workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.lede_resume)
-                  : t(($) => $.step_workspace.creation_disabled_lede_resume)
-                : workspaceCreationAllowed
-                  ? t(($) => $.step_workspace.lede_first)
-                  : t(($) => $.step_workspace.creation_disabled_lede)}
-            </p>
-
-            <div className="mt-10">
-              {reusing ? (
-                <div className="flex flex-col gap-3">
-                  <ExistingWorkspaceCard
-                    workspace={reusing}
-                    selected={mode === "existing"}
-                    onSelect={pickExisting}
-                  />
-                  {/* Hide the create-new card entirely when the self-host
-                      gate (DISABLE_WORKSPACE_CREATION) is on (#3433) — the
-                      backend would 403 the POST and the user would be stuck
-                      with a useless form. */}
-                  {!workspaceCreationDisabled && (
-                    <CreateNewWorkspaceCard
-                      selected={mode === "create"}
-                      onSelect={pickCreate}
-                    >
-                      {createFields}
-                    </CreateNewWorkspaceCard>
-                  )}
-                </div>
-              ) : workspaceCreationDisabled ? (
-                <CreationDisabledNotice onLogout={logout} />
-              ) : (
-                createFields
-              )}
-            </div>
-
-            {!(workspaceCreationDisabled && !reusing) && (
-              <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-                <span
-                  aria-live="polite"
-                  className="mr-auto text-caption text-muted-foreground"
-                >
-                  {hint}
-                </span>
-                <Button size="lg" disabled={continueDisabled} onClick={onContinue}>
-                  {continueLabel}
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
+          <div className="mt-10">
+            {reusing ? (
+              <div className="flex flex-col gap-3">
+                <ExistingWorkspaceCard
+                  workspace={reusing}
+                  selected={mode === "existing"}
+                  onSelect={pickExisting}
+                />
+                {/* Hide the create-new card entirely when the self-host
+                    gate (DISABLE_WORKSPACE_CREATION) is on (#3433) — the
+                    backend would 403 the POST and the user would be stuck
+                    with a useless form. */}
+                {!workspaceCreationDisabled && (
+                  <CreateNewWorkspaceCard
+                    selected={mode === "create"}
+                    onSelect={pickCreate}
+                  >
+                    {createFields}
+                  </CreateNewWorkspaceCard>
+                )}
               </div>
+            ) : workspaceCreationDisabled ? (
+              <CreationDisabledNotice onLogout={logout} />
+            ) : (
+              createFields
             )}
           </div>
-        </main>
-      </div>
 
-      {/* Right — side panel.
-          Swap sides based on what the user is currently picking:
-          switching to "create" in the resume path swaps the preview
-          from "your existing workspace + what's next" to the generic
-          "what lives inside / things you'll do here" so the preview
-          stays honest to the user's current choice. */}
-      <aside className="hidden min-h-0 border-l bg-muted/40 lg:flex lg:flex-col">
-        <DragStrip />
-        <div className="min-h-0 flex-1 overflow-y-auto px-12 py-12">
-          {reusing && mode !== "create" ? (
-            <ExistingWorkspaceSide workspace={reusing} />
-          ) : (
-            <CreateWorkspaceSide />
+          {!(workspaceCreationDisabled && !reusing) && (
+            <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+              <span
+                aria-live="polite"
+                className="mr-auto text-caption text-muted-foreground"
+              >
+                {hint}
+              </span>
+              <Button size="lg" disabled={continueDisabled} onClick={onContinue}>
+                {continueLabel}
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </div>
           )}
         </div>
-      </aside>
+      </main>
     </div>
   );
 }
@@ -533,159 +500,6 @@ function CreateNewWorkspaceCard({
         <RadioMark selected={selected} />
       </button>
       {selected && <div className="border-t px-5 py-5">{children}</div>}
-    </div>
-  );
-}
-
-function CreateWorkspaceSide() {
-  const { t } = useT("onboarding");
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        {t(($) => $.step_workspace.side_create_eyebrow)}
-      </div>
-
-      <WorkspacePreviewCard
-        name={t(($) => $.step_workspace.side_preview_name)}
-        slug={t(($) => $.step_workspace.side_preview_slug)}
-      />
-    </div>
-  );
-}
-
-function ExistingWorkspaceSide({ workspace }: { workspace: Workspace }) {
-  const { t } = useT("onboarding");
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        {t(($) => $.step_workspace.side_existing_eyebrow)}
-      </div>
-
-      <WorkspacePreviewCard name={workspace.name} slug={workspace.slug} />
-    </div>
-  );
-}
-
-/**
- * Visual preview of the sidebar the user is about to land on — same
- * icons, same labels as the live `<AppSidebar />`, so the onboarding
- * card doubles as "this is what your sidebar will look like." Entity
- * set mirrors the Workspace + Configure groups, lifting Members from
- * Settings to a first-class row because it's the most intuitive way
- * to express "workspaces are multi-player."
- */
-function WorkspacePreviewCard({
-  name,
-  slug,
-}: {
-  name: string;
-  slug: string;
-}) {
-  const { t } = useT("onboarding");
-  const urlHost = workspaceUrlHost(useConfigStore((s) => s.daemonAppUrl));
-  return (
-    <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
-      <div className="flex items-center gap-3 border-b px-4 py-3.5">
-        <WorkspaceAvatar name={name} size="md" />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="truncate text-body font-medium text-foreground">
-            {name}
-          </div>
-          <div className="truncate font-mono text-micro text-muted-foreground">
-            {`${urlHost}/${slug}`}
-          </div>
-        </div>
-        <Lock
-          aria-hidden
-          className="h-3.5 w-3.5 shrink-0 text-faint-foreground"
-        />
-      </div>
-      <div className="flex flex-col">
-        <EntityRow
-          icon={<Inbox className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.inbox_label)}
-          meta={t(($) => $.step_workspace.preview.inbox_meta)}
-        />
-        <EntityRow
-          icon={<ListTodo className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.issues_label)}
-          meta={t(($) => $.step_workspace.preview.issues_meta)}
-        />
-        <EntityRow
-          icon={<Bot className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.agents_label)}
-          meta={t(($) => $.step_workspace.preview.agents_meta)}
-        />
-        <EntityRow
-          icon={<FolderKanban className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.projects_label)}
-          meta={t(($) => $.step_workspace.preview.projects_meta)}
-        />
-        <EntityRow
-          icon={<Zap className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.autopilot_label)}
-          meta={t(($) => $.step_workspace.preview.autopilot_meta)}
-        />
-        <EntityRow
-          icon={<Monitor className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.runtimes_label)}
-          meta={t(($) => $.step_workspace.preview.runtimes_meta)}
-        />
-        <EntityRow
-          icon={<SkillIcon className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.skills_label)}
-          meta={t(($) => $.step_workspace.preview.skills_meta)}
-        />
-        <EntityRow
-          dim
-          icon={<MoreHorizontal className="h-4 w-4" />}
-          label={t(($) => $.step_workspace.preview.more_label)}
-          meta={t(($) => $.step_workspace.preview.more_meta)}
-        />
-      </div>
-    </div>
-  );
-}
-
-function EntityRow({
-  icon,
-  label,
-  meta,
-  dim,
-}: {
-  icon: ReactNode;
-  label: string;
-  meta: string;
-  /** Visually de-emphasized — used for the "and more" row at the bottom. */
-  dim?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 [&:not(:last-child)]:border-b">
-      <span
-        aria-hidden
-        className={cn(
-          "shrink-0",
-          dim ? "text-faint-foreground" : "text-muted-foreground",
-        )}
-      >
-        {icon}
-      </span>
-      <span
-        className={cn(
-          "flex-1 text-label",
-          dim ? "text-muted-foreground" : "text-foreground",
-        )}
-      >
-        {label}
-      </span>
-      <span
-        className={cn(
-          "font-mono text-micro",
-          dim ? "text-muted-foreground" : "text-muted-foreground",
-        )}
-      >
-        {meta}
-      </span>
     </div>
   );
 }
