@@ -3,6 +3,8 @@
 > 状态：设计稿，**不含代码实现**。目标是先把"记录哪些人在什么时间做了什么样的改动"这件事的模型、边界和落地阶段定下来。
 >
 > **v2（2026-07-30）**：采纳 Yushen 的评审意见 —— 改为 **git 风格的全量快照**（每次变更快照实体完整形态，diff 一律读时计算）。主要改动集中在 §4、§5.3、§7.2、§8、§10；§5.1 的 `change_group` / `change_item` 保留，但 `change_item` 从真相源降级为**可重建的派生索引**。
+>
+> **v3（2026-07-30）**：按 Yushen 指示参考 [MUL-5470](https://multica-app.copilothub.ai/multica-ai/issues/7ec44e6e-604e-4980-9ce4-57e5fd85a8d7)（description 版本历史，PR #6129，**未合并**，被 review 判定 9 条 blocker）。新增 **§12** 说明两者关系与排期选项；并用它的实测教训修正了本方案三处会重犯的错误：§5.3.5 的**可变快照**（会导致徽标与 diff 打架）、§5.2 的**并发与写入路径**、§9 的**删除清扫**。
 
 ## 1. 目标与非目标
 
@@ -239,6 +241,8 @@ DETAIL:  PRIMARY KEY constraint on table "cg_bad" lacks column "created_at"
 
 因此最终 DDL 的主键必须是 **`PRIMARY KEY (id, created_at)`** 而非 `id` 单列，且 `change_item.group_id` 无法建 FK 指向它（正好与仓库"新表不加 FK"的约定一致）。同理 `entity_snapshot` 也分区时，`uq_entity_snapshot_rev` 需要并入分区列（`content_blob` 不按时间分区，它是内容寻址的，按 `workspace_id` 哈希分区更合适）。这个约束决定表结构，**必须在 Phase 1 建表时定下**，事后改动等于重建表。
 
+⚠️ 这条约束对 `entity_snapshot` 的后果更严重：它与防并发的唯一索引**直接冲突**，使得两张表必须采用**不同的分区方式**。详见 §5.3.2 末尾（v3 实测结论）。
+
 上面 §5.1 的 DDL 已在 PostgreSQL 16 上实际执行通过（非分区形式），作为字段与索引定义的基线；§5.3 的 v2 快照表 DDL 同样已实测建表通过。
 
 ### 5.2 写入语义：同事务 + 异步 fanout（解决 D4）
@@ -260,6 +264,18 @@ COMMIT
 - 事件总线退回它擅长的角色：**推送**，不是**持久化**。realtime 推送失败只影响即时刷新，重新拉 timeline 即可恢复一致。
 - 落地上收敛到一个 `changelog.Recorder` 抽象（在 service 层，接收 `pgx.Tx`），而不是继续在 `cmd/server/activity_listeners.go` 里逐字段复制粘贴 —— 现状那个文件 317 行里同一段 CreateActivity+errorlog 模板重复了 8 次，新增一个字段就要再抄一遍，这是 D3/D4 的根因。
 - 幂等：`(entity_type, entity_id, request_id, field)` 作为去重依据，重放同一请求不产生第二条历史。
+
+**并发正确性（MUL-5470 的 P0 教训，必须在 Phase 1 就做对）**：MUL-5470 的 `latest → seed → create` 三步没有事务、没有行锁、也没有唯一约束，review 实测**20 个 issue 各发两次并发首编辑，18 个出现双 root / 重复 seed / sibling 版本**。同一套错误在通用模型下会更难查，因此：
+
+- `uq_entity_snapshot_rev(entity_type, entity_id, revision_no)`（§5.3.2 已有）不是装饰 —— 它是防双 root 的**最后一道**保证。并发写会撞唯一约束，冲突方**重试**而不是忽略。
+- 追加一条 `UNIQUE (entity_type, entity_id, parent_snapshot_id)`：同一个父快照只能有一个子快照，从结构上禁止版本链分叉（我们没有分支语义，分叉一律是 bug）。
+- 取"当前最新快照"必须在同一事务内对实体行加锁（`SELECT ... FOR UPDATE`），或采用"乐观写 + 撞唯一约束重试"。二者选一并写进测试。
+- **禁止把查询错误当成"没有历史"**。MUL-5470 把任何 query error 都退化成"首次编辑"，于是一次瞬时 DB 错误就会凭空种下第二个 root。Recorder 里 error 必须向上传播（配合 §5.2 的 fail-closed）。
+
+**写入路径必须穷举，否则等于没做**：MUL-5470 的 batch update（`issue.go` 的批量分支）接受 `updates.description` 但既不记版本也不发 `description_changed`，实测**live 描述已改、版本数与 activity 数均为 0，原文不可恢复**。这类"漏一条路径"的失败是静默的。因此 Phase 1 必须：
+
+1. 列出 issue 的**全部**写入路径（单个 update、batch update、status 快捷接口、CLI、webhook / GitHub triage 同步、autopilot、restore），逐条接 Recorder；
+2. 加一条**结构性测试**：对每个写路径断言"业务字段变了 ⟹ 必有对应 change_group"，新增 handler 若绕过 Recorder 就让测试失败。单纯的 code review 挡不住这类遗漏。
 
 ### 5.3 L2：全量快照对象层（git 风格）
 
@@ -310,6 +326,9 @@ CREATE TABLE entity_snapshot (
     -- 不内联正文 —— 这是控制体积的关键（见 §5.3.4）。
     tree               JSONB NOT NULL,
     snapshot_hash      TEXT NOT NULL,     -- sha256(canonical(tree))，未变则不产生新快照
+    -- true = 该快照属于某个编辑会话的中间态，默认不在 timeline 呈现但仍可回溯。
+    -- 快照行永不原地更新，会话归并靠这个标记而非覆盖（见 §5.3.5）。
+    superseded_in_group BOOLEAN NOT NULL DEFAULT false,
     label              TEXT NULL,         -- 命名版本（Figma 思路，后续阶段）
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id, created_at)          -- 分区约束，见 §5.1
@@ -317,11 +336,40 @@ CREATE TABLE entity_snapshot (
 
 CREATE UNIQUE INDEX uq_entity_snapshot_rev
     ON entity_snapshot(entity_type, entity_id, revision_no);
+-- 同一个父快照只能有一个子快照：从结构上禁止版本链分叉（我们没有分支语义，
+-- 分叉一律是并发 bug）。
+CREATE UNIQUE INDEX uq_entity_snapshot_parent
+    ON entity_snapshot(entity_type, entity_id, parent_snapshot_id)
+    WHERE parent_snapshot_id IS NOT NULL;
+-- 上面那条**挡不住 MUL-5470 那个「双 root」**：partial index 的 WHERE 把
+-- parent IS NULL 排除在外，而且 Postgres 的唯一索引默认把 NULL 视为互不相等。
+-- 实测第二个 root 能插进去（roots = 2）。所以必须再加这一条，每个实体只能有一个根：
+CREATE UNIQUE INDEX uq_entity_snapshot_root
+    ON entity_snapshot(entity_type, entity_id)
+    WHERE parent_snapshot_id IS NULL;
 CREATE INDEX idx_entity_snapshot_entity
     ON entity_snapshot(entity_type, entity_id, created_at DESC);
 CREATE INDEX idx_entity_snapshot_hash
     ON entity_snapshot(workspace_id, snapshot_hash);
 ```
+
+**分区方式：`entity_snapshot` 与 `change_group` 必须不同（实测结论）。** 上面三条唯一索引是防并发写坏版本链的结构性防线，但 Postgres 要求分区表的唯一约束**必须包含所有分区列** —— 实测给按 `created_at` 时间分区的表加 `UNIQUE (entity_type, entity_id) WHERE parent IS NULL` 直接报错：
+
+```
+ERROR:  unique constraint on partitioned table must include all partitioning columns
+DETAIL:  UNIQUE constraint on table "es_part" lacks column "created_at"
+         which is part of the partition key.
+```
+
+把 `created_at` 并进唯一键就等于取消了这个约束（同一实体不同时间当然可以有多个 root）。所以二者不可兼得，结论是**分开处理**：
+
+| 表 | 分区方式 | 理由 |
+|---|---|---|
+| `change_group` / `change_item` | 按 `created_at` **时间分区** | 归档靠 detach partition，主键 `(id, created_at)` |
+| `entity_snapshot` | 按 `(entity_type, entity_id)` **哈希分区**（实测 `PRIMARY KEY (entity_type, entity_id, revision_no)` 可用），或干脆**不分区** | 唯一性约束优先于归档便利；快照的归档改为按 workspace 批量导出 |
+| `content_blob` | 按 `workspace_id` 哈希分区 | 内容寻址，与时间无关 |
+
+这一条是本轮实测才发现的 —— 初稿写的"同理 `entity_snapshot` 也分区"是错的，两个需求实际互斥。
 
 `change_group` / `change_item`（§5.1）保留不变，但**定位改变**：
 
@@ -373,8 +421,18 @@ git 能靠哈希做去重，前提是对象有**严格且唯一**的字节表示
 
 保留其余控量手段：
 
-- **哈希去重**：`snapshot_hash` 与上一版相同则不写新行（改了空格又改回来、幂等重放的 PUT 都会被吃掉）。
-- **编辑窗口聚合**（Figma 30 分钟 checkpoint 思路，我们取 5 分钟）：同一 actor 对同一实体在窗口内的连续编辑**覆盖**同一快照，只留窗口末态。注意这是**有损**的，代价是窗口内的中间态不可回溯 —— 这是一个需要明确接受的取舍，若要求"每次保存都可回溯"就必须关掉聚合并接受体积。
+- **哈希去重**：`snapshot_hash` 与上一版相同则不写新行（改了空格又改回来、幂等重放的 PUT 都会被吃掉）。这一条顺带**结构性免疫**一个线上已存在的 bug：`server/internal/handler/issue.go:2913` 的 `descriptionChanged := req.Description != nil && textToPtr(prevIssue.Description) != resp.Description` 比较的是两个 `*string`**指针**而非字符串值（`textToPtr` 返回 `*string`，见 `handler.go:426`），所以任何带 description 的 PUT 都会被判为"已变更"。用内容哈希判定就不会犯这类错 —— 但 §5.2 的 Recorder **不能复用这些 `*Changed` 布尔量**，必须自己按哈希判断。
+- **编辑窗口聚合**（Figma 30 分钟 checkpoint 思路，我们取 10 分钟以对齐 MUL-5470 的实现）：同一 actor 对同一实体在窗口内的连续编辑合并为一个版本。
+
+  > **⚠️ 这里有一个必须避开的陷阱，来自 MUL-5470 的实测。** 初稿写的是"**覆盖**同一快照，只留窗口末态"—— 这是错的。MUL-5470 正是这么实现的，结果被 review 复现出 P1 blocker：版本按会话合并了，但 activity **没有**合并，于是 3 次写入产生 2 个版本却有 3 条时间线记录，三条徽标分别是 `+1 / +2 / +3` 而 `version_id` 全都相同 —— 点开早期那条 `+1` 看到的却是最终的 `+3` diff，**徽标和它自己的 diff 打架**。
+  >
+  > 根因是**可变快照**：一旦有第二张表（activity / change_group）指向快照行，快照就不能再原地改。所以聚合必须满足：
+  >
+  > 1. 快照行**永不原地更新**（append-only 不是口号，是正确性前提）；
+  > 2. 聚合发生在**写入之前**——同一会话的后续写入更新的是"当前会话已开的那个快照"这个说法本身就违反 (1)，正确做法是**每次都写新快照**，然后由 `change_group` 侧做**会话级归并**：一个编辑会话只有一个 `change_group`，它指向该会话的**最新**快照，会话内的中间快照标记为 `superseded_in_group = true`，默认不在 timeline 呈现但仍可回溯；
+  > 3. 时间线的条目数必须等于 `change_group` 数，**不能**等于写入次数。MUL-5470 的教训是"服务端合并了版本"不等于"时间线合并了"，两者必须由同一个对象（group）决定。
+
+  这样既拿到"一次编辑会话在时间线上只有一行"，又不牺牲 append-only，也不丢中间态（对比初稿的有损覆盖，这版反而更好）。代价是快照行数等于写入次数 —— 由哈希去重 + 长文本 blob 去重承担，这正是 §5.3.1 三个机制中"内容寻址去重"的作用。
 - **大文本外置**：blob 超过阈值（建议 64 KiB）落对象存储。
 
 #### 5.3.6 两个安全边界
@@ -385,6 +443,8 @@ git 能靠哈希做去重，前提是对象有**严格且唯一**的字节表示
 #### 5.3.7 回滚
 
 回滚 = 读取目标快照 → 走**正常的业务更新路径**写回 → 自然产生一个新的 `change_group`（`summary_kind = restored`）和一个新快照。历史永不被改写，这一点与 git 的 revert（新 commit，而非改写历史）一致。
+
+**但回滚必须强制开新会话，不能参与 §5.3.5 的窗口聚合。** MUL-5470 在写测试时抓到这个 bug：回滚若按普通编辑走合并逻辑，会并进当前那个还开着的编辑会话，从而**覆盖掉正要恢复走的那个版本** —— 恰好摧毁这个功能存在的理由。所以 Recorder 需要一个显式的 "force new group" 标志，`restore` 必须带上。这类 bug 不写测试基本发现不了，因此它同时是一条**必须有的测试用例**，不只是实现注意事项。
 
 
 ### 5.4 与 activity_log 的关系（兼容策略）
@@ -470,6 +530,10 @@ POST /api/snapshots/{snapshot_id}/restore                  # 回滚，产生新�
 
 `from` / `to` 可以是**任意两个**快照，不限于相邻 —— 这是快照模型相对"存 diff"的核心能力差，也是 review 场景（"这个 issue 这一周被改成了什么样"）真正需要的形态。diff 一律读时计算、不落库，因此 diff 算法可以随时替换而不影响历史数据。
 
+**计算在哪一侧（沿用 MUL-5470 已落地的分层）**：徽标用的 ±行数由 **Go** 侧算并存进 `change_item`（时间线不必为了显示一个数字再发一次请求），diff 正文由 **TS** 侧算并渲染，两边共用同一套 LCS 语义且测试表逐条对齐（`server/internal/util/linediff.go` ↔ `packages/core/issues/description-diff.ts`，随 #6129 引入）。口径不对齐就会出现"徽标和它自己的 diff 打架"。移动端因为 `react-dom` peer 依赖无法复用 web 的渲染器，但可以复用 `packages/core` 的纯计算层。
+
+**缓存失效（MUL-5470 的 P1）**：前端 query client 是全局 `staleTime: Infinity`（已核对 `packages/core/query-client.ts:7`），所以历史/快照相关的 query **必须显式 invalidate**，否则会出现"编辑了描述但历史入口不出现，必须整页刷新"这种症状。触发点至少三处：本地 mutation 成功、`issue:updated` realtime 事件、以及 restore。新增 endpoint 时要同步登记失效关系。
+
 ### 7.3 工作区审计（admin 视角，新增）
 
 ```
@@ -513,7 +577,11 @@ GET /api/workspace/audit/export?format=csv|jsonl          # 导出动作本身�
 - **可见性继承**：历史条目的可见性 = 其实体的可见性。私有 agent、access-scope 受限 agent（`handler/agent_access.go`）、私有 project 的历史不得因为审计接口而泄漏给无权成员。
 - **密钥零留存**：`custom_env`、token、PAT、webhook secret 的**值**永不写入历史，只记 key 名与"已变更"。这条要在 Recorder 层做**结构性拦截**（字段白名单 + 敏感字段 redact 列表），不能依赖调用方自觉。**全量快照模型下这一条从"应该做"升级为"必须做"**：`agent.custom_env` 是明文 JSONB（`migrations/040_agent_custom_env.up.sql:5`，`handler/agent_env.go` 无加密调用），若快照照抄整行，API key 会被复制进一张 append-only、长保留、且设计上不允许删行的表 —— 泄漏面比现状严重得多。redact 必须发生在**进入 `tree` 之前**，且需要一条"任何快照的 tree 里不得出现敏感 key 的 value"的回归测试。
 - **PII 最小化**：`ip_inet` / `user_agent` 仅对 member actor 的安全类事件记录（登录、权限、集成、导出），普通 issue 字段变更不记。
-- **删除语义**：实体被删除时历史**保留**（否则"删掉就没痕迹"），但正文内容需可按 GDPR 类请求擦除 —— 因此正文集中在 `content_blob`（可单独擦除 content/storage_key，保留快照骨架与变更事实）。
+- **删除语义（v3 修正，来自 MUL-5470 的 P0）**：必须区分三种删除，初稿把它们混为一谈了。
+  - **实体删除** → 历史**保留**（否则"删掉就没痕迹"，审计价值归零）。
+  - **workspace 删除** → 历史**必须清除**。这是本设计的一个真实漏洞：`activity_log` 今天是安全的，因为它有 `workspace_id UUID NOT NULL REFERENCES workspace(id) ON DELETE CASCADE`（`001_init.up.sql:158`）；而 v2 的三张新表按仓库约定**不加 FK、不加 cascade**，等于**主动放弃**了这层保护。MUL-5470 的版本表正是这样，review 实测"删除 workspace 后 workspace/issue 行数为 0，版本行仍有 2 条"。`DeleteWorkspace` 已经有手工清扫无 FK 表的先例（`handler/workspace.go:797` 显式扫 `chat_pinned_agent`，并在 `:785` 先 `LockWorkspaceForDelete`），因此 Phase 1 必须把 `change_group` / `change_item` / `entity_snapshot` / `content_blob` 一并加入那次事务内的清扫，并加回归测试。
+  - **GDPR 类内容擦除** → 只清 `content_blob` 的 `content` / `storage_key`，保留快照骨架与变更事实，历史链不断裂。
+- **清理必须在事务内**：MUL-5470 的单条删除虽然清了版本表，但"先删版本、再删 issue"不在同一事务，中途失败会丢历史或留孤儿行。清扫与主删除同事务。
 - **去重不跨 workspace**：见 §5.3.6。跨租户共享 blob 会形成存在性预言机。
 - **不可篡改性**：本期只做 append-only（无 UPDATE/DELETE 代码路径）。哈希链/WORM 留作扩展点，不实现。
 - **归责 ≠ 追责**：沿用 `attribution` 包的既定立场（"attribution is on behalf of, never blame and never authorization"）。历史里的 `on_behalf_of_user_id` 不参与任何鉴权判断。
@@ -529,6 +597,13 @@ GET /api/workspace/audit/export?format=csv|jsonl          # 导出动作本身�
 - timeline 读取改为 union 新表 + `activity_log`，加游标分页。
 - `activity_log` 保持双写**一个版本周期**，并为 `HasSquadLeaderNoActionEvaluationForTask` / `CountAssigneeChangesByActor` 提供新表等价查询后再停写。
 - 验收：一次多字段更新产生 1 快照 + 1 group + N item；**改一个字段再改回原值，`snapshot_hash` 与两版前一致**（证明规范化序列化正确，这是最能暴露序列化 bug 的一条断言）；把 `change_item` 整表清空后能从快照重算出完全一致的结果；注入 DB 错误时业务更新与历史一起回滚。
+- 验收（以下五条直接来自 MUL-5470 的 blocker，每条都是**已经在真实实现里发生过**的失败，不是假想）：
+  1. **并发**：对同一 issue 并发发两次首编辑，20 次重复实验**零**双 root / 零 sibling（MUL-5470 是 18/20 失败）。
+  2. **会话归并**：连续 3 次自动保存 → timeline 恰好 **1 条** group；点开它与点开最新快照看到的 diff 一致；会话内中间快照仍可通过快照列表取到。
+  3. **空写**：内容完全相同的 PUT 不产生快照、不产生 group。
+  4. **写路径覆盖**：batch update 改描述后，版本数与 group 数 **> 0**（MUL-5470 实测为 0）。
+  5. **删除清扫**：batch delete 与 workspace delete 之后，四张新表中该 workspace 的残留行为 **0**。
+- 验收（前端）：新建 issue → 编辑描述 → 历史入口**无需整页刷新**即出现（对抗 `staleTime: Infinity`）。
 
 **Phase 2 — 内容 blob、diff 与时间旅行**
 - 长文本入 `content_blob`（关闭 D2）：issue description、agent instructions、skill 文件。
@@ -552,8 +627,58 @@ GET /api/workspace/audit/export?format=csv|jsonl          # 导出动作本身�
 2. **`activity_log` 停写时机**：双写期多长？两个业务查询（squad leader 去重、assignee 频次）切换到新表是否需要一次性回填？
 3. **审计接口的商业化门槛**：Linear 把 audit log 放在付费 plan。Multica 是否也做 plan 门槛，影响 API 与 UI 的 gating 位置。
 4. **命名版本的范围**：只给 skill 文件/agent instructions，还是也给 issue description？
-5. **agent 高频写入**：agent 在一次 run 内多次更新同一 issue（常见）是否需要在 group 层再做一次 run 级聚合，避免 timeline 被单个 agent run 刷屏。
+5. ~~**agent 高频写入**：agent 在一次 run 内多次更新同一 issue 是否需要 run 级聚合。~~ **已由 MUL-5470 回答：要，且按 `source_task_id` 的 run 边界切比时间窗口精确。见 §12.1。**
 6. **是否需要 `deleted` 实体的历史入口**：实体删除后，历史从哪个 UI 入口可达（仅审计视图，还是提供"已删除实体"列表）。
 7. **（v2）快照稀释策略选 A / B / C**：见 §8 的表。直接决定"三年前的描述能不能精确 diff"。
-8. **（v2）编辑窗口聚合是否可接受有损**：5 分钟窗口内的中间态不可回溯。若产品要求"每次保存都能回退"，需关闭聚合并接受体积上升。
+8. ~~**（v2）编辑窗口聚合是否可接受有损**~~ **已在 v3 解决且不再有损**：改为"快照全留 + group 级归并"，会话内中间态仍可回溯。见 §5.3.5。
 9. **（v2）comment 是否也纳入全量快照**：comment 数量远大于 issue，全量快照的边际成本主要来自这里。可以只对"被编辑过的 comment"建快照。
+10. **（v3）MUL-5470 / #6129 的排期选 A / B / C**：见 §12.3。这是当前**最需要先拍**的一条，因为它决定 Phase 1 的启动时间。
+11. **（v3）MUL-5492 与 §7.1 的分工**：timeline 分页这件事谁做，避免重复修。
+
+## 12. 与 MUL-5470 的关系（v3 新增，最重要的一节）
+
+MUL-5470「Issue description 历史版本与 diff」是本方案的**垂直切片**：同一个问题，只针对 `issue.description` 一个字段，已经实现并开了 PR #6129。截至本次修订，**#6129 状态为 OPEN、未合并**，两位 agent 独立 review 后一致结论是"不能 merge"，共 9 条 correctness blocker。
+
+这件事对 MUL-5520 有两层意义。
+
+### 12.1 它验证了本方案的四个核心决策
+
+MUL-5470 独立地得出了和本方案相同的结论，这是很强的交叉验证：
+
+| MUL-5470 的决策 | 本方案对应处 |
+|---|---|
+| 存**全量快照**而非增量，"让 diff 和恢复都变成平凡操作" | §5.3（v2 的主体） |
+| 版本行由 **handler 内联写**，不放事件监听器，因为"监听器是 best-effort 的，静默丢版本会摧毁可信度" | §5.2 的 fail-closed 同事务写入 |
+| 版本 = **一次编辑会话**，不是一次写入 | §5.3.5 窗口聚合 |
+| agent 按 **run（`source_task_id`）**切会话，member 按空闲窗口切 | §5.1 的 `task_id` 字段 —— 并且这**直接回答了原 §11 开放问题 5**："agent 一次 run 内多次更新是否要做 run 级聚合"。答案是要，而且 run 边界比时间窗口精确。已采纳 |
+
+同时修正了本方案两处：窗口从 5 分钟改为 **10 分钟**（对齐已实现的行为，没必要制造第二个常量），以及 §5.3.5 那个**可变快照**的错误。
+
+### 12.2 它的 9 条 blocker 有 6 条是**地基问题**，不是这个 feature 的问题
+
+逐条对照后，绝大多数 blocker 换成任何"给某个字段加历史"的实现都会重犯：
+
+| MUL-5470 blocker | 性质 | 本方案的处置 |
+|---|---|---|
+| P0 workspace / batch 删除后快照残留 | 无 FK 表通用问题 | §9 删除语义（v3 已补，含 `workspace.go:797` 的清扫先例） |
+| P0 并发首编辑写坏版本链（18/20） | 缺事务 + 缺唯一约束 | §5.2 并发正确性（v3 已补） |
+| P1 一会话多 activity 指向同一可变快照，徽标与 diff 打架 | 可变快照 | §5.3.5 的 ⚠️ 段（v3 已改，快照永不原地更新） |
+| P1 空写产生假版本（指针比较） | 判定方式错误 | §5.3.5：改用内容哈希，结构性免疫；已确认 `issue.go:2913` 的指针比较在 `origin/main` 上就存在 |
+| P1 batch update 完全绕过历史 | 写入路径未穷举 | §5.2 写入路径穷举 + 结构性测试（v3 已补） |
+| P1 前端历史缓存永不失效 | 全局 `staleTime: Infinity`（已核对 `packages/core/query-client.ts:7`） | §7 读取路径需显式 invalidate，见下 |
+
+**这正是 MUL-5520 存在的理由**：事务边界、唯一性、删除清扫、写路径覆盖、缓存失效这五件事，做一次通用的 Recorder 就全站解决；每加一个字段各做一遍，就是每次都有机会重犯同样的 6 个错。
+
+### 12.3 排期建议（需要 Yushen 决策）
+
+三个选项：
+
+| | 做法 | 代价 |
+|---|---|---|
+| **A** | 原地修完 #6129 的 9 条，先上线；之后再迁到通用表 | 用户价值最快落地，但地基问题修**两遍**（一遍在 `issue_description_version`，一遍在通用表），且要做一次数据迁移 |
+| **B** | 冻结 #6129，先做 MUL-5520 Phase 1，再把 5470 的 UI 接到通用表上 | 只修一遍地基，无迁移；代价是一个已接近完成的 feature 要等地基 |
+| **C**（倾向） | #6129 **只修 2 个 P0**（删除清扫、并发）保证不产生脏数据，**其余 4 条 P1 交给 Phase 1 的 Recorder 统一解决**；schema 保持前向兼容（`content` 列可机械迁入 `content_blob`，会话语义已与 §5.3.5 对齐），UI 层不动 | 需要两边协调，但避免了"修两遍"和"等地基"两个极端 |
+
+选 C 的前提是 #6129 的 P1 在合并前**明确记录为已知限制**而不是当作已修 —— 否则会变成"带着 4 个已知 bug 上线"。这是产品取舍，不是技术判断，需要 Yushen 拍。
+
+另外 MUL-5470 顺带拆出的 [MUL-5492](https://multica-app.copilothub.ai/multica-ai/issues/a473423e-02ce-42a6-8542-226931250dc2)（timeline `ORDER BY created_at ASC LIMIT 2000` 取的是**最旧**的 2000 条，以及 WS 广播剥离 `prev_description`）与本方案**重叠**：§7.1 的"timeline 改游标分页"会覆盖前者。**不要两边各修一次**，需要先确认 MUL-5492 的进展再决定谁做。
