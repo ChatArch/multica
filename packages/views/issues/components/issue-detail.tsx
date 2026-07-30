@@ -1989,8 +1989,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
       {/* Quick actions — the sidebar's only "do something" block, so it sits
           directly under Properties and above every read-only section. Renders
-          nothing when the workspace has none configured, or when none of them
-          are runnable by this member. */}
+          nothing when the workspace has no active action visible to this
+          member. It is NOT filtered by invoke permission: a member can see and
+          click an action they cannot run, and the refusal is explained at run
+          time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
 
       {/* Parent issue — standalone section, only when the issue has a
