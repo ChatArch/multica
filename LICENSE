@@ -5,7 +5,9 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
 1. Multica may be utilized commercially, including as a backend service for
    other applications or as a task management platform for enterprises.
    Should the conditions below be met, a commercial license must be obtained
-   from the producer:
+   from the producer. Condition 1a determines when a commercial license is
+   required; conditions 1b and 1c are branding and attribution obligations
+   that apply to all use, whether or not a commercial license is required.
 
    a. Hosted or embedded service: Unless explicitly authorized by Multica
       in writing, you may not use the Multica source code to provide a
@@ -20,14 +22,51 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
         workspaces) does not require a commercial license.
 
    b. LOGO and copyright information: In the process of using Multica's
-      frontend, you may not remove or modify the LOGO or copyright
-      information in the Multica console or applications. This restriction
-      is inapplicable to uses of Multica that do not involve its frontend.
+      user interface, you may not remove or modify the Multica LOGO or
+      wordmark, the copyright information displayed in the Multica console
+      or applications, or the attribution notices in the `NOTICE` file at
+      the root of this repository.
 
-      - Frontend Definition: For the purposes of this license, the
-        "frontend" of Multica includes all components located in the
-        `apps/web/` directory when running Multica from the raw source
-        code, or the "web" image when running Multica with Docker.
+      - User Interface Definition: For the purposes of this license, the
+        "user interface" of Multica means any source code, asset, or build
+        artifact in this repository that renders the Multica console or a
+        Multica client application, regardless of where it is located in
+        the repository. This includes, without limitation, the
+        `apps/web/`, `apps/desktop/`, `apps/mobile/`, `packages/views/`,
+        and `packages/ui/` directories. That enumeration is illustrative
+        rather than exhaustive: code that renders the Multica user
+        interface remains covered when it is modified, moved, renamed, or
+        extracted into another package or repository.
+
+      - Distribution Forms: This restriction applies to every form in
+        which the Multica user interface is distributed, including raw
+        source code, the frontend container image (published as
+        `ghcr.io/multica-ai/multica-web`), and compiled desktop and mobile
+        application binaries.
+
+      - Non-Interface Uses: This restriction is inapplicable to uses of
+        Multica that do not involve its user interface, such as running
+        only the `server/` backend, the local daemon, or the CLI, or
+        building your own independent interface on top of the Multica API.
+        Those uses are subject to condition 1c instead.
+
+   c. Attribution for non-interface use: If you use Multica without its
+      user interface — for example by running only the `server/` backend,
+      the local daemon, or the CLI, or by building your own interface on
+      top of the Multica API — condition 1b does not apply, but the
+      following attribution requirements do:
+
+      - You must retain the copyright, attribution, and license notices
+        present in the Multica source code you use, including the `NOTICE`
+        file at the root of this repository. Any redistribution of Multica
+        or of a derivative work must include a readable copy of that file,
+        as required by section 4 of the Apache License 2.0.
+
+      - If you distribute, publish, or otherwise make available to others
+        a product that incorporates Multica, you must state in your
+        product documentation, README, or another place visible to your
+        users that the product is built on Multica, with a link to
+        https://github.com/multica-ai/multica.
 
 2. As a contributor, you should agree that:
 

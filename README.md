@@ -221,3 +221,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, worktr
 
 An iOS mobile client lives in [`apps/mobile/`](apps/mobile/) — see its [README](apps/mobile/README.md) for how to build it onto your own iPhone.
 
+## License
+
+[Modified Apache 2.0 (with commercial restrictions)](LICENSE) — see [NOTICE](NOTICE) for attribution notices.
+
+- Providing Multica as a hosted service to third parties, or embedding it in a commercially distributed product, requires written authorization (condition 1a).
+- When you use Multica's user interface, the Multica LOGO, wordmark, and copyright information may not be removed or modified. "User interface" is defined by what renders the console or a client app — including `apps/web/`, `apps/desktop/`, `apps/mobile/`, `packages/views/`, and `packages/ui/` — and covers source, the frontend container image, and compiled desktop and mobile binaries (condition 1b).
+- Non-interface use (running only the `server/` backend, the daemon, or the CLI, or building your own interface on the Multica API) is exempt from the branding condition, but must retain the source attribution notices and state that the product is built on Multica with a link back to this repository (condition 1c).
+
