@@ -184,6 +184,46 @@ func TestEnsureSkillFrontmatterReplacesMultiLineNameValues(t *testing.T) {
 	}
 }
 
+// An anchor on the name value defeats the surgical rewrite: replacing the line
+// removes `&skill_name`, so an alias pointing at it no longer resolves and the
+// post-condition check correctly rejects the result. What must NOT happen next
+// is a drop to bare re-synthesis, which emits only name and description.
+//
+// The stakes are higher than lost formatting. `disable-model-invocation: true`
+// is the author's instruction that a runtime must not surface this skill on its
+// own; if the written SKILL.md loses it, native discovery advertises a skill
+// that was deliberately hidden — the opposite of the author's intent.
+func TestEnsureSkillFrontmatterKeepsPolicyKeysWhenSurgicalRewriteFails(t *testing.T) {
+	t.Parallel()
+
+	in := "---\nname: &skill_name upstream\ndescription: *skill_name\ndisable-model-invocation: true\ncustom-key: kept\n---\n\nbody\n"
+
+	// The input is valid YAML, so this exercises the fallback rather than the
+	// invalid-YAML re-synthesis path.
+	parseFrontmatter(t, in)
+
+	got := ensureSkillFrontmatter(in, "my-slug", "")
+
+	fm := parseFrontmatter(t, got)
+	if name, _ := fm["name"].(string); name != "my-slug" {
+		t.Errorf("name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+	}
+	if fm["disable-model-invocation"] != true {
+		t.Errorf("disable-model-invocation was dropped (%#v); the written skill would be exposed to native discovery\noutput:\n%s", fm["disable-model-invocation"], got)
+	}
+	if custom, _ := fm["custom-key"].(string); custom != "kept" {
+		t.Errorf("custom-key = %#v, want %q\noutput:\n%s", fm["custom-key"], "kept", got)
+	}
+	// The written file must still read as hidden to the visibility check that
+	// gates whether a skill is advertised.
+	if !skillDisablesModelInvocation(got) {
+		t.Errorf("written skill no longer reads as disable-model-invocation:\n%s", got)
+	}
+	if !strings.Contains(got, "body") {
+		t.Errorf("body was dropped:\n%s", got)
+	}
+}
+
 // Comments and blank lines between the name entry and the next key are not part
 // of the value, so the rewrite must step over them rather than absorb them into
 // the replaced span.

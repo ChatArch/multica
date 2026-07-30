@@ -456,10 +456,16 @@ func ensureSkillFrontmatter(content, slug, description string) string {
 			if rewritten, verified := setFrontmatterName(content, fmStart, slug); verified {
 				return rewritten
 			}
-			// The surgical rewrite could not be proven correct, so fall
-			// through to re-synthesis rather than emit a block whose name
-			// might not be the slug. Losing upstream formatting is
-			// recoverable; a skill the runtime cannot route is not.
+			// The surgical rewrite could not be proven correct — an anchor on
+			// the name value is one way that happens, since replacing the line
+			// removes the anchor and strands any alias pointing at it. The
+			// block itself is still valid YAML, so rebuild it from the parsed
+			// node instead of re-synthesizing: that keeps every other key,
+			// including policy fields like disable-model-invocation whose loss
+			// would re-expose a skill the author hid from model invocation.
+			if rebuilt, ok := renameFrontmatterNameViaNode(content, slug); ok {
+				return rebuilt
+			}
 		}
 		// Frontmatter has a name but the YAML is invalid (e.g. unquoted
 		// colon in the description). Strip and re-synthesize so runtimes
@@ -736,6 +742,66 @@ func setFrontmatterName(content string, fmStart int, slug string) (result string
 		return "", false
 	}
 	return rewritten, true
+}
+
+// renameFrontmatterNameViaNode rebuilds the frontmatter block from its parsed
+// YAML node with `name` set to slug, and returns the reassembled document.
+//
+// This is the middle ground between the surgical byte rewrite and full
+// re-synthesis. It gives up the original block's exact formatting — the
+// re-marshal normalizes quoting and indentation — but keeps every key and its
+// value, which re-synthesis does not. That difference matters beyond tidiness:
+// synthesizeFrontmatter emits only name and description, so a block carrying
+// `disable-model-invocation: true` would come back out without it and the
+// skill, once on disk, would be advertised by the runtime's native discovery
+// despite the author having hidden it.
+//
+// The anchor on the name value is deliberately preserved. Dropping it is what
+// invalidates a document whose other keys alias it (`description:
+// *skill_name`); keeping it means the alias resolves to the slug, which changes
+// that value but leaves the document loadable.
+func renameFrontmatterNameViaNode(content, slug string) (string, bool) {
+	fmBody, body, ok := frontmatterParts(content)
+	if !ok {
+		return "", false
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fmBody), &doc); err != nil {
+		return "", false
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return "", false
+	}
+
+	mapping := doc.Content[0]
+	var value *yaml.Node
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "name" {
+			value = mapping.Content[i+1]
+			break
+		}
+	}
+	if value == nil {
+		return "", false
+	}
+
+	// Collapse whatever the value was (scalar, flow sequence, …) to a plain
+	// string, keeping Anchor so aliases elsewhere still resolve.
+	value.Kind = yaml.ScalarNode
+	value.Tag = "!!str"
+	value.Style = 0
+	value.Value = slug
+	value.Content = nil
+
+	marshaled, err := yaml.Marshal(&doc)
+	if err != nil {
+		return "", false
+	}
+	rebuilt := "---\n" + string(marshaled) + "---\n" + body
+	if !frontmatterNameIs(rebuilt, slug) {
+		return "", false
+	}
+	return rebuilt, true
 }
 
 // frontmatterNameIs reports whether content's frontmatter parses and its
