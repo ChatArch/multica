@@ -4,7 +4,6 @@ import { type ReactNode, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  BookOpenText,
   Bot,
   FolderKanban,
   Inbox,
@@ -15,6 +14,7 @@ import {
   Plus,
   Zap,
 } from "lucide-react";
+import { SkillIcon } from "../../skills/lib/skill-icon";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -626,7 +626,7 @@ function WorkspacePreviewCard({
           meta={t(($) => $.step_workspace.preview.runtimes_meta)}
         />
         <EntityRow
-          icon={<BookOpenText className="h-4 w-4" />}
+          icon={<SkillIcon className="h-4 w-4" />}
           label={t(($) => $.step_workspace.preview.skills_label)}
           meta={t(($) => $.step_workspace.preview.skills_meta)}
         />
