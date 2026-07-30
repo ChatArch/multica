@@ -453,7 +453,13 @@ func ensureSkillFrontmatter(content, slug, description string) string {
 	// block and force `name` to the slug.
 	if hasFrontmatterName(content[fmStart:]) {
 		if isFrontmatterValidYAML(content) {
-			return setFrontmatterName(content, fmStart, slug)
+			if rewritten, verified := setFrontmatterName(content, fmStart, slug); verified {
+				return rewritten
+			}
+			// The surgical rewrite could not be proven correct, so fall
+			// through to re-synthesis rather than emit a block whose name
+			// might not be the slug. Losing upstream formatting is
+			// recoverable; a skill the runtime cannot route is not.
 		}
 		// Frontmatter has a name but the YAML is invalid (e.g. unquoted
 		// colon in the description). Strip and re-synthesize so runtimes
@@ -552,35 +558,26 @@ func frontmatterBodyStart(content string) (int, bool) {
 }
 
 // hasFrontmatterName reports whether the frontmatter body (the slice starting
-// just after the opening `---` line) contains a parseable, non-empty `name:`
-// scalar before the closing `---`.
+// just after the opening `---` line) contains a top-level, non-empty `name`
+// entry before the closing `---`.
+//
+// Only unindented keys count. An indented `name:` belongs to a nested mapping
+// (`metadata:\n  name: foo`), and treating it as the skill's name would miss
+// that the block has no top-level name at all.
+//
+// This is detection only, and deliberately lexical so it still works on the
+// malformed blocks that route to re-synthesis. It over-reads on purpose: a
+// value continuing onto indented lines counts as a name, so `name:` with the
+// value on the next line is not mistaken for a nameless block (which would get
+// a second top-level `name` injected above it — two keys, which strict loaders
+// reject). Locating the bytes to *replace* is a different problem and belongs
+// to frontmatterNameValueSpan, which asks the YAML parser instead of guessing.
 func hasFrontmatterName(fmBody string) bool {
-	_, _, ok := frontmatterNameSpan(fmBody)
+	_, _, ok := lexicalFrontmatterNameSpan(fmBody)
 	return ok
 }
 
-// frontmatterNameSpan locates the top-level `name` entry inside a frontmatter
-// body (the slice starting just after the opening `---` line) and returns the
-// byte offsets bounding its **entire** value, excluding the trailing newline.
-//
-// hasFrontmatterName and setFrontmatterName both route through this so the
-// "does a name exist?" check and the rewrite can never disagree about which
-// bytes they mean — the same reason frontmatterParts centralizes where a block
-// ends.
-//
-// Only unindented keys match. An indented `name:` belongs to a nested mapping
-// (`metadata:\n  name: foo`), and treating it as the skill's name would both
-// miss that the block has no top-level name and, on rewrite, splice a
-// top-level key into the middle of the nested one.
-//
-// The span deliberately runs past the key's own line. A YAML value may continue
-// onto following indented lines — block scalars (`name: >-`), multi-line plain
-// scalars, wrapped quoted scalars — and replacing only the first line would
-// leave the continuation behind as part of the new value: `name: >-\n
-// upstream` rewritten to a slug would parse as "my-slug upstream", silently
-// breaking the very directory == frontmatter-name invariant this exists to
-// enforce.
-func frontmatterNameSpan(fmBody string) (start, end int, ok bool) {
+func lexicalFrontmatterNameSpan(fmBody string) (start, end int, ok bool) {
 	closeIdx := strings.Index(fmBody, "\n---")
 	if closeIdx < 0 {
 		// Missing close — scan everything we have and fall through. The
@@ -626,17 +623,107 @@ func frontmatterNameSpan(fmBody string) (start, end int, ok bool) {
 	return 0, 0, false
 }
 
+// frontmatterNameValueSpan returns the byte range of the whole top-level `name`
+// entry — key plus value, however many lines the value occupies — inside a
+// frontmatter body that is already known to be valid YAML.
+//
+// The extent comes from yaml.v3's own line numbers rather than from
+// indentation, because indentation does not bound a YAML value. A quoted scalar
+// may wrap onto a line at the *same* indentation as its key, and so may a flow
+// collection:
+//
+//	name: "upstream
+//	continued"
+//	name: [a,
+//	b]
+//
+// Both parse; an indentation rule stops at the key's line and leaves the
+// remainder stranded, turning a rewrite into invalid YAML. Asking the parser
+// where the next top-level key starts is the only reliable boundary.
+func frontmatterNameValueSpan(fmBody string) (start, end int, ok bool) {
+	closeIdx := strings.Index(fmBody, "\n---")
+	if closeIdx < 0 {
+		closeIdx = len(fmBody)
+	}
+	block := fmBody[:closeIdx]
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(block), &doc); err != nil {
+		return 0, 0, false
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return 0, 0, false
+	}
+	mapping := doc.Content[0]
+
+	// yaml.Node lines are 1-based.
+	nameLine, nextKeyLine := 0, 0
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		key := mapping.Content[i]
+		if key.Value != "name" {
+			continue
+		}
+		nameLine = key.Line
+		if i+2 < len(mapping.Content) {
+			nextKeyLine = mapping.Content[i+2].Line
+		}
+		break
+	}
+	if nameLine == 0 {
+		return 0, 0, false
+	}
+
+	lines := strings.Split(block, "\n")
+	lastLine := len(lines)
+	if nextKeyLine > 0 {
+		lastLine = nextKeyLine - 1
+	}
+	if lastLine > len(lines) {
+		lastLine = len(lines)
+	}
+	// Blank lines and unindented comments sitting between this entry and the
+	// next key are not part of the value: block scalar content must be
+	// indented, so an unindented `#` can only be a comment. Leave them in
+	// place instead of swallowing them into the replacement.
+	for lastLine > nameLine {
+		line := strings.TrimSuffix(lines[lastLine-1], "\r")
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			lastLine--
+			continue
+		}
+		break
+	}
+	if lastLine < nameLine {
+		return 0, 0, false
+	}
+
+	offset := 0
+	for i, line := range lines {
+		if i == nameLine-1 {
+			start = offset
+		}
+		if i == lastLine-1 {
+			return start, offset + len(line), true
+		}
+		offset += len(line) + 1 // +1 for the newline Split consumed
+	}
+	return 0, 0, false
+}
+
 // setFrontmatterName replaces the top-level frontmatter `name` entry — key and
 // full value, however many lines it spans — with a single-line `name: <slug>`,
 // leaving every other byte of content untouched. fmStart is the offset where
-// the YAML body begins (see frontmatterBodyStart). Content with no such key is
-// returned unchanged; ensureSkillFrontmatter handles that case by injecting one
-// instead.
-func setFrontmatterName(content string, fmStart int, slug string) string {
+// the YAML body begins (see frontmatterBodyStart).
+//
+// verified reports that the result was re-parsed and its `name` really is slug.
+// Callers must treat false as "do not use this output": the directory ==
+// frontmatter-name invariant is the entire reason this function exists, so a
+// rewrite that cannot prove it is worse than no rewrite at all.
+func setFrontmatterName(content string, fmStart int, slug string) (result string, verified bool) {
 	fmBody := content[fmStart:]
-	start, end, ok := frontmatterNameSpan(fmBody)
+	start, end, ok := frontmatterNameValueSpan(fmBody)
 	if !ok {
-		return content
+		return "", false
 	}
 	replacement := "name: " + slug
 	// strings.Split on "\n" leaves the "\r" of a CRLF ending inside the line;
@@ -644,7 +731,26 @@ func setFrontmatterName(content string, fmStart int, slug string) string {
 	if strings.HasSuffix(fmBody[start:end], "\r") {
 		replacement += "\r"
 	}
-	return content[:fmStart+start] + replacement + content[fmStart+end:]
+	rewritten := content[:fmStart+start] + replacement + content[fmStart+end:]
+	if !frontmatterNameIs(rewritten, slug) {
+		return "", false
+	}
+	return rewritten, true
+}
+
+// frontmatterNameIs reports whether content's frontmatter parses and its
+// top-level `name` is exactly want.
+func frontmatterNameIs(content, want string) bool {
+	fmBody, _, ok := frontmatterParts(content)
+	if !ok {
+		return false
+	}
+	var m map[string]any
+	if err := yaml.Unmarshal([]byte(fmBody), &m); err != nil {
+		return false
+	}
+	name, _ := m["name"].(string)
+	return name == want
 }
 
 // yamlEscapeInline returns a double-quoted YAML scalar that always parses as

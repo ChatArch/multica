@@ -131,11 +131,42 @@ func TestEnsureSkillFrontmatterReplacesMultiLineNameValues(t *testing.T) {
 			name:    "value entirely on the next line",
 			content: "---\nname:\n  upstream-name\ndescription: kept\n---\n\nbody\n",
 		},
+		// A quoted scalar may wrap onto a line at the SAME indentation as its
+		// key, and so may a flow collection. Indentation therefore cannot bound
+		// a YAML value: an indentation rule stops at the key's line and strands
+		// the remainder, so the rewrite emitted invalid YAML rather than a
+		// wrong-but-parseable name.
+		{
+			name:    "double quoted continued at same indent",
+			content: "---\nname: \"upstream\ncontinued\"\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "single quoted continued at same indent",
+			content: "---\nname: 'upstream\ncontinued'\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "flow sequence continued at same indent",
+			content: "---\nname: [a,\nb]\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "flow mapping continued at same indent",
+			content: "---\nname: {a: 1,\nb: 2}\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "name is the last key",
+			content: "---\ndescription: kept\nname: \"upstream\ncontinued\"\n---\n\nbody\n",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// Assert the *input* is valid YAML first. Otherwise a case could
+			// pass for the wrong reason — ensureSkillFrontmatter re-synthesizes
+			// malformed blocks, which would produce the right name without ever
+			// exercising the surgical path these cases exist to cover.
+			parseFrontmatter(t, tc.content)
+
 			got := ensureSkillFrontmatter(tc.content, "my-slug", "")
 
 			fm := parseFrontmatter(t, got)
@@ -150,6 +181,40 @@ func TestEnsureSkillFrontmatterReplacesMultiLineNameValues(t *testing.T) {
 				t.Errorf("body was dropped:\n%s", got)
 			}
 		})
+	}
+}
+
+// Comments and blank lines between the name entry and the next key are not part
+// of the value, so the rewrite must step over them rather than absorb them into
+// the replaced span.
+func TestEnsureSkillFrontmatterKeepsCommentsAroundName(t *testing.T) {
+	t.Parallel()
+
+	in := "---\nname: >-\n  upstream\n\n# keep this comment\ndescription: kept\n---\n\nbody\n"
+	want := "---\nname: my-slug\n\n# keep this comment\ndescription: kept\n---\n\nbody\n"
+
+	if got := ensureSkillFrontmatter(in, "my-slug", ""); got != want {
+		t.Errorf("comment or spacing was swallowed;\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// A block scalar may legitimately contain a line that looks like a comment.
+// Because block scalar content is always indented, the "step over comments"
+// rule must only skip *unindented* ones — otherwise this content is left
+// stranded outside the replaced span.
+func TestEnsureSkillFrontmatterHandlesHashInsideBlockScalarName(t *testing.T) {
+	t.Parallel()
+
+	in := "---\nname: |-\n  upstream\n  # not a comment\ndescription: kept\n---\n\nbody\n"
+
+	got := ensureSkillFrontmatter(in, "my-slug", "")
+
+	fm := parseFrontmatter(t, got)
+	if name, _ := fm["name"].(string); name != "my-slug" {
+		t.Errorf("parsed name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+	}
+	if strings.Contains(got, "# not a comment") {
+		t.Errorf("block scalar content was stranded outside the replaced span:\n%s", got)
 	}
 }
 
