@@ -96,6 +96,63 @@ func TestEnsureSkillFrontmatterRetargetsNameAndKeepsOtherKeys(t *testing.T) {
 	}
 }
 
+// A YAML value can span several lines. Replacing only the key's own line
+// leaves the continuation behind, and YAML folds it into the new value:
+// `name: >-\n  upstream` became "my-slug upstream", so the directory name and
+// the frontmatter name diverged again — exactly the invariant this rewrite
+// exists to hold.
+//
+// These assert on the *parsed* value rather than the output text, because the
+// text's first line looked correct in every one of these cases.
+func TestEnsureSkillFrontmatterReplacesMultiLineNameValues(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "folded block scalar",
+			content: "---\nname: >-\n  upstream-name\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "literal block scalar",
+			content: "---\nname: |-\n  upstream-name\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "multi-line plain scalar",
+			content: "---\nname: upstream\n  continued\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "wrapped quoted scalar",
+			content: "---\nname: \"upstream\n  continued\"\ndescription: kept\n---\n\nbody\n",
+		},
+		{
+			name:    "value entirely on the next line",
+			content: "---\nname:\n  upstream-name\ndescription: kept\n---\n\nbody\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := ensureSkillFrontmatter(tc.content, "my-slug", "")
+
+			fm := parseFrontmatter(t, got)
+			if name, _ := fm["name"].(string); name != "my-slug" {
+				t.Errorf("parsed name = %#v, want %q\noutput:\n%s", fm["name"], "my-slug", got)
+			}
+			// Neighbouring keys still survive the surgery.
+			if desc, _ := fm["description"].(string); desc != "kept" {
+				t.Errorf("description = %#v, want %q\noutput:\n%s", fm["description"], "kept", got)
+			}
+			if !strings.Contains(got, "body") {
+				t.Errorf("body was dropped:\n%s", got)
+			}
+		})
+	}
+}
+
 // The rewrite is byte-surgical: a CRLF block keeps its line endings instead of
 // acquiring a lone LF on the name line.
 func TestEnsureSkillFrontmatterPreservesCRLFOnNameRewrite(t *testing.T) {

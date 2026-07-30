@@ -555,25 +555,32 @@ func frontmatterBodyStart(content string) (int, bool) {
 // just after the opening `---` line) contains a parseable, non-empty `name:`
 // scalar before the closing `---`.
 func hasFrontmatterName(fmBody string) bool {
-	_, _, ok := frontmatterNameLineSpan(fmBody)
+	_, _, ok := frontmatterNameSpan(fmBody)
 	return ok
 }
 
-// frontmatterNameLineSpan locates the top-level `name:` line carrying a
-// non-empty value inside a frontmatter body (the slice starting just after the
-// opening `---` line). start and end are byte offsets into fmBody bounding that
-// line, excluding its terminating newline.
+// frontmatterNameSpan locates the top-level `name` entry inside a frontmatter
+// body (the slice starting just after the opening `---` line) and returns the
+// byte offsets bounding its **entire** value, excluding the trailing newline.
 //
 // hasFrontmatterName and setFrontmatterName both route through this so the
 // "does a name exist?" check and the rewrite can never disagree about which
-// line they mean — the same reason frontmatterParts centralizes where a block
+// bytes they mean — the same reason frontmatterParts centralizes where a block
 // ends.
 //
 // Only unindented keys match. An indented `name:` belongs to a nested mapping
 // (`metadata:\n  name: foo`), and treating it as the skill's name would both
 // miss that the block has no top-level name and, on rewrite, splice a
 // top-level key into the middle of the nested one.
-func frontmatterNameLineSpan(fmBody string) (start, end int, ok bool) {
+//
+// The span deliberately runs past the key's own line. A YAML value may continue
+// onto following indented lines — block scalars (`name: >-`), multi-line plain
+// scalars, wrapped quoted scalars — and replacing only the first line would
+// leave the continuation behind as part of the new value: `name: >-\n
+// upstream` rewritten to a slug would parse as "my-slug upstream", silently
+// breaking the very directory == frontmatter-name invariant this exists to
+// enforce.
+func frontmatterNameSpan(fmBody string) (start, end int, ok bool) {
 	closeIdx := strings.Index(fmBody, "\n---")
 	if closeIdx < 0 {
 		// Missing close — scan everything we have and fall through. The
@@ -582,31 +589,52 @@ func frontmatterNameLineSpan(fmBody string) (start, end int, ok bool) {
 		// on top.
 		closeIdx = len(fmBody)
 	}
-	offset := 0
-	for _, line := range strings.Split(fmBody[:closeIdx], "\n") {
-		lineStart := offset
-		offset += len(line) + 1 // +1 for the newline Split consumed
+	lines := strings.Split(fmBody[:closeIdx], "\n")
+	offsets := make([]int, len(lines))
+	pos := 0
+	for i, line := range lines {
+		offsets[i] = pos
+		pos += len(line) + 1 // +1 for the newline Split consumed
+	}
+
+	for i, line := range lines {
 		if !strings.HasPrefix(line, "name:") {
 			continue
 		}
-		v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "name:"))
-		v = strings.Trim(v, `"'`)
-		if v == "" {
+		inline := strings.Trim(strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "name:")), `"'`)
+		last := i
+		hasValue := inline != ""
+		for j := i + 1; j < len(lines); j++ {
+			cont := strings.TrimSuffix(lines[j], "\r")
+			if strings.TrimSpace(cont) == "" {
+				// A blank line may sit inside a block scalar, so it does not
+				// end the value — but it only joins the span once a further
+				// indented line proves the value really continued.
+				continue
+			}
+			if !strings.HasPrefix(cont, " ") && !strings.HasPrefix(cont, "\t") {
+				break
+			}
+			last = j
+			hasValue = true
+		}
+		if !hasValue {
 			continue
 		}
-		return lineStart, lineStart + len(line), true
+		return offsets[i], offsets[last] + len(lines[last]), true
 	}
 	return 0, 0, false
 }
 
-// setFrontmatterName rewrites the value of the top-level frontmatter `name` key
-// to slug and leaves every other byte of content untouched. fmStart is the
-// offset where the YAML body begins (see frontmatterBodyStart). Content with no
-// such key is returned unchanged; ensureSkillFrontmatter handles that case by
-// injecting one instead.
+// setFrontmatterName replaces the top-level frontmatter `name` entry — key and
+// full value, however many lines it spans — with a single-line `name: <slug>`,
+// leaving every other byte of content untouched. fmStart is the offset where
+// the YAML body begins (see frontmatterBodyStart). Content with no such key is
+// returned unchanged; ensureSkillFrontmatter handles that case by injecting one
+// instead.
 func setFrontmatterName(content string, fmStart int, slug string) string {
 	fmBody := content[fmStart:]
-	start, end, ok := frontmatterNameLineSpan(fmBody)
+	start, end, ok := frontmatterNameSpan(fmBody)
 	if !ok {
 		return content
 	}
@@ -667,9 +695,16 @@ func writeSkillFiles(skillsDir string, skills []SkillContextForEnv, manifest *si
 		return fmt.Errorf("create skills dir: %w", err)
 	}
 
-	for _, skill := range skills {
-		baseSlug := sanitizeSkillName(skill.Name)
-		slug, dir, err := allocateCollisionFreeSkillDir(skillsDir, baseSlug)
+	// resolveSkillSlugs deduplicates within the batch first, so two skills whose
+	// names sanitize alike ("A B" / "A-B") get distinct bases here instead of
+	// racing for the same directory. The listings derive from the same function,
+	// which is what keeps them naming the directories this loop creates.
+	// allocateCollisionFreeSkillDir still runs on top, for collisions against
+	// directories we did not write (user-installed skills).
+	batchSlugs := resolveSkillSlugs(skills)
+
+	for i, skill := range skills {
+		slug, dir, err := allocateCollisionFreeSkillDir(skillsDir, batchSlugs[i])
 		if err != nil {
 			return fmt.Errorf("allocate skill dir for %q: %w", skill.Name, err)
 		}
