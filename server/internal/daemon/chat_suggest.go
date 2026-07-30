@@ -122,8 +122,9 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 
 	reportCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := d.client.SupplementTaskQuickActions(reportCtx, task.RegenerateQuickActionsFor, raw); err != nil {
-		taskLog.Warn("chat quick-actions regenerate supplement failed", "error", err)
+	supplementErr := d.client.SupplementTaskQuickActions(reportCtx, task.RegenerateQuickActionsFor, raw)
+	if supplementErr != nil {
+		taskLog.Warn("chat quick-actions regenerate supplement failed", "error", supplementErr)
 	}
 
 	// Report the pass's own token spend on this regenerate task (its own row —
@@ -141,6 +142,18 @@ func (d *Daemon) runChatQuickActionsRegenerate(ctx context.Context, task Task, b
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 		})
+	}
+	if supplementErr != nil {
+		// The supplement never landed, so no chat:quick_actions resolved the
+		// client's refresh spinner. Report failure (never retried, writes no
+		// visible turn — see FailTask's regenerate gates) so the server converges
+		// the marker via resolveFailedRegenerateQuickActions instead of leaving
+		// the client to its own timeout (MUL-5149).
+		return TaskResult{
+			Status:        "blocked",
+			FailureReason: "quick_actions_supplement_failed",
+			Usage:         usageEntries,
+		}, nil
 	}
 	return TaskResult{Status: "completed", Comment: "", Usage: usageEntries}, nil
 }

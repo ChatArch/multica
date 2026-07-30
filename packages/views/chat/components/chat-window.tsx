@@ -50,6 +50,7 @@ import {
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
 import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatInputFocus } from "./use-chat-input-focus";
@@ -112,6 +113,9 @@ export function ChatWindow() {
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(activeSessionId ?? ""),
   );
+  // Drop a stuck pending marker (dead daemon / failed supplement) so the pill
+  // spinner stops and a later refresh starts clean (MUL-5149).
+  useQuickActionsPendingTimeout(activeSessionId ?? null, quickActionsPending);
   const regenerateQuickActions = useRegenerateChatQuickActions();
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
   const selectedProjectId = useChatStore((s) => s.selectedProjectId);

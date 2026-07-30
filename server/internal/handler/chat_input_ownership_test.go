@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -623,3 +625,65 @@ func TestDirectChat_QuickActionsOptOutStampsTask(t *testing.T) {
 	}
 }
 
+// TestRegenerateChatQuickActions_StaleTargetRejected pins the ack-alignment
+// contract (MUL-5149 review): a refresh names the turn it is refreshing, and
+// the server enqueues it only while that turn is STILL the session's latest.
+// Once a newer reply lands, refreshing the older turn is refused, so the
+// client's pending marker never points at a turn the resulting
+// chat:quick_actions event could not match.
+func TestRegenerateChatQuickActions_StaleTargetRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "regen stale chat")
+
+	// Turn 1: a resumable assistant reply (session_id + runtime bound) is latest.
+	t1 := sendDirectChat(t, ctx, agentID, sessionID, "first question")
+	markTaskRunning(t, ctx, t1)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(t1), completeResult(t, "first reply"), "sess-1", "/tmp/wd", false, ""); err != nil {
+		t.Fatalf("complete turn 1: %v", err)
+	}
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload session: %v", err)
+	}
+	rows := assistantRows(t, ctx, sessionID)
+	if len(rows) != 1 {
+		t.Fatalf("expected one assistant turn, got %d", len(rows))
+	}
+	m1 := rows[0].ID
+
+	// Refreshing the current latest turn is accepted and targets exactly it.
+	target, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, parseUUID(testUserID), m1)
+	if err != nil {
+		t.Fatalf("regenerate latest turn: %v", err)
+	}
+	if target != m1 {
+		t.Fatalf("regenerate target = %v, want the latest turn %v", target, m1)
+	}
+
+	// Turn 2 lands, so m1 is no longer the latest.
+	t2 := sendDirectChat(t, ctx, agentID, sessionID, "second question")
+	markTaskRunning(t, ctx, t2)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(t2), completeResult(t, "second reply"), "sess-2", "/tmp/wd", false, ""); err != nil {
+		t.Fatalf("complete turn 2: %v", err)
+	}
+	session, err = testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload session after turn 2: %v", err)
+	}
+	rows = assistantRows(t, ctx, sessionID)
+	if len(rows) != 2 {
+		t.Fatalf("expected two assistant turns, got %d", len(rows))
+	}
+	m2 := rows[1].ID
+
+	// Refreshing the now-stale m1 is refused; refreshing the new latest m2 works.
+	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, parseUUID(testUserID), m1); !errors.Is(err, service.ErrChatQuickActionsStale) {
+		t.Fatalf("stale-target regenerate error = %v, want ErrChatQuickActionsStale", err)
+	}
+	if _, _, err := testHandler.TaskService.RegenerateChatQuickActions(ctx, session, parseUUID(testUserID), m2); err != nil {
+		t.Fatalf("regenerate new latest turn: %v", err)
+	}
+}

@@ -1437,6 +1437,13 @@ var ErrChatQuickActionsNoTurn = errors.New("chat quick actions: no assistant tur
 // would run context-less. Productizable as "can't refresh right now".
 var ErrChatQuickActionsNotResumable = errors.New("chat quick actions: session not resumable")
 
+// ErrChatQuickActionsStale signals the turn the client asked to refresh is no
+// longer the session's latest assistant turn (a newer reply landed since the
+// refresh button was rendered). The regeneration is refused so the client's
+// optimistic pending marker never points at a turn the resulting
+// chat:quick_actions event will not match (MUL-5149).
+var ErrChatQuickActionsStale = errors.New("chat quick actions: refresh target is stale")
+
 // EnqueueChatTask creates a task-owned input batch for a chat session. Channel
 // media makes the task deferred until binding completes or its durable fallback
 // deadline expires; other chat tasks are queued immediately. Unlike issue
@@ -1596,7 +1603,7 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 //
 // This is an explicit user action, so it ignores the per-device quick-actions
 // toggle (which only gates automatic generation at send time).
-func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSession db.ChatSession, initiatorUserID pgtype.UUID) (targetMessageID pgtype.UUID, task db.AgentTaskQueue, err error) {
+func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSession db.ChatSession, initiatorUserID pgtype.UUID, expectedMessageID pgtype.UUID) (targetMessageID pgtype.UUID, task db.AgentTaskQueue, err error) {
 	// Preflight on the caller's snapshot for a fast reject, and resolve
 	// attribution (may do network I/O) BEFORE opening the transaction. The
 	// authoritative runtime/resume decision is re-read under the lock below.
@@ -1663,6 +1670,15 @@ func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSessio
 		}
 		if target.MessageKind != protocol.ChatMessageKindMessage || !target.TaskID.Valid {
 			return ErrChatQuickActionsNoTurn
+		}
+		// Confirm the client is refreshing the turn that is STILL the latest.
+		// Under a multi-client race a newer reply can land between the button
+		// rendering and this request; regenerating then would resume the newer
+		// state yet the client's pending marker (and the chat:quick_actions it
+		// waits on) would point at the stale turn and never reconcile. Refuse so
+		// the client rolls back and re-offers refresh on the new turn (MUL-5149).
+		if target.ID != expectedMessageID {
+			return ErrChatQuickActionsStale
 		}
 		created, cerr := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
 			AgentID:           chatSession.AgentID,
@@ -4066,6 +4082,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			if t.IssueID.Valid {
 				retriedIssues[util.UUIDToString(t.IssueID)] = true
 			}
+		}
+
+		// A failed quick-actions regeneration owns no visible turn and is never
+		// retried (retryEligible gates it). This sweeper — not FailTask — is how
+		// an orphaned / recovered regenerate task reaches a terminal state, so
+		// converge its client-side refresh spinner here too (MUL-5149).
+		if t.RegenerateQuickActionsFor.Valid {
+			s.resolveFailedRegenerateQuickActions(ctx, t)
 		}
 
 		failureReason := "agent_error"

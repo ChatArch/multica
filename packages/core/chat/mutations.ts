@@ -385,14 +385,17 @@ export function useRegenerateChatQuickActions() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ sessionId }: { sessionId: string; messageId: string }) =>
-      api.regenerateChatQuickActions(sessionId),
+    mutationFn: ({ sessionId, messageId }: { sessionId: string; messageId: string }) =>
+      api.regenerateChatQuickActions(sessionId, messageId),
     onMutate: ({ sessionId, messageId }) => {
       const previous = qc.getQueryData<ChatQuickActionsPendingState | null>(
         chatKeys.quickActionsPending(sessionId),
       );
-      // task_id is unknown client-side and unused for resolution — the supplement
-      // matches on message_id (applyChatQuickActionsToCache).
+      // The server confirms messageId IS the latest turn (else 409 → onError
+      // rollback), so the marker's message_id is guaranteed to match the
+      // chat:quick_actions that resolves it — no ack reconciliation needed.
+      // task_id is unknown here and unused for resolution (applyChatQuickActionsToCache
+      // matches on message_id).
       qc.setQueryData<ChatQuickActionsPendingState | null>(
         chatKeys.quickActionsPending(sessionId),
         { message_id: messageId, task_id: "" },

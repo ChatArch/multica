@@ -2197,9 +2197,18 @@ export class ApiClient {
   // refreshed pills arrive over the chat:quick_actions realtime event, so the
   // caller anchors its pending placeholder on the turn it already knows rather
   // than on this response.
-  async regenerateChatQuickActions(sessionId: string): Promise<void> {
+  // Refresh the quick actions for the given assistant turn. Sends the message
+  // id the caller is refreshing so the server can atomically confirm it is still
+  // the session's latest turn (409 otherwise) — that keeps the client's pending
+  // marker aligned with the turn chat:quick_actions will resolve, with no
+  // response reconciliation needed even under a WS-before-HTTP race (MUL-5149).
+  async regenerateChatQuickActions(
+    sessionId: string,
+    messageId: string,
+  ): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/quick-actions/regenerate`, {
       method: "POST",
+      body: JSON.stringify({ message_id: messageId }),
     });
   }
 

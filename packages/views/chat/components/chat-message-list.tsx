@@ -613,25 +613,12 @@ function QuickActions({
   const { t } = useT("chat");
   const [submitting, setSubmitting] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
-  // Safety net mirroring QuickActionsSkeleton: normally chat:quick_actions
-  // resolves the refresh, but if that event never arrives (daemon died, or its
-  // supplement ultimately failed) the pills would stay inert with a forever-
-  // spinning icon. After the same window, give up: stop the spinner and re-enable
-  // the old pills instead of stranding the user (MUL-5149).
-  const [pendingExpired, setPendingExpired] = useState(false);
-  useEffect(() => {
-    if (!pending) {
-      setPendingExpired(false);
-      return;
-    }
-    const timer = setTimeout(
-      () => setPendingExpired(true),
-      QUICK_ACTIONS_SKELETON_TIMEOUT_MS,
-    );
-    return () => clearTimeout(timer);
-  }, [pending]);
-  const awaitingRefresh = pending && !pendingExpired;
-  const blocked = disabled || submitting || regenerating || awaitingRefresh;
+  // The pending marker is the single source of truth: chat:quick_actions clears
+  // it on success, and useQuickActionsPendingTimeout clears it from the query
+  // cache if no supplement ever arrives. So `pending` going false is what stops
+  // the spinner — no component-local "expired" flag that only masks the UI while
+  // the cache stays stuck (MUL-5149 review).
+  const blocked = disabled || submitting || regenerating || pending;
 
   const handleSelect = async (action: ChatQuickAction) => {
     if (blocked) return;
@@ -709,7 +696,7 @@ function QuickActions({
               <RotateCw
                 aria-hidden="true"
                 className={
-                  awaitingRefresh || regenerating ? "animate-spin" : undefined
+                  pending || regenerating ? "animate-spin" : undefined
                 }
               />
             </TooltipTrigger>
@@ -729,29 +716,21 @@ function QuickActions({
 function QuickActionsHeading() {
   const { t } = useT("chat");
   return (
-    <span className="shrink-0 text-xs text-muted-foreground">
+    <span className="shrink-0 text-caption text-muted-foreground">
       {t(($) => $.message_list.quick_actions_heading)}
     </span>
   );
 }
-
-// How long the pill skeleton waits for the chat:quick_actions supplement
-// before giving up. The daemon abandons its pass at 20s and always sends a
-// resolving supplement on success/empty — this only covers a daemon that
-// died or an event lost to a reconnect window.
-const QUICK_ACTIONS_SKELETON_TIMEOUT_MS = 30_000;
 
 // Pill-shaped placeholders shown between chat:done (which declared a pending
 // supplement) and chat:quick_actions. Widths are staggered so the row reads
 // as "buttons coming", not a loading bar. aria-hidden: nothing actionable to
 // announce yet.
 function QuickActionsSkeleton() {
-  const [expired, setExpired] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => setExpired(true), QUICK_ACTIONS_SKELETON_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, []);
-  if (expired) return null;
+  // No local timeout: the shared pending marker drives visibility, and
+  // useQuickActionsPendingTimeout clears it from the query cache if no
+  // chat:quick_actions ever resolves it — so this unmounts on its own instead
+  // of only hiding itself while the cache stays stuck (MUL-5149 review).
   return (
     <div className="mt-2 border-t border-border/40 pt-2 animate-in fade-in duration-300">
       <div className="flex flex-wrap items-center gap-2" aria-hidden="true">

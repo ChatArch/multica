@@ -898,6 +898,15 @@ func parseChatMessagesPageParams(r *http.Request) (int, pgtype.Timestamptz, pgty
 // message_id is the assistant turn the refreshed pills will attach to — the
 // client anchors its pending placeholder on it and resolves it when the
 // chat:quick_actions supplement arrives.
+// RegenerateChatQuickActionsRequest names the assistant turn the client is
+// refreshing. The server confirms it is still the session's latest turn before
+// enqueuing (409 otherwise), so the client's pending marker stays aligned with
+// the turn chat:quick_actions will resolve — no ack reconciliation needed
+// (MUL-5149).
+type RegenerateChatQuickActionsRequest struct {
+	MessageID string `json:"message_id"`
+}
+
 type RegenerateChatQuickActionsResponse struct {
 	MessageID string `json:"message_id"`
 	TaskID    string `json:"task_id"`
@@ -946,9 +955,24 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	messageID, task, err := h.TaskService.RegenerateChatQuickActions(r.Context(), session, parseUUID(userID))
+	var req RegenerateChatQuickActionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	expectedMessageID, ok := parseUUIDOrBadRequest(w, req.MessageID, "message_id")
+	if !ok {
+		return
+	}
+
+	messageID, task, err := h.TaskService.RegenerateChatQuickActions(r.Context(), session, parseUUID(userID), expectedMessageID)
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrChatQuickActionsStale):
+			// The turn the client was refreshing is no longer the latest — its
+			// view is stale (a newer reply arrived). 409 → the client rolls back
+			// its optimistic marker and re-offers refresh on the new turn.
+			writeError(w, http.StatusConflict, "a newer reply arrived — refresh it instead")
 		case errors.Is(err, service.ErrChatQuickActionsNoTurn):
 			writeError(w, http.StatusConflict, "no assistant reply to refresh yet")
 		case errors.Is(err, service.ErrChatQuickActionsNotResumable):
