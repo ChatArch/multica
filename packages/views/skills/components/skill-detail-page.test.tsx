@@ -53,7 +53,10 @@ vi.mock("@multica/core/auth", () => {
     ),
   };
 });
-vi.mock("@multica/core/paths", () => ({
+// Partial: `WORKSPACE_PAGES` also comes from here and backs the shared
+// SkillIcon, so the real module has to stay reachable.
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
   useWorkspacePaths: () => ({ skills: () => "/acme/skills" }),
 }));
 vi.mock("@multica/core/permissions", () => ({
