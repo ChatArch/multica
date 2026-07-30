@@ -160,7 +160,7 @@ export function IssueActionsMenuItems({
               <StatusIcon status={s} className="h-3.5 w-3.5" />
               {t(($) => $.status[s])}
               {issue.status === s && (
-                <span className="ml-auto text-xs text-muted-foreground">{"✓"}</span>
+                <span className="ml-auto text-caption text-muted-foreground">{"✓"}</span>
               )}
             </P.Item>
           ))}
@@ -177,13 +177,13 @@ export function IssueActionsMenuItems({
           {PRIORITY_ORDER.map((p) => (
             <P.Item key={p} onClick={() => updateField({ priority: p })}>
               <span
-                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${PRIORITY_CONFIG[p].badgeBg} ${PRIORITY_CONFIG[p].badgeText}`}
+                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-caption font-medium ${PRIORITY_CONFIG[p].badgeBg} ${PRIORITY_CONFIG[p].badgeText}`}
               >
                 <PriorityIcon priority={p} className="h-3 w-3" inheritColor />
                 {t(($) => $.priority[p])}
               </span>
               {issue.priority === p && (
-                <span className="ml-auto text-xs text-muted-foreground">{"✓"}</span>
+                <span className="ml-auto text-caption text-muted-foreground">{"✓"}</span>
               )}
             </P.Item>
           ))}

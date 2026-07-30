@@ -163,10 +163,10 @@ function AddFileInline({
           if (e.key === "Escape") onCancel();
         }}
         placeholder={t(($) => $.detail.add_file.placeholder)}
-        className="h-7 font-mono text-xs"
+        className="h-7 font-mono text-caption"
       />
       {error && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p role="alert" className="mt-1 text-caption text-destructive">
           {error}
         </p>
       )}
@@ -243,11 +243,11 @@ function SkillIdentity({
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border bg-muted text-muted-foreground">
             <Sparkles className="h-4 w-4" aria-hidden="true" />
           </div>
-          <h1 className="min-w-0 truncate font-mono text-lg font-semibold tracking-tight">
+          <h1 className="min-w-0 truncate font-mono text-title font-semibold tracking-tight">
             {skill.name}
           </h1>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground sm:ml-auto">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground sm:ml-auto">
           {originLabel && (
             <span className="inline-flex min-w-0 items-center gap-1.5">
               {isRuntimeOrigin ? (
@@ -298,7 +298,7 @@ function PropertyRow({
     <div className="grid gap-1.5 py-2.5 sm:grid-cols-[128px_minmax(0,1fr)] sm:gap-4">
       <label
         htmlFor={htmlFor}
-        className="pt-1.5 text-xs text-muted-foreground sm:text-sm"
+        className="pt-1.5 text-caption text-muted-foreground sm:text-body"
       >
         {label}
       </label>
@@ -311,7 +311,7 @@ function UsedByList({ agents }: { agents: Agent[] }) {
   const { t } = useT("skills");
   if (agents.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+      <div className="rounded-lg border border-dashed px-3 py-6 text-center text-caption text-muted-foreground">
         {t(($) => $.detail.overview.used_by_empty)}
       </div>
     );
@@ -328,9 +328,9 @@ function UsedByList({ agents }: { agents: Agent[] }) {
             size="md"
           />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">{a.name}</div>
+            <div className="truncate text-body font-medium">{a.name}</div>
             {a.description && (
-              <div className="truncate text-xs text-muted-foreground">
+              <div className="truncate text-caption text-muted-foreground">
                 {a.description}
               </div>
             )}
@@ -368,8 +368,8 @@ function OverviewTab({
   return (
     <div className="mx-auto w-full max-w-3xl p-4 sm:p-6 md:p-8">
       <section>
-        <h2 className="text-base font-medium">{t(($) => $.detail.overview.properties)}</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
+        <h2 className="text-title-sm font-medium">{t(($) => $.detail.overview.properties)}</h2>
+        <p className="mt-1 text-caption text-muted-foreground">
           {t(($) => $.detail.overview.properties_hint)}
         </p>
         <div className="mt-4 divide-y">
@@ -380,7 +380,7 @@ function OverviewTab({
               readOnly={!canEdit}
               onChange={(e) => onNameChange(e.target.value)}
               placeholder={t(($) => $.detail.name_placeholder)}
-              className="font-mono text-sm read-only:cursor-default"
+              className="font-mono text-body read-only:cursor-default"
             />
           </PropertyRow>
 
@@ -398,9 +398,9 @@ function OverviewTab({
               onChange={(e) => onDescriptionChange(e.target.value)}
               placeholder={t(($) => $.detail.description_placeholder)}
               rows={6}
-              className="text-sm leading-relaxed read-only:cursor-default"
+              className="text-body leading-relaxed read-only:cursor-default"
             />
-            <p className="mt-1.5 text-xs text-muted-foreground">
+            <p className="mt-1.5 text-caption text-muted-foreground">
               {t(($) => $.detail.overview.description_hint, {
                 count: description.length,
               })}
@@ -421,7 +421,7 @@ function OverviewTab({
 
       <section className="mt-10">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="min-w-0 text-base font-medium">
+          <h2 className="min-w-0 text-title-sm font-medium">
             {t(($) => $.detail.overview.used_by, { count: skillAgents.length })}
           </h2>
           <Button
@@ -439,7 +439,7 @@ function OverviewTab({
         </div>
       </section>
 
-      <p className="mt-10 rounded-lg bg-muted px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+      <p className="mt-10 rounded-lg bg-muted px-3 py-2.5 text-caption leading-relaxed text-muted-foreground">
         {canEdit
           ? t(($) => $.detail.overview.permissions_owner)
           : creatorName
@@ -511,7 +511,7 @@ function FilesTab({
         aria-label={t(($) => $.detail.files.list_aria)}
         className="shrink-0 border-b border-surface-border p-3 md:w-52 md:overflow-y-auto md:border-b-0 md:border-r md:p-4"
       >
-        <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="px-2.5 pb-1 text-micro font-semibold uppercase tracking-wider text-muted-foreground">
           {t(($) => $.detail.files.main)}
         </p>
         <FileTree
@@ -520,7 +520,7 @@ function FilesTab({
           onSelect={onSelectPath}
         />
 
-        <p className="px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="px-2.5 pb-1 pt-3 text-micro font-semibold uppercase tracking-wider text-muted-foreground">
           {t(($) => $.detail.files.supporting, { count: supportingPaths.length })}
         </p>
         {supportingPaths.length > 0 ? (
@@ -532,7 +532,7 @@ function FilesTab({
           />
         ) : (
           !addingFile && (
-            <p className="px-2.5 py-1 text-xs text-muted-foreground">
+            <p className="px-2.5 py-1 text-caption text-muted-foreground">
               {t(($) => $.detail.files.supporting_empty)}
             </p>
           )
@@ -561,7 +561,7 @@ function FilesTab({
 
       <section className="flex min-h-[32rem] min-w-0 flex-1 flex-col md:min-h-0">
         <div className="flex h-10 shrink-0 items-center gap-3 border-b px-3 sm:px-4">
-          <span className="truncate font-mono text-xs text-muted-foreground">
+          <span className="truncate font-mono text-caption text-muted-foreground">
             {selectedPath}
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -578,7 +578,7 @@ function FilesTab({
                     aria-pressed={mode === value}
                     onClick={() => onModeChange(value)}
                     className={cn(
-                      "h-6 rounded px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "h-6 rounded px-2 text-caption font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       mode === value
                         ? "bg-surface text-foreground shadow-sm"
                         : "text-muted-foreground hover:text-foreground",
@@ -954,8 +954,8 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <AlertCircle className="h-8 w-8 text-muted-foreground/40" />
-          <p className="text-sm font-medium">{t(($) => $.detail.not_found.title)}</p>
-          <p className="max-w-xs text-xs text-muted-foreground">
+          <p className="text-body font-medium">{t(($) => $.detail.not_found.title)}</p>
+          <p className="max-w-xs text-caption text-muted-foreground">
             {error instanceof Error ? error.message : t(($) => $.detail.not_found.fallback)}
           </p>
           <AppLink
@@ -982,14 +982,14 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       <BreadcrumbHeader
         segments={[{ href: paths.skills(), label: t(($) => $.page.title) }]}
         leaf={
-          <span className="truncate font-mono text-xs text-foreground">
+          <span className="truncate font-mono text-caption text-foreground">
             {skill.name}
           </span>
         }
         actions={
           <>
             {!canEdit && (
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1 text-caption text-muted-foreground">
                 <Lock className="h-3 w-3" />
                 {t(($) => $.detail.read_only)}
               </span>
@@ -1038,7 +1038,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       {supportingQueryDown && (
         <div
           role="status"
-          className="flex shrink-0 items-start gap-2 border-b bg-warning/10 px-4 py-2 text-xs text-muted-foreground sm:px-6"
+          className="flex shrink-0 items-start gap-2 border-b bg-warning/10 px-4 py-2 text-caption text-muted-foreground sm:px-6"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
           <span>{t(($) => $.detail.supporting_data_warning)}</span>
@@ -1067,7 +1067,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
               aria-selected={activeView === tab.id}
               onClick={() => selectView(tab.id)}
               className={cn(
-                "relative shrink-0 py-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                "relative shrink-0 py-3 text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                 activeView === tab.id
                   ? "text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -1083,7 +1083,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
         <div
           role="status"
           aria-live="polite"
-          className="flex shrink-0 items-start gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs sm:px-6"
+          className="flex shrink-0 items-start gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption sm:px-6"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
           <div className="flex-1">
@@ -1146,12 +1146,12 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
           {isDirty ? (
             <>
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-              <span className="text-xs text-muted-foreground">
+              <span className="text-caption text-muted-foreground">
                 {t(($) => $.detail.save_bar.unsaved)}
               </span>
             </>
           ) : (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-caption text-muted-foreground">
               {t(($) => $.detail.save_bar.saved)}
             </span>
           )}
@@ -1208,7 +1208,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
                   })}
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-caption text-destructive">
             {t(($) => $.detail.delete_dialog.warning)}
           </div>
           <DialogFooter>

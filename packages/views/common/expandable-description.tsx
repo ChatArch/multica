@@ -58,7 +58,7 @@ export function ExpandableDescription({
       <p
         ref={textRef}
         className={cn(
-          "mt-1 max-w-2xl text-pretty text-sm leading-6 text-muted-foreground",
+          "mt-1 max-w-2xl text-pretty text-body leading-6 text-muted-foreground",
           !expanded && "line-clamp-2",
           className,
         )}
@@ -69,7 +69,7 @@ export function ExpandableDescription({
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
-          className="mt-0.5 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
+          className="mt-0.5 rounded text-caption text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none"
         >
           {expanded
             ? t(($) => $.expandable_description.collapse)

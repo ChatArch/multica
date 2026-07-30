@@ -132,7 +132,7 @@ function TreeNodeItem({
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="flex h-8 w-full items-center gap-1.5 rounded-md pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-8 w-full items-center gap-1.5 rounded-md pr-2.5 text-left text-caption text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           style={{ paddingLeft: `${depth * 12 + 10}px` }}
         >
           <ChevronIcon className="h-3 w-3 shrink-0" />
@@ -199,7 +199,7 @@ function TreeNodeItem({
         aria-selected={isSelected}
         onClick={() => onSelect(node.path)}
         className={cn(
-          "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-2.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md pr-2.5 text-left text-caption transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           isSelected
             ? "font-medium text-surface-selected-foreground"
             : "text-muted-foreground group-hover/row:text-foreground",
@@ -302,10 +302,10 @@ function RenameRow({
           if (event.key === "Enter") submit();
           if (event.key === "Escape") onDone();
         }}
-        className="h-7 font-mono text-xs"
+        className="h-7 font-mono text-caption"
       />
       {error && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p role="alert" className="mt-1 text-caption text-destructive">
           {error}
         </p>
       )}
@@ -336,7 +336,7 @@ export function FileTree({
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
         <FolderOpen className="h-5 w-5 text-muted-foreground/40" />
-        <p className="mt-2 text-xs">{t(($) => $.file_tree.no_files)}</p>
+        <p className="mt-2 text-caption">{t(($) => $.file_tree.no_files)}</p>
       </div>
     );
   }
