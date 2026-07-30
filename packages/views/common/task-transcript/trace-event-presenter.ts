@@ -102,8 +102,14 @@ function clip(value: string, max: number): string {
  * keeps the fallback safe rather than blank.
  */
 export interface TraceSummaryLabels {
-  /** Phrase a multi-file patch, e.g. `src/a.go +2 more`. */
-  morePaths?: (path: string, count: number) => string;
+  /**
+   * Phrase a multi-file patch, e.g. `src/a.go +2 more`.
+   *
+   * `extraCount` is the number of files *beyond* the named one, not the total.
+   * Translations must say "and N more", not "N files in total" — the two read
+   * almost the same in English and diverge in other languages.
+   */
+  morePaths?: (path: string, extraCount: number) => string;
 }
 
 /**
@@ -477,8 +483,8 @@ function readPatchSummary(
   if (first === undefined) return "";
   const head = shortenTracePath(first.path);
   if (files.length === 1) return head;
-  const extra = files.length - 1;
-  return labels?.morePaths?.(head, extra) ?? `${head} +${extra} more`;
+  const extraCount = files.length - 1;
+  return labels?.morePaths?.(head, extraCount) ?? `${head} +${extraCount} more`;
 }
 
 function readFileMutation(input: Record<string, unknown>): FileMutation | null {

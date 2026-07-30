@@ -1103,9 +1103,12 @@ const TranscriptEventRow = ({
   const color = getEventColor(item);
   const label = traceEventLabel(item);
   // The presenter stays i18n-free, so the localizable phrasing is injected.
+  // `extra` counts files beyond the named one, and is deliberately not called
+  // `count`: i18next reads `count` as a plural selector.
   const summaryLabels = useMemo<TraceSummaryLabels>(
     () => ({
-      morePaths: (path, count) => t(($) => $.transcript.patch_summary_more, { path, count }),
+      morePaths: (path, extraCount) =>
+        t(($) => $.transcript.patch_summary_more, { path, extra: extraCount }),
     }),
     [t],
   );

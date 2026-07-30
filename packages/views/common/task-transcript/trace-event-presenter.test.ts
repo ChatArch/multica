@@ -505,9 +505,32 @@ describe("traceToolArgSummary / traceEventHasDetail — Codex changes[]", () => 
             { path: "src/b.go", kind: "add", content: "y" },
           ],
         },
-        { morePaths: (path, count) => `${path} 等 ${count} 个文件` },
+        { morePaths: (path, extraCount) => `${path}，另有 ${extraCount} 个文件` },
       ),
-    ).toBe("src/a.go 等 1 个文件");
+    ).toBe("src/a.go，另有 1 个文件");
+  });
+
+  // The injected number counts files *beyond* the named one. Phrasing it as a
+  // total under-reports by one, which is easy to miss in English ("+2 more")
+  // and obvious in a language that states the total outright.
+  it("passes the count of additional files, not the total", () => {
+    const seen: number[] = [];
+    traceToolArgSummary(
+      {
+        changes: [
+          { path: "a.go", kind: "add", content: "x" },
+          { path: "b.go", kind: "add", content: "y" },
+          { path: "c.go", kind: "add", content: "z" },
+        ],
+      },
+      {
+        morePaths: (path, extraCount) => {
+          seen.push(extraCount);
+          return path;
+        },
+      },
+    );
+    expect(seen).toEqual([2]);
   });
 
   it("does not consult the injected phrasing for a single file", () => {

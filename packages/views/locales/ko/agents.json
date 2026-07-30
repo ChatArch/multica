@@ -678,7 +678,7 @@
     "patch_truncated": "...(잘림)",
     "patch_body_truncated": "...(본문 잘림)",
     "patch_no_content": "(기록된 내용 없음)",
-    "patch_summary_more": "{{path}} 외 {{count}}개",
+    "patch_summary_more": "{{path}} 외 {{extra}}개",
     "status_queued": "대기열",
     "status_dispatched": "디스패치됨",
     "status_cancelled": "취소됨",

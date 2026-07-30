@@ -777,7 +777,7 @@
     "patch_truncated": "...（已截断）",
     "patch_body_truncated": "...（内容已截断）",
     "patch_no_content": "（未记录内容）",
-    "patch_summary_more": "{{path}} 等 {{count}} 个文件",
+    "patch_summary_more": "{{path}}，另有 {{extra}} 个文件",
     "status_queued": "排队中",
     "status_dispatched": "已派发",
     "status_cancelled": "已取消",
