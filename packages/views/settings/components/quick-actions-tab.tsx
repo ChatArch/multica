@@ -487,7 +487,10 @@ function QuickActionDialog({
           <DialogDescription>{t(($) => $.quick_actions.dialog_description)}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        {/* space-y-5 against space-y-1.5 inside each group: the gap BETWEEN
+            fields has to clearly beat the gap between a label and its own
+            control, or the four groups read as one continuous block of text. */}
+        <div className="space-y-5">
           <div className="space-y-1.5">
             <FieldLabel htmlFor="qa-name">{t(($) => $.quick_actions.field_name)}</FieldLabel>
             <Input
