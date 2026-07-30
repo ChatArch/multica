@@ -186,13 +186,21 @@ const guardedColors = [
  * and WCAG exempts disabled controls outright. `dark:` is deliberately absent —
  * it paints a resting state.
  *
- * Matched as bare words rather than as `variant:` prefixes because the same
- * exemption has to cover all three ways this codebase expresses the state:
- * a Tailwind variant (`disabled:opacity-50`), a ternary
- * (`${disabled ? "opacity-60" : ""}`), and a classNames key (`disabled: cn(…)`).
+ * The test for admission to this list is narrow: the state must be transient
+ * and user-driven, and the element's resting appearance must already be solid.
+ * `dragging` qualifies for the same reason `active` does — a drag ghost at 60%
+ * is feedback for an in-flight gesture, not a tier the text lives in.
+ *
+ * The exemption is never decided by "a state word appears somewhere nearby".
+ * That is how `"text-muted-foreground hover:text-foreground opacity-50"` slips
+ * through: the `hover:` belongs to the colour, not to the opacity, and the
+ * opacity is resting-state. It is decided by exactly two things — the variant
+ * prefix carried by the opacity utility itself, and the condition that governs
+ * the literal the utility sits in — because those are the only two places the
+ * state can actually live.
  */
 const stateWords =
-  /\b(?:hover|focus|focus-visible|focus-within|active|disabled|visited|group-hover|group-focus|peer-hover|peer-focus|aria-disabled|data-disabled)\b/;
+  /\b(?:hover|focus|focus-visible|focus-within|active|disabled|visited|dragging|isDragging|group-hover|group-focus|peer-hover|peer-focus|aria-disabled|data-disabled)\b/;
 
 /**
  * `text-muted-foreground/70`, and equally `/[0.5]` and `/[50%]` — Tailwind
@@ -207,14 +215,116 @@ const alphaOnText = new RegExp(
 /**
  * A standalone `opacity-*` utility dims the element it sits on just as a slash
  * alpha does, so `text-muted-foreground opacity-70` is the same defect wearing
- * different syntax — and it is the form that survived the first sweep, because
- * the colour and the opacity can sit lines apart inside one className. Class
- * strings are therefore matched whole (including newlines) rather than line by
- * line.
+ * different syntax.
+ *
+ * The colour and the opacity are correlated across the whole class expression,
+ * not within one string. `cn("… text-muted-foreground", suppressed &&
+ * "opacity-60")` is one element wearing both, and that split-literal shape is
+ * the common one — it is how the comment trigger chips dimmed live text to
+ * 2.55:1 while a per-literal check called them clean.
  */
 const guardedColorInClass = new RegExp(String.raw`\btext-(?:${guardedColors.join("|")})\b`);
 const classLiteral = /"([^"\\]*(?:\\.[^"\\]*)*)"|`([^`\\]*(?:\\.[^`\\]*)*)`/gs;
 const opacityUtility = /(?<![\w:-])opacity-(\d{1,3})\b/g;
+
+/** Walks to the `)` matching the `(` at `open`, or -1 if unbalanced. */
+function matchingParen(source: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === "(") depth += 1;
+    else if (source[i] === ")") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * One element's worth of classes: a whole `cn(...)` call, or a string/template
+ * literal that is not already inside one.
+ */
+function classExpressions(source: string): { start: number; end: number }[] {
+  const units: { start: number; end: number }[] = [];
+  const calls: [number, number][] = [];
+
+  for (const call of source.matchAll(/\bcn\(/g)) {
+    const open = call.index + call[0].length - 1;
+    const close = matchingParen(source, open);
+    if (close < 0) continue;
+    if (calls.some(([s, e]) => call.index >= s && close <= e)) continue;
+    calls.push([call.index, close]);
+    units.push({ start: call.index, end: close + 1 });
+  }
+
+  for (const literal of source.matchAll(classLiteral)) {
+    if (calls.some(([s, e]) => literal.index >= s && literal.index < e)) continue;
+    units.push({ start: literal.index, end: literal.index + literal[0].length });
+  }
+
+  return units;
+}
+
+/**
+ * The pieces of a class expression that each carry their own condition: every
+ * quoted literal, plus the static chunks of a template literal between its
+ * `${…}` holes. Splitting this finely is what lets
+ * `` `… ${disabled ? "opacity-60" : ""}` `` be judged by its own ternary
+ * instead of by the template it happens to sit in.
+ */
+function classSegments(
+  source: string,
+  unit: { start: number; end: number },
+): { body: string; bodyStart: number; delimiter: number }[] {
+  const text = source.slice(unit.start, unit.end);
+  const segments: { body: string; bodyStart: number; delimiter: number }[] = [];
+
+  for (const quoted of text.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"/g)) {
+    segments.push({
+      body: quoted[1] ?? "",
+      bodyStart: unit.start + quoted.index + 1,
+      delimiter: unit.start + quoted.index,
+    });
+  }
+
+  for (const template of text.matchAll(/`([^`\\]*(?:\\.[^`\\]*)*)`/gs)) {
+    const inner = template[1] ?? "";
+    const innerStart = unit.start + template.index + 1;
+    const delimiter = unit.start + template.index;
+    let cursor = 0;
+    for (const hole of inner.matchAll(/\$\{[^}]*\}/gs)) {
+      segments.push({
+        body: inner.slice(cursor, hole.index),
+        bodyStart: innerStart + cursor,
+        delimiter,
+      });
+      cursor = hole.index + hole[0].length;
+    }
+    segments.push({ body: inner.slice(cursor), bodyStart: innerStart + cursor, delimiter });
+  }
+
+  return segments;
+}
+
+/**
+ * The condition governing a segment: whatever sits between its opening
+ * delimiter and the nearest structural boundary — `suppressed &&`,
+ * `disabled ?`, or nothing at all. When it is nothing, the literal is a leading
+ * argument, so the property key the call is assigned to decides instead
+ * (`disabled: cn("… opacity-50")`). That key has to look like `identifier:`
+ * immediately before the call, so a neighbouring `disabled={disabled}` prop
+ * cannot be mistaken for one.
+ */
+function governingCondition(source: string, unitStart: number, delimiter: number): string {
+  const boundary = Math.max(
+    ...[",", "(", "{", "[", "}", "`"].map((c) => source.lastIndexOf(c, delimiter - 1)),
+  );
+  const between = source.slice(Math.max(boundary + 1, Math.min(unitStart, delimiter)), delimiter);
+  if (between.trim()) return between;
+
+  const beforeCall = source.slice(Math.max(0, unitStart - 60), unitStart);
+  return /([\w$]+)\s*:\s*$/.exec(beforeCall)?.[1] ?? "";
+}
 
 /**
  * Comments name the old classes when explaining what replaced them, so they are
@@ -252,18 +362,25 @@ function findTransparencyAsHierarchy(source: string): { line: number; found: str
     violations.push({ line: lineOf(stripped, match.index), found: match[0] });
   }
 
-  for (const literal of stripped.matchAll(classLiteral)) {
-    const body = literal[1] ?? literal[2] ?? "";
-    if (!guardedColorInClass.test(body)) continue;
+  for (const unit of classExpressions(stripped)) {
+    const text = stripped.slice(unit.start, unit.end);
+    if (!guardedColorInClass.test(text)) continue;
 
-    for (const dim of body.matchAll(opacityUtility)) {
-      // opacity-0 and opacity-100 are show/hide, not a tone.
-      if (dim[1] === "0" || dim[1] === "100") continue;
-      // A state keyword anywhere just before the utility — as a variant, a
-      // ternary condition, or the classNames key the literal belongs to.
-      const absolute = literal.index + dim.index;
-      if (stateWords.test(stripped.slice(Math.max(0, absolute - 80), absolute))) continue;
-      violations.push({ line: lineOf(stripped, absolute), found: dim[0] });
+    for (const segment of classSegments(stripped, unit)) {
+      if (stateWords.test(governingCondition(stripped, unit.start, segment.delimiter))) continue;
+
+      for (const dim of segment.body.matchAll(opacityUtility)) {
+        // opacity-0 and opacity-100 are show/hide, not a tone.
+        if (dim[1] === "0" || dim[1] === "100") continue;
+        // Only the variant prefix the utility itself carries counts here; a
+        // `hover:` belonging to some other class in the same string does not.
+        const prefix = /(\S*)$/.exec(segment.body.slice(0, dim.index))?.[1] ?? "";
+        if (stateWords.test(prefix)) continue;
+        violations.push({
+          line: lineOf(stripped, segment.bodyStart + dim.index),
+          found: dim[0],
+        });
+      }
     }
   }
 
@@ -321,6 +438,60 @@ describe("text contrast", () => {
       );
     },
   );
+
+  /**
+   * The detector is the part of this guard most likely to rot, because every
+   * hole in it is silent: the sweep still reports "clean". Both earlier
+   * versions passed the repo scan while real violations sat in the tree — one
+   * because it only looked inside a single string, one because it accepted any
+   * state word near the utility. So the shapes it must and must not catch are
+   * pinned here, next to the reason each one exists.
+   */
+  describe("the detector itself", () => {
+    const caught = (source: string) => findTransparencyAsHierarchy(source).length > 0;
+
+    it.each([
+      ["slash alpha", `<i className="text-muted-foreground/50" />`],
+      ["arbitrary decimal alpha", `<i className="text-muted-foreground/[0.5]" />`],
+      ["arbitrary percent alpha", `<i className="text-muted-foreground/[50%]" />`],
+      ["opacity in the same string", `<i className="text-muted-foreground opacity-70" />`],
+      [
+        "opacity in a sibling cn() argument",
+        `<i className={cn("text-muted-foreground", "opacity-50")} />`,
+      ],
+      [
+        "opacity behind a non-state condition",
+        `<i className={cn("text-muted-foreground", suppressed && "opacity-60")} />`,
+      ],
+      [
+        "resting opacity next to a hover-prefixed colour",
+        `<i className="text-muted-foreground hover:text-foreground opacity-50" />`,
+      ],
+    ])("catches %s", (_shape, source) => {
+      expect(caught(source)).toBe(true);
+    });
+
+    it.each([
+      ["a variant on the utility itself", `<i className="text-muted-foreground disabled:opacity-50" />`],
+      [
+        "a disabled ternary",
+        "<i className={`text-muted-foreground ${disabled ? \"opacity-60\" : \"\"}`} />",
+      ],
+      [
+        "a disabled classNames key",
+        `{ disabled: cn("text-muted-foreground opacity-50", defaults.disabled) }`,
+      ],
+      ["opacity-0 / opacity-100 show-hide", `<i className="text-muted-foreground opacity-0" />`],
+      ["opacity with no guarded colour in the expression", `<i className="text-white opacity-50" />`],
+      ["the colour alone", `<i className="text-muted-foreground" />`],
+    ])("leaves %s alone", (_shape, source) => {
+      expect(caught(source)).toBe(false);
+    });
+
+    it("does not mistake an apostrophe in a comment for a class string", () => {
+      expect(caught(`// a block's own opacity-50 text-muted-foreground\nconst x = 1;`)).toBe(false);
+    });
+  });
 
   it("product UI expresses text hierarchy with tokens, not transparency", () => {
     const violations: string[] = [];

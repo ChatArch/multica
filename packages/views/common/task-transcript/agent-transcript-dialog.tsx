@@ -1300,7 +1300,7 @@ function renderDiffRows(lines: TraceDiffLine[], highlighted: HighlightedSides) {
         <span
           aria-hidden
           className={cn(
-            "select-none opacity-60",
+            "select-none",
             kind === "add" && "text-success",
             kind === "remove" && "text-destructive",
           )}
