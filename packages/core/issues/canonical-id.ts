@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { issueDetailOptions } from "./queries";
+import { issueDetailOptions, issueKeys } from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -51,6 +52,7 @@ export interface CanonicalIssue {
  * and leave the single-request property resting on hook ordering.
  */
 export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue {
+  const qc = useQueryClient();
   const isUuid = isIssueUuid(routeId);
   const resolveEnabled = !isUuid && !!wsId && !!routeId;
 
@@ -68,6 +70,26 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
     // event is never overwritten by this older resolution response.
     initialData: isUuid ? undefined : resolve.data,
   });
+
+  // Mirror the loaded row into its identifier-keyed entry, the reverse of the
+  // `initialData` hop above.
+  //
+  // In-app links still carry the UUID, so opening one lands on the UUID URL and
+  // the route then rewrites the address bar to the identifier. That rewrite is
+  // a navigation: the route re-renders with the identifier as its segment, and
+  // without this seed the resolution query above would miss on a cache entry
+  // nothing has filled and re-fetch an issue already in hand — a second request
+  // for one issue open. The `??` keeps a realtime-patched entry intact, and
+  // only `.id` is ever read back out, which never changes.
+  const loadedIdentifier = detail.data?.identifier;
+  const loadedIssue = detail.data;
+  useEffect(() => {
+    if (!loadedIssue || !loadedIdentifier || loadedIdentifier === routeId) return;
+    qc.setQueryData<Issue>(
+      issueKeys.detail(wsId, loadedIdentifier),
+      (old) => old ?? loadedIssue,
+    );
+  }, [qc, wsId, loadedIdentifier, loadedIssue, routeId]);
 
   // Read the resolution query's own settled state rather than "pending and no
   // data": a failed resolution must present as terminally not-found, never as
