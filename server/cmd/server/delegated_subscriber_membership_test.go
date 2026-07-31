@@ -52,7 +52,7 @@ func addWorkspaceMember(t *testing.T, userID string) (revoke func()) {
 func TestDelegatedSubscribe_SkipsOriginatorRemovedFromWorkspace(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	const email = "delegated-revoked-originator@multica.test"
 	cleanupTestUser(t, email)
@@ -83,7 +83,7 @@ func TestDelegatedSubscribe_SkipsOriginatorRemovedFromWorkspace(t *testing.T) {
 func TestDelegatedSubscribe_SubscribesOriginatorStillInWorkspace(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	const email = "delegated-active-originator@multica.test"
 	cleanupTestUser(t, email)

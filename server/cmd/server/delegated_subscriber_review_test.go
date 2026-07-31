@@ -136,7 +136,7 @@ func TestUnsubscribeIssueScopeLeavesFutureChildrenAlone(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	agentID, runtimeID := firstFixtureAgent(t)
 	parentID := createTestIssue(t, testWorkspaceID, testUserID)

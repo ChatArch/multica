@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -15,7 +16,12 @@ import (
 // registerSubscriberListeners wires up event bus listeners that auto-subscribe
 // relevant users to issues. This ensures creators, assignees, and commenters
 // are automatically tracked as issue subscribers.
-func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
+//
+// Takes the pool rather than *db.Queries because the delegated rule needs a
+// transaction: its eligibility checks and its write must sit inside one
+// serialization boundary (see subscribeDelegatedHuman).
+func registerSubscriberListeners(bus *events.Bus, pool *pgxpool.Pool) {
+	queries := db.New(pool)
 	// issue:created — subscribe creator + assignee (if different)
 	bus.Subscribe(protocol.EventIssueCreated, func(e events.Event) {
 		payload, ok := e.Payload.(map[string]any)
@@ -50,7 +56,7 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 		// assigns it to an agent, every subscriber is an agent — and
 		// notifyIssueSubscribers only delivers to members. The result is a full
 		// subscriber list with zero recipients (MUL-5483).
-		subscribeDelegatedHuman(bus, queries, e.WorkspaceID, issue.ID)
+		subscribeDelegatedHuman(bus, pool, queries, e.WorkspaceID, issue.ID)
 	})
 
 	// issue:updated — subscribe new assignee or @mentioned users
@@ -140,7 +146,7 @@ func registerSubscriberListeners(bus *events.Bus, queries *db.Queries) {
 //
 // Everything is best-effort and logged, never fatal — the issue is already
 // committed and a subscription hiccup must not look like a creation failure.
-func subscribeDelegatedHuman(bus *events.Bus, queries *db.Queries, workspaceID, issueID string) {
+func subscribeDelegatedHuman(bus *events.Bus, pool *pgxpool.Pool, queries *db.Queries, workspaceID, issueID string) {
 	ctx := context.Background()
 	issueUUID := parseUUID(issueID)
 
@@ -178,40 +184,60 @@ func subscribeDelegatedHuman(bus *events.Bus, queries *db.Queries, workspaceID, 
 		return
 	}
 
-	// originator_user_id is a HISTORICAL fact stamped when the task was queued;
-	// GetAgentTaskInWorkspace only proves the task's AGENT still belongs here,
-	// not that the human does. A member who has since been revoked leaves
-	// long-lived tasks running on a shared runtime, and every child they file
-	// would otherwise write a ghost subscriber for a non-member — accumulating
-	// inbox rows and restoring history on re-join. Membership is re-checked at
-	// write time, which is the only moment it is actually true.
-	if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
-		UserID:      human,
-		WorkspaceID: parseUUID(workspaceID),
+	// Two conditions decide whether this subscription may exist, and BOTH can
+	// be invalidated by a concurrent request between a check and the write:
+	//
+	//   * the originator must still be a workspace member — originator_user_id
+	//     is stamped at queue time and never revisited, so a revoked member's
+	//     still-running tasks would keep filing ghost subscribers;
+	//   * no opt-out may cover this issue — otherwise the next child an agent
+	//     files silently undoes "stop watching this sub-tree", which is the
+	//     escape hatch this whole feature depends on.
+	//
+	// Both live in AddDelegatedSubscriber as a single statement, under a
+	// transaction-scoped lock that member revoke and subtree unsubscribe also
+	// take. Checking in one round trip and writing in another cannot be made
+	// correct here: the losing interleaving subscribes an issue that did not
+	// exist when the opt-out was written, so there is no row for a row lock to
+	// protect (MUL-5483 review round 7).
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		slog.Error("delegated subscribe: begin failed", "issue_id", issueID, "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := queries.WithTx(tx)
+
+	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
+		WorkspaceID: workspaceID,
+		UserID:      util.UUIDToString(human),
 	}); err != nil {
-		slog.Debug("delegated subscribe: originator is no longer a workspace member",
-			"issue_id", issueID, "user_id", util.UUIDToString(human))
+		slog.Error("delegated subscribe: lock failed", "issue_id", issueID, "error", err)
 		return
 	}
 
-	// Respect an opt-out anywhere up the tree. Without this, "stop watching
-	// this sub-tree" would be undone by the next child the agent files under
-	// it — the rule fires per issue, and a tree keeps growing after the user
-	// has already said no.
-	optedOut, err := queries.HasAncestorOptOut(ctx, db.HasAncestorOptOutParams{
-		ID:       issueUUID,
-		UserType: "member",
-		UserID:   human,
+	affected, err := qtx.AddDelegatedSubscriber(ctx, db.AddDelegatedSubscriberParams{
+		IssueID:     issueUUID,
+		UserID:      human,
+		Reason:      reason,
+		WorkspaceID: parseUUID(workspaceID),
 	})
 	if err != nil {
-		slog.Error("delegated subscribe: opt-out check failed", "issue_id", issueID, "error", err)
+		slog.Error("delegated subscribe: insert failed", "issue_id", issueID, "error", err)
 		return
 	}
-	if optedOut {
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("delegated subscribe: commit failed", "issue_id", issueID, "error", err)
 		return
 	}
 
-	addSubscriber(bus, queries, workspaceID, issueID, "member", util.UUIDToString(human), reason)
+	// Broadcast only for a write the DB actually accepted, and only AFTER the
+	// commit — publishing from inside the transaction would let clients observe
+	// a subscriber a rollback then removed.
+	if affected == 0 {
+		return
+	}
+	publishSubscriberAdded(bus, workspaceID, issueID, "member", util.UUIDToString(human), reason)
 }
 
 // extractIssueFields normalizes an issue payload that may be either a
@@ -267,6 +293,13 @@ func addSubscriber(bus *events.Bus, queries *db.Queries, workspaceID, issueID, u
 		return
 	}
 
+	publishSubscriberAdded(bus, workspaceID, issueID, userType, userID, reason)
+}
+
+// publishSubscriberAdded broadcasts a subscription the DB actually accepted.
+// Shared by the plain auto-subscribe rules and the transactional delegated
+// path so both describe an added subscriber identically to clients.
+func publishSubscriberAdded(bus *events.Bus, workspaceID, issueID, userType, userID, reason string) {
 	bus.Publish(events.Event{
 		Type:        protocol.EventSubscriberAdded,
 		WorkspaceID: workspaceID,

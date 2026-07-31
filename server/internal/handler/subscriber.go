@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -168,11 +170,13 @@ func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, s
 	// subscription the server has already retired.
 	removed := []string{issueID}
 	if subtree {
-		ids, err := h.Queries.UnsubscribeFromIssueSubtree(r.Context(), db.UnsubscribeFromIssueSubtreeParams{
-			ID:       issue.ID,
-			UserType: targetUserType,
-			UserID:   parseUUID(targetUserID),
-		})
+		// A subtree opt-out is only meaningful if it also covers children the
+		// agent files a moment later, so it must not interleave with the
+		// delegated rule's eligibility check. Both take the same
+		// (workspace, user) lock for the length of their transaction; without
+		// it a child created between the tombstone write and the rule's read
+		// comes back as an active watcher (MUL-5483 review round 7).
+		ids, err := h.unsubscribeSubtreeSerialized(r.Context(), workspaceID, issue.ID, targetUserType, targetUserID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to unsubscribe")
 			return
@@ -199,4 +203,38 @@ func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, s
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
+}
+
+// unsubscribeSubtreeSerialized tombstones the tree inside the same
+// (workspace, user) serialization boundary the delegated auto-subscribe rule
+// uses, and returns every issue it actually retired.
+func (h *Handler) unsubscribeSubtreeSerialized(
+	ctx context.Context, workspaceID string, rootID pgtype.UUID, userType, userID string,
+) ([]pgtype.UUID, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+
+	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return nil, err
+	}
+
+	ids, err := qtx.UnsubscribeFromIssueSubtree(ctx, db.UnsubscribeFromIssueSubtreeParams{
+		ID:       rootID,
+		UserType: userType,
+		UserID:   parseUUID(userID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

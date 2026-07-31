@@ -114,7 +114,7 @@ func subscriberReason(t *testing.T, queries *db.Queries, issueID, userType, user
 func TestDelegatedSubscribe_AgentCreatedSubIssue(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	agentID, runtimeID := firstFixtureAgent(t)
 	parentID := createTestIssue(t, testWorkspaceID, testUserID)
@@ -140,7 +140,7 @@ func TestDelegatedSubscribe_AgentCreatedSubIssue(t *testing.T) {
 func TestDelegatedSubscribe_QuickCreateKeepsDirectReason(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	agentID, runtimeID := firstFixtureAgent(t)
 	task := createAgentTaskWithOriginator(t, agentID, runtimeID, util.MustParseUUID(testUserID))
@@ -158,7 +158,7 @@ func TestDelegatedSubscribe_QuickCreateKeepsDirectReason(t *testing.T) {
 func TestDelegatedSubscribe_UnattributedOriginSubscribesNobody(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	agentID, runtimeID := firstFixtureAgent(t)
 	task := createAgentTaskWithOriginator(t, agentID, runtimeID, pgtype.UUID{})
@@ -179,7 +179,7 @@ func TestDelegatedSubscribe_RespectsSubtreeOptOut(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
 	bus := events.New()
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 
 	agentID, runtimeID := firstFixtureAgent(t)
 	parentID := createTestIssue(t, testWorkspaceID, testUserID)
@@ -329,7 +329,7 @@ func TestDelegatedTier_ChildCompletionDeliversExactlyOnce(t *testing.T) {
 	}
 
 	// Agent files a child; the delegated rule subscribes the human to it.
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 	task := createAgentTaskWithOriginator(t, agentID, runtimeID, util.MustParseUUID(testUserID))
 	childID := createAgentOriginIssue(t, agentID, "agent_create", task, util.MustParseUUID(parentID))
 	publishAgentIssueCreated(bus, childID, agentID)

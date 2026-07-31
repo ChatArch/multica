@@ -13,9 +13,17 @@ import {
   useUnsubscribeFromIssueSubtree,
 } from "@multica/core/issues/mutations";
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
+// Imported from the defining module, not the "@multica/core/api" barrel: the
+// barrel drags the client singleton and ws-client into the module graph of
+// every consumer of this hook, which measurably slowed test startup and tipped
+// an unrelated timing-sensitive suite over its waitFor budget.
+import { ApiError } from "@multica/core/api/client";
+import { toast } from "sonner";
+import { useT } from "../../i18n";
 
 export function useIssueSubscribers(issueId: string, userId?: string) {
   const qc = useQueryClient();
+  const { t } = useT("issues");
   const { data: subscribers = [], isLoading: loading } = useQuery(
     issueSubscribersOptions(issueId),
   );
@@ -124,9 +132,29 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
     if (userId) toggleSubscriber(userId, "member", isSubscribed);
   }, [userId, isSubscribed, toggleSubscriber]);
 
+  // Subscription state is server-owned and the row simply does not change on
+  // failure, so nothing on screen moves. Without an explicit message the user
+  // reads a failed unsubscribe as a no-op button and tries again forever.
+  //
+  // The 404 branch is the deploy-skew case: web/desktop staging ships on merge
+  // while the backend is deployed by hand, so this build can reach a server
+  // that has no /unsubscribe/subtree route. That is a "come back later", not a
+  // bug the user can act on, and it deserves different words from a generic
+  // failure (MUL-5483 review round 7).
   const unsubscribeFromSubtree = useCallback(() => {
-    if (userId) subtreeMutation.mutate({ userId, userType: "member" });
-  }, [userId, subtreeMutation]);
+    if (!userId) return;
+    subtreeMutation.mutate(
+      { userId, userType: "member" },
+      {
+        onError: (err) =>
+          toast.error(
+            err instanceof ApiError && err.status === 404
+              ? t(($) => $.detail.unsubscribe_subtree_unsupported)
+              : t(($) => $.detail.unsubscribe_subtree_failed),
+          ),
+      },
+    );
+  }, [userId, subtreeMutation, t]);
 
   return {
     subscribers,
