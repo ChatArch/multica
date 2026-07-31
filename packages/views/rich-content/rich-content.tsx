@@ -39,7 +39,7 @@ import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspacePaths, useWorkspaceSlug } from "@multica/core/paths";
+import { useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -48,10 +48,10 @@ import {
   markdownSanitizeSchema,
   markdownUrlTransform,
 } from "@multica/ui/markdown";
-import { AppLink, useAppOrigin } from "../navigation";
+import { useAppOrigin } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
-import { ProjectChip } from "../projects/components/project-chip";
+import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
   openLink,
@@ -144,34 +144,15 @@ function IdentifierIssueMentionLink({
 }
 
 /**
- * Project mention chip.
- *
- * Rendered as a real anchor via AppLink, matching IssueMentionCard: a mention is
- * a link, so it must be reachable by Tab and activatable by Enter, and expose a
- * URL to copy / open in a new tab. A `<span onClick>` looks identical and works
- * for a mouse, which is exactly why the regression is easy to miss — the readonly
- * renderer used one, and unifying the surfaces would have propagated it to Chat,
- * which previously had the accessible version.
- *
- * AppLink also owns plain-click, modifier-click and the desktop new-tab adapter,
- * so none of that is reimplemented here. The wrapper only shields surrounding
- * click handlers (e.g. collapsed-comment expanders) from mention clicks.
+ * Project mention chip. Navigation and accessibility are owned by the AppLink
+ * inside ProjectMentionCard; the wrapper only shields surrounding click
+ * handlers (e.g. collapsed-comment expanders) from mention clicks — the same
+ * shape as IssueMentionLink above.
  */
 function ProjectMentionLink({ projectId, label }: { projectId: string; label?: string }) {
-  const p = useWorkspacePaths();
   return (
     <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
-      <AppLink
-        href={p.projectDetail(projectId)}
-        newTabTitle={label}
-        className="project-mention not-prose inline-flex"
-      >
-        <ProjectChip
-          projectId={projectId}
-          fallbackLabel={label}
-          className="cursor-pointer hover:bg-accent transition-colors"
-        />
-      </AppLink>
+      <ProjectMentionCard projectId={projectId} fallbackLabel={label} />
     </span>
   );
 }
