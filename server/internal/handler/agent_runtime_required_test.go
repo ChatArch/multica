@@ -81,17 +81,98 @@ func TestChatSend_UnboundAgentReturnsStructuredConflict(t *testing.T) {
 	}
 
 	var body struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
+		Error      string `json:"error"`
+		ReasonCode string `json:"reason_code"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Code != string(ReasonAgentRuntimeRequired) {
-		t.Fatalf("code = %q, want agent_runtime_required", body.Code)
+	if body.ReasonCode != string(ReasonAgentRuntimeRequired) {
+		t.Fatalf("reason_code = %q, want agent_runtime_required", body.ReasonCode)
 	}
 	if body.Error == "" {
 		t.Fatalf("expected a human-readable error alongside the code")
+	}
+}
+
+func TestCreateAutopilot_UnboundAgentRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Autopilot Create Unbound Runtime")
+	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Autopilot Create Unbound Agent")
+	unbindRuntime(t, ctx, runtimeID, agentID)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
+		"title":          "must not start unbound",
+		"assignee_id":    agentID,
+		"execution_mode": "run_only",
+	})
+	testHandler.CreateAutopilot(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var rows int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM autopilot WHERE title = 'must not start unbound' AND assignee_id = $1`,
+		agentID,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count autopilots: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("unbound Agent received %d active Autopilots, want 0", rows)
+	}
+}
+
+func TestUpdateAutopilot_UnboundAgentCannotResume(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Autopilot Resume Unbound Runtime")
+	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Autopilot Resume Unbound Agent")
+
+	var autopilotID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO autopilot (
+			workspace_id, title, assignee_type, assignee_id, status,
+			execution_mode, created_by_type, created_by_id
+		)
+		VALUES ($1, 'cannot resume unbound', 'agent', $2, 'active',
+			'run_only', 'member', $3)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID).Scan(&autopilotID); err != nil {
+		t.Fatalf("insert paused autopilot: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+	})
+
+	unbindRuntime(t, ctx, runtimeID, agentID)
+
+	w := httptest.NewRecorder()
+	req := newRequest("PATCH", "/api/autopilots/"+autopilotID+"?workspace_id="+testWorkspaceID,
+		map[string]any{"status": "active"})
+	req = withURLParam(req, "id", autopilotID)
+	testHandler.UpdateAutopilot(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var status, pauseReason string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status, pause_reason FROM autopilot WHERE id = $1`,
+		autopilotID,
+	).Scan(&status, &pauseReason); err != nil {
+		t.Fatalf("read autopilot: %v", err)
+	}
+	if status != "paused" || pauseReason != string(ReasonAgentRuntimeRequired) {
+		t.Fatalf("autopilot = (%q, %q), want (paused, agent_runtime_required)", status, pauseReason)
 	}
 }
 

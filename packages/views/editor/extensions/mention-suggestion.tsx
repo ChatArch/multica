@@ -16,6 +16,7 @@ import { flattenIssueBuckets, issueKeys } from "@multica/core/issues/queries";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import { useAuthStore } from "@multica/core/auth";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
+import { isAgentRuntimeBound } from "@multica/core/agents";
 import { api } from "@multica/core/api";
 import { isImeComposing } from "@multica/core/utils";
 import type {
@@ -586,13 +587,24 @@ export function createMentionSuggestion(
       .filter(
         (a) =>
           !a.archived_at &&
+          isAgentRuntimeBound(a) &&
           (a.name.toLowerCase().includes(q) || matchesPinyin(a.name, q)) &&
           canAssignAgentToIssue(a, { userId, role: myRole }).allowed,
       )
       .map((a) => ({ id: a.id, label: a.name, type: "agent" as const }));
+    const runnableAgentIds = new Set(
+      agents
+        .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
+        .map((agent) => agent.id),
+    );
 
     const squadItems: MentionItem[] = squads
-      .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(q) || matchesPinyin(s.name, q)))
+      .filter(
+        (s) =>
+          !s.archived_at &&
+          runnableAgentIds.has(s.leader_id) &&
+          (s.name.toLowerCase().includes(q) || matchesPinyin(s.name, q)),
+      )
       .map((s) => ({ id: s.id, label: s.name, type: "squad" as const }));
 
     // Members and agents share a single ranked list — recently mentioned

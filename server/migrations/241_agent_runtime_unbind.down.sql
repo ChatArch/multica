@@ -17,6 +17,9 @@
 -- archive-then-hard-delete runtime teardown, so runtime deletion must not be
 -- exercised during a rollback window.
 
+ALTER TABLE autopilot
+    DROP COLUMN IF EXISTS pause_reason;
+
 ALTER TABLE agent_task_queue
     DROP CONSTRAINT IF EXISTS agent_task_queue_active_requires_runtime;
 

@@ -733,8 +733,9 @@ var errRuntimeNotDrained = errors.New("runtime still has non-terminal tasks")
 // runtimeTeardownResult reports what the shared teardown changed so the caller
 // can broadcast it after the transaction commits.
 type runtimeTeardownResult struct {
-	UnboundAgents  []db.Agent
-	CancelledTasks []db.AgentTaskQueue
+	UnboundAgents    []db.Agent
+	CancelledTasks   []db.AgentTaskQueue
+	PausedAutopilots []db.Autopilot
 }
 
 // unbindRuntimeForDelete is the teardown every runtime-delete path runs inside
@@ -755,25 +756,22 @@ type runtimeTeardownResult struct {
 //     is just as much the user's data. System agents are excluded — they are
 //     invisible infrastructure with no rebind affordance, so they are deleted in
 //     step 5 as before.
-//  2. Cancel the non-terminal tasks of this runtime AND of the agents we just
+//  2. Pause active Autopilots assigned directly to those agents or to squads
+//     they lead. The automation config stays intact and the persisted reason
+//     explains that rebinding the Agent is the recovery path.
+//  3. Cancel the non-terminal tasks of this runtime AND of the agents we just
 //     unbound. The agent-side match is load-bearing: agent.runtime_id can move
 //     without rewriting agent_task_queue.runtime_id, so a task an unbound agent
 //     left pinned to another runtime would otherwise stay claimable while its
 //     owner is no longer allowed to run.
-//  3. Assert the runtime is drained (see errRuntimeNotDrained).
-//  4. Detach the task history. Without this, deleting the runtime row would
+//  4. Assert the runtime is drained (see errRuntimeNotDrained).
+//  5. Detach the task history. Without this, deleting the runtime row would
 //     cascade agent_task_queue away — and task_message / task_usage /
 //     task_token with it — so the agents would survive with no record of what
 //     they ever did.
-//  5. Hard-delete the system agents, clearing first the rows whose cleanup has
+//  6. Hard-delete the system agents, clearing first the rows whose cleanup has
 //     no FK to follow (invocation targets, channel installations, chat pins,
 //     labels, chat draft restores).
-//
-// Autopilots are deliberately left active. Their assignee survives now, so
-// pausing would discard the owner's intent for a condition that a rebind fixes;
-// an autopilot on an unbound agent records skipped runs with
-// "agent has no runtime bound", exactly as one on an offline runtime already
-// does.
 func unbindRuntimeForDelete(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID) (runtimeTeardownResult, error) {
 	var out runtimeTeardownResult
 
@@ -787,6 +785,12 @@ func unbindRuntimeForDelete(ctx context.Context, qtx *db.Queries, runtimeID pgty
 	for i, a := range unbound {
 		unboundIDs[i] = a.ID
 	}
+	paused, err := qtx.PauseAutopilotsByUnboundAgents(ctx, unboundIDs)
+	if err != nil {
+		return out, fmt.Errorf("pause autopilots: %w", err)
+	}
+	out.PausedAutopilots = paused
+
 	cancelled, err := qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
 		RuntimeIds: []pgtype.UUID{runtimeID},
 		AgentIds:   unboundIDs,
@@ -796,7 +800,10 @@ func unbindRuntimeForDelete(ctx context.Context, qtx *db.Queries, runtimeID pgty
 	}
 	out.CancelledTasks = cancelled
 
-	undrained, err := qtx.CountUndrainedTasksByRuntime(ctx, runtimeID)
+	undrained, err := qtx.CountUndrainedTasksByRuntimeOrAgent(ctx, db.CountUndrainedTasksByRuntimeOrAgentParams{
+		RuntimeIds: []pgtype.UUID{runtimeID},
+		AgentIds:   unboundIDs,
+	})
 	if err != nil {
 		return out, fmt.Errorf("count undrained tasks: %w", err)
 	}
@@ -836,8 +843,8 @@ func unbindRuntimeForDelete(ctx context.Context, qtx *db.Queries, runtimeID pgty
 }
 
 // publishRuntimeTeardown fans out a committed teardown. Ordering matches the
-// other revocation paths: task:cancelled before the per-agent update before the
-// runtime-list refresh.
+// other revocation paths: task:cancelled, then per-agent and Autopilot updates,
+// then the runtime-list refresh.
 func (h *Handler) publishRuntimeTeardown(ctx context.Context, res runtimeTeardownResult, wsID, userID string) {
 	if h.TaskService != nil && len(res.CancelledTasks) > 0 {
 		h.TaskService.BroadcastCancelledTasks(ctx, res.CancelledTasks)
@@ -847,7 +854,12 @@ func (h *Handler) publishRuntimeTeardown(ctx context.Context, res runtimeTeardow
 		// update path already uses; subscribers refresh the row and see
 		// runtime_bound=false. No agent:archived here — nothing was archived.
 		h.publish(protocol.EventAgentStatus, wsID, "member", userID, map[string]any{
-			"agent": h.agentToResponse(a),
+			"agent": broadcastAgentResponse(h.agentToResponse(a)),
+		})
+	}
+	for _, a := range res.PausedAutopilots {
+		h.publish(protocol.EventAutopilotUpdated, wsID, "member", userID, map[string]any{
+			"autopilot": autopilotToResponse(a, nil),
 		})
 	}
 	h.publish(protocol.EventDaemonRegister, wsID, "member", userID, map[string]any{
@@ -927,6 +939,27 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
+	// Revalidate under the runtime row lock. Agent/task inserts take a
+	// KEY SHARE lock through their runtime FK, so no active agent can appear
+	// after this check and then be silently unbound by the teardown.
+	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusNotFound, "runtime not found")
+		return
+	}
+	if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime dependencies")
+		return
+	}
+	activeAgents, err = qtx.ListActiveAgentsByRuntimeForUpdate(r.Context(), rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check runtime dependencies")
+		return
+	}
+	if len(activeAgents) > 0 {
+		writeJSON(w, http.StatusConflict, h.runtimeHasActiveAgentsResponse(activeAgents))
+		return
+	}
+
 	// Same teardown the confirmed path runs: unbind the runtime's agents and
 	// their task history, cancel what was still active, remove only the system
 	// agents. There is no active agent here by definition, but archived ones and
@@ -961,6 +994,7 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		"deleted_by", userID,
 		"agents_unbound", len(teardown.UnboundAgents),
 		"tasks_cancelled", len(teardown.CancelledTasks),
+		"autopilots_paused", len(teardown.PausedAutopilots),
 	)
 
 	h.publishRuntimeTeardown(r.Context(), teardown, wsID, userID)
@@ -986,7 +1020,7 @@ func (h *Handler) runtimeHasActiveAgentsResponse(agents []db.Agent) map[string]a
 		resp[i] = h.agentToResponse(a)
 	}
 	return map[string]any{
-		"error":         "cannot delete runtime: it has active agents bound to it. Archive or reassign the agents first.",
+		"error":         "cannot delete runtime: it has active agents bound to it. Reassign them or confirm unbinding them first.",
 		"code":          "runtime_has_active_agents",
 		"active_agents": resp,
 	}
@@ -1009,10 +1043,10 @@ type unbindAgentsAndDeleteRuntimeRequest struct {
 }
 
 // UnbindAgentsAndDeleteRuntime is the confirmed delete entry point: unbind every
-// agent bound to the runtime, cancel their queued/running tasks, detach their
-// task history, hard-delete only the system agents, and finally delete the
-// runtime row — all inside a single transaction so a partial failure never
-// leaves a runtime half-torn-down.
+// user agent bound to the runtime, pause affected Autopilots, cancel active
+// tasks, detach task history, hard-delete only the system agents, and finally
+// delete the runtime row — all inside a single transaction so a partial failure
+// never leaves a runtime half-torn-down.
 //
 // Before MUL-5559 this archived those agents and then hard-deleted the rows,
 // destroying every conversation with them; the dialog said "archive", so what
@@ -1023,7 +1057,7 @@ type unbindAgentsAndDeleteRuntimeRequest struct {
 // revokeAndRemoveMember (workspace_revoke.go) so the two paths share the same
 // race-safety properties: the dispatcher can't claim a task whose runtime is
 // about to vanish, and post-commit publish events emit the same
-// task:cancelled → agent:status → daemon:register fan-out.
+// task:cancelled → agent:status/autopilot:updated → daemon:register fan-out.
 //
 // The expected_active_agent_ids check is the load-bearing piece for the UX:
 // the front-end snapshots the agent list when the dialog opens and presents
@@ -1107,6 +1141,10 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
 	}
+	if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime dependencies")
+		return
+	}
 
 	// Re-list active agents inside the transaction, with FOR UPDATE on
 	// each row so a concurrent archive/move of one of those existing
@@ -1177,12 +1215,14 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 		"deleted_by", userID,
 		"agents_unbound", len(teardown.UnboundAgents),
 		"tasks_cancelled", len(teardown.CancelledTasks),
+		"autopilots_paused", len(teardown.PausedAutopilots),
 	)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ok",
-		"agents_unbound":  len(teardown.UnboundAgents),
-		"tasks_cancelled": len(teardown.CancelledTasks),
+		"status":            "ok",
+		"agents_unbound":    len(teardown.UnboundAgents),
+		"tasks_cancelled":   len(teardown.CancelledTasks),
+		"autopilots_paused": len(teardown.PausedAutopilots),
 		// Deprecated mirror of agents_unbound: installed clients built against
 		// the archive-and-delete contract read this key. The count is the same
 		// set of agents; they are no longer archived.
@@ -1193,7 +1233,7 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 // parseExpectedActiveAgentIDs validates the cascade endpoint's
 // expected_active_agent_ids list. nil / empty is allowed (an empty set is a
 // valid plan: "I confirmed there are no active agents" — the cascade then
-// just deletes the runtime without archiving anything). Returns ok=false on
+// just deletes the runtime without unbinding an active agent). Returns ok=false on
 // any malformed UUID so the handler responds 400 instead of silently
 // matching a different set.
 func parseExpectedActiveAgentIDs(raw []string) (map[string]struct{}, bool) {

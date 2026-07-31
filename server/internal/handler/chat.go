@@ -754,13 +754,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !agent.RuntimeID.Valid {
-		// Structured so the composer can offer "bind a runtime" instead of a
-		// generic failure: the agent and its history are intact, it just has no
-		// machine to run on (MUL-5559).
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error": "this agent is not bound to a runtime; bind one to chat with it again.",
-			"code":  string(ReasonAgentRuntimeRequired),
-		})
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAgentRuntimeRequired)
 		return
 	}
 
@@ -949,13 +943,7 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !agent.RuntimeID.Valid {
-		// Structured so the composer can offer "bind a runtime" instead of a
-		// generic failure: the agent and its history are intact, it just has no
-		// machine to run on (MUL-5559).
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error": "this agent is not bound to a runtime; bind one to chat with it again.",
-			"code":  string(ReasonAgentRuntimeRequired),
-		})
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAgentRuntimeRequired)
 		return
 	}
 	// Enqueuing a suggestion pass runs the agent and spends quota, so it must

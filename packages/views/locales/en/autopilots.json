@@ -27,6 +27,7 @@
   "status": {
     "active": "Active",
     "paused": "Paused",
+    "paused_runtime_required": "Paused — the assignee needs a runtime",
     "archived": "Archived"
   },
   "execution_mode": {
@@ -69,6 +70,8 @@
     "not_found": "Autopilot not found",
     "pause_aria": "Pause autopilot",
     "activate_aria": "Activate autopilot",
+    "paused_runtime_required": "Paused because the assignee lost its runtime. Bind a runtime, then reactivate this autopilot.",
+    "bind_runtime": "Bind runtime",
     "edit": "Edit",
     "run_now": "Run now",
     "running": "Running...",
@@ -409,7 +412,9 @@
     "select_agent": "Select agent",
     "select_assignee": "Select agent or squad",
     "agents_group": "Agents",
-    "squads_group": "Squads"
+    "squads_group": "Squads",
+    "agent_runtime_required": "Bind a runtime before selecting this agent",
+    "squad_runtime_required": "Bind a runtime to this squad's leader before selecting it"
   },
   "timezone_picker": {
     "search_placeholder": "Search timezone..."

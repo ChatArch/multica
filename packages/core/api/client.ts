@@ -1425,6 +1425,7 @@ export class ApiClient {
     agents_unbound?: number;
     agents_archived?: number;
     tasks_cancelled: number;
+    autopilots_paused?: number;
   }> {
     return this.fetch(`/api/runtimes/${runtimeId}/unbind-agents-and-delete`, {
       method: "POST",

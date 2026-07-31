@@ -6,6 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // These are the regressions for MUL-5559. Deleting a runtime used to archive its
@@ -176,10 +181,80 @@ func TestUnbindAgentsAndDeleteRuntime_CancelsDeferredTasks(t *testing.T) {
 	}
 }
 
-// TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig: the old flow paused
-// autopilots because their assignee was about to be hard-deleted. The assignee
-// survives now, so the owner's intent is left alone — a rebind restores the
-// autopilot without them having to remember to re-enable it.
+func TestCountUndrainedTasksByRuntimeOrAgent_IncludesCrossRuntimeTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Drain Assertion Agent Runtime")
+	otherRuntimeID := createCascadeFixtureRuntime(t, ctx, "Drain Assertion Task Runtime")
+	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Drain Assertion Agent")
+	_ = insertFixtureTask(t, ctx, otherRuntimeID, agentID, "queued", false)
+
+	count, err := testHandler.Queries.CountUndrainedTasksByRuntimeOrAgent(
+		ctx,
+		db.CountUndrainedTasksByRuntimeOrAgentParams{
+			RuntimeIds: []pgtype.UUID{parseUUID(runtimeID)},
+			AgentIds:   []pgtype.UUID{parseUUID(agentID)},
+		},
+	)
+	if err != nil {
+		t.Fatalf("count undrained tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("undrained count = %d, want 1 for task pinned to another runtime", count)
+	}
+}
+
+func TestDeleteStaleOfflineRuntimes_UnboundAgentDoesNotDisableGC(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	boundRuntimeID := createCascadeFixtureRuntime(t, ctx, "GC Unbound Agent Source")
+	agentID := createCascadeFixtureAgent(t, ctx, boundRuntimeID, "GC Unbound Agent")
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("unbind GC fixture agent: %v", err)
+	}
+
+	var staleRuntimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, name, runtime_mode, provider, status,
+			device_info, metadata, owner_id, last_seen_at
+		)
+		VALUES ($1, 'GC stale candidate', 'cloud', 'gc-regression', 'offline',
+			'GC stale candidate', '{}'::jsonb, $2, now() - interval '200 years')
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&staleRuntimeID); err != nil {
+		t.Fatalf("seed stale runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, staleRuntimeID)
+	})
+
+	deleted, err := testHandler.Queries.DeleteStaleOfflineRuntimes(ctx, 3_000_000_000)
+	if err != nil {
+		t.Fatalf("delete stale runtimes: %v", err)
+	}
+	found := false
+	for _, row := range deleted {
+		if uuidToString(row.ID) == staleRuntimeID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("unbound agent made stale-runtime GC skip an unrelated candidate")
+	}
+}
+
+// TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig pauses an automation
+// whose assignee cannot run after teardown. Leaving it active would append an
+// identical skipped run every schedule tick forever. Its assignee and config
+// remain intact, and pause_reason tells the user how to recover.
 func TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -206,14 +281,17 @@ func TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig(t *testing.T) {
 
 	unbindRuntime(t, ctx, runtimeID, agentID)
 
-	var status string
+	var status, pauseReason string
 	var assigneeRows int
 	if err := testPool.QueryRow(ctx,
-		`SELECT status FROM autopilot WHERE id = $1`, autopilotID).Scan(&status); err != nil {
+		`SELECT status, pause_reason FROM autopilot WHERE id = $1`, autopilotID).Scan(&status, &pauseReason); err != nil {
 		t.Fatalf("read autopilot status: %v", err)
 	}
-	if status != "active" {
-		t.Fatalf("autopilot status = %q, want active (config and intent preserved)", status)
+	if status != "paused" {
+		t.Fatalf("autopilot status = %q, want paused", status)
+	}
+	if pauseReason != string(ReasonAgentRuntimeRequired) {
+		t.Fatalf("autopilot pause_reason = %q, want agent_runtime_required", pauseReason)
 	}
 	if err := testPool.QueryRow(ctx,
 		`SELECT count(*) FROM autopilot WHERE id = $1 AND assignee_id = $2`,
@@ -222,6 +300,55 @@ func TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig(t *testing.T) {
 	}
 	if assigneeRows != 1 {
 		t.Fatalf("autopilot must still point at the surviving agent")
+	}
+}
+
+func TestUnbindAgentsAndDeleteRuntime_RedactsAgentBroadcast(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createCascadeFixtureRuntime(t, ctx, "Unbind Broadcast Runtime")
+	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Unbind Broadcast Agent")
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent
+		SET mcp_config = '{"servers":{"private":{"token":"secret"}}}'::jsonb,
+		    composio_toolkit_allowlist = ARRAY['github']::text[]
+		WHERE id = $1
+	`, agentID); err != nil {
+		t.Fatalf("seed secret-bearing agent fields: %v", err)
+	}
+
+	var broadcast *AgentResponse
+	testHandler.Bus.Subscribe(protocol.EventAgentStatus, func(e events.Event) {
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		agent, ok := payload["agent"].(AgentResponse)
+		if !ok || agent.ID != agentID {
+			return
+		}
+		broadcast = &agent
+	})
+
+	unbindRuntime(t, ctx, runtimeID, agentID)
+
+	if broadcast == nil {
+		t.Fatal("expected agent:status broadcast for unbound agent")
+	}
+	if broadcast.McpConfig != nil {
+		t.Fatalf("broadcast leaked mcp_config: %s", string(broadcast.McpConfig))
+	}
+	if !broadcast.McpConfigRedacted {
+		t.Fatal("broadcast must mark mcp_config as redacted")
+	}
+	if broadcast.ComposioToolkitAllowlist != nil {
+		t.Fatalf("broadcast leaked Composio allowlist: %v", broadcast.ComposioToolkitAllowlist)
+	}
+	if !broadcast.ComposioToolkitAllowlistRedacted {
+		t.Fatal("broadcast must mark Composio allowlist as redacted")
 	}
 }
 

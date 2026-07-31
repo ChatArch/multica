@@ -195,6 +195,7 @@ type Autopilot struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 	AssigneeType       string             `json:"assignee_type"`
 	ProjectID          pgtype.UUID        `json:"project_id"`
+	PauseReason        pgtype.Text        `json:"pause_reason"`
 }
 
 type AutopilotCollaborator struct {

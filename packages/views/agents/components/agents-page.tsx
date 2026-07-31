@@ -18,6 +18,7 @@ import {
   type AgentActivity,
   agentRunCounts30dOptions,
   effectiveAccessScope,
+  isAgentRuntimeBound,
   useWorkspaceActivityMap,
   useWorkspacePresenceMap,
   VISIBILITY_TOOLTIP,
@@ -427,6 +428,16 @@ function StatusCell({ row }: { row: AgentListRow }) {
       </ListGridCell>
     );
   }
+  if (!isAgentRuntimeBound(agent)) {
+    return (
+      <ListGridCell className="gap-1.5">
+        <AlertCircle className="size-3.5 shrink-0 text-amber-500" />
+        <span className="truncate text-caption text-amber-600 dark:text-amber-400">
+          {t(($) => $.row.needs_runtime)}
+        </span>
+      </ListGridCell>
+    );
+  }
   if (!presence) {
     return (
       <ListGridCell>
@@ -504,6 +515,16 @@ export function AccessCell({ row }: { row: AgentListRow }) {
 }
 
 function RuntimeCell({ row }: { row: AgentListRow }) {
+  const { t } = useT("agents");
+  if (!isAgentRuntimeBound(row.agent)) {
+    return (
+      <ListGridCell className="hidden @2xl:flex">
+        <span className="truncate text-caption text-amber-600 dark:text-amber-400">
+          {t(($) => $.row.needs_runtime)}
+        </span>
+      </ListGridCell>
+    );
+  }
   const runtime = row.runtime;
   return (
     <ListGridCell className="hidden @2xl:flex">

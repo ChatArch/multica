@@ -62,6 +62,8 @@ function fakeQc(data: {
     id: string;
     name: string;
     archived_at: string | null;
+    runtime_id?: string;
+    runtime_bound?: boolean;
     visibility?: "workspace" | "private";
     owner_id?: string | null;
     permission_mode?: "private" | "public_to";
@@ -74,6 +76,7 @@ function fakeQc(data: {
     id: string;
     name: string;
     archived_at: string | null;
+    leader_id: string;
   }>;
   issues?: Array<{ id: string; identifier: string; title: string; status: string }>;
 }): QueryClient {
@@ -86,6 +89,8 @@ function fakeQc(data: {
   // private + no targets otherwise) unless a fixture sets them explicitly.
   const agentsWithPermissions = (data.agents ?? []).map((a) => ({
     ...a,
+    runtime_id: a.runtime_id ?? "runtime-1",
+    runtime_bound: a.runtime_bound ?? true,
     permission_mode:
       a.permission_mode ?? (a.visibility === "private" ? "private" : "public_to"),
     invocation_targets:
@@ -179,6 +184,29 @@ describe("createMentionSuggestion", () => {
     const items = result as MentionItem[];
     expect(items.some((i) => i.type === "member" && i.label === "Alice")).toBe(true);
     expect(items.some((i) => i.type === "agent" && i.label === "Aegis")).toBe(true);
+  });
+
+  it("does not offer an unbound agent as a mention target", () => {
+    const qc = fakeQc({
+      agents: [
+        {
+          id: "a1",
+          name: "Aegis",
+          archived_at: null,
+          runtime_id: "",
+          runtime_bound: false,
+          visibility: "workspace",
+          owner_id: null,
+        },
+      ],
+    });
+
+    const config = createMentionSuggestion(qc);
+    const items = config.items!(itemArgs("a")) as MentionItem[];
+
+    expect(items.some((item) => item.type === "agent" && item.id === "a1")).toBe(
+      false,
+    );
   });
 
   it("loads server issue matches into the popup when the list cache misses", async () => {
@@ -610,13 +638,37 @@ describe("createMentionSuggestion", () => {
     expect(screen.getByText("Roadmap")).toBeInTheDocument();
   });
 
-  it("includes all non-archived squads in the mention list", () => {
+  it("includes squads with a runnable leader in the mention list", () => {
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        {
+          id: "leader-1",
+          name: "Leader",
+          archived_at: null,
+          visibility: "workspace",
+          owner_id: null,
+        },
+      ],
       squads: [
-        { id: "s1", name: "Jiayuan's Coding Team", archived_at: null },
-        { id: "s2", name: "独立团", archived_at: null },
-        { id: "s3", name: "Archived Squad", archived_at: "2026-01-01T00:00:00Z" },
+        {
+          id: "s1",
+          name: "Jiayuan's Coding Team",
+          archived_at: null,
+          leader_id: "leader-1",
+        },
+        {
+          id: "s2",
+          name: "独立团",
+          archived_at: null,
+          leader_id: "leader-1",
+        },
+        {
+          id: "s3",
+          name: "Archived Squad",
+          archived_at: "2026-01-01T00:00:00Z",
+          leader_id: "leader-1",
+        },
       ],
     });
     searchIssuesMock.mockReturnValue(new Promise(() => {}));
@@ -629,6 +681,37 @@ describe("createMentionSuggestion", () => {
     expect(items.some((i) => i.type === "squad" && i.label === "Jiayuan's Coding Team")).toBe(true);
     expect(items.some((i) => i.type === "squad" && i.label === "独立团")).toBe(true);
     expect(items.some((i) => i.type === "squad" && i.label === "Archived Squad")).toBe(false);
+  });
+
+  it("does not offer a squad whose leader is unbound", () => {
+    const qc = fakeQc({
+      agents: [
+        {
+          id: "leader-1",
+          name: "Leader",
+          archived_at: null,
+          runtime_id: "",
+          runtime_bound: false,
+          visibility: "workspace",
+          owner_id: null,
+        },
+      ],
+      squads: [
+        {
+          id: "s1",
+          name: "Unrunnable Squad",
+          archived_at: null,
+          leader_id: "leader-1",
+        },
+      ],
+    });
+
+    const config = createMentionSuggestion(qc);
+    const items = config.items!(itemArgs("")) as MentionItem[];
+
+    expect(items.some((item) => item.type === "squad" && item.id === "s1")).toBe(
+      false,
+    );
   });
 
   it("returns no squads when the squads cache is empty (not yet fetched)", () => {

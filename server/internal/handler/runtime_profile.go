@@ -359,10 +359,28 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Confirm the profile exists in this workspace. If the profile row is
-	// already gone but runtime rows still carry this workspace/profile pair,
-	// treat them as orphaned instances and clean them up below.
-	_, profileErr := h.Queries.GetRuntimeProfileForWorkspace(r.Context(), db.GetRuntimeProfileForWorkspaceParams{
+	// The profile-delete cascade must run the SAME teardown the runtime-delete
+	// path uses for each one: agent.runtime_id is ON DELETE RESTRICT, so an
+	// agent still pointing at one of these rows would turn a bare delete into a
+	// 500. Active agents are refused (409); everything else is unbound rather
+	// than destroyed, exactly as in unbindRuntimeForDelete.
+	// Guard: refuse while any active (non-archived) agent is bound to one of
+	// the profile's runtimes. Keep this a 409 — the profile is the thing that
+	// defines those runtimes, so the user should retire the agents or move them
+	// deliberately instead of having them silently unbound in bulk.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// Lock the profile before planning the cascade. Daemon registration takes
+	// a conflicting KEY SHARE lock in its own transaction, so it cannot insert
+	// a runtime after the plan and have that row escape deletion. If the profile
+	// row is already gone, still clean up any orphaned profile_id rows.
+	_, profileErr := qtx.LockRuntimeProfileForDelete(r.Context(), db.LockRuntimeProfileForDeleteParams{
 		ID:          profileUUID,
 		WorkspaceID: wsUUID,
 	})
@@ -372,11 +390,10 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enumerate the runtime instance rows registered against this profile in
-	// this workspace. The workspace predicate is important because profile_id has
-	// no FK and should never let a malformed row in another workspace be cleaned
-	// up from this workspace's profile endpoint.
-	runtimeIDs, err := h.Queries.ListAgentRuntimeIDsByProfile(r.Context(), db.ListAgentRuntimeIDsByProfileParams{
+	// Lock runtime rows in deterministic ID order. Their agent/task foreign-key
+	// inserts take KEY SHARE locks, preventing dependencies from appearing after
+	// the active-agent check.
+	runtimeIDs, err := qtx.ListAgentRuntimeIDsByProfile(r.Context(), db.ListAgentRuntimeIDsByProfileParams{
 		ProfileID:   profileUUID,
 		WorkspaceID: wsUUID,
 	})
@@ -388,17 +405,14 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime profile not found")
 		return
 	}
+	for _, runtimeID := range runtimeIDs {
+		if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), runtimeID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock profile dependencies")
+			return
+		}
+	}
 
-	// The profile-delete cascade must run the SAME teardown the runtime-delete
-	// path uses for each one: agent.runtime_id is ON DELETE RESTRICT, so an
-	// agent still pointing at one of these rows would turn a bare delete into a
-	// 500. Active agents are refused (409); everything else is unbound rather
-	// than destroyed, exactly as in unbindRuntimeForDelete.
-	// Guard: refuse while any active (non-archived) agent is bound to one of
-	// the profile's runtimes. Keep this a 409 — the profile is the thing that
-	// defines those runtimes, so the user should retire the agents or move them
-	// deliberately instead of having them silently unbound in bulk.
-	agentCount, err := h.Queries.CountAgentsByProfile(r.Context(), db.CountAgentsByProfileParams{
+	agentCount, err := qtx.CountAgentsByProfile(r.Context(), db.CountAgentsByProfileParams{
 		ProfileID:   profileUUID,
 		WorkspaceID: wsUUID,
 	})
@@ -410,14 +424,6 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "cannot delete runtime profile: active agents are still bound to its runtimes")
 		return
 	}
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
 
 	// App-layer cascade, per runtime, mirroring DeleteAgentRuntime: unbind the
 	// remaining (archived) agents and their task history, cancel anything still

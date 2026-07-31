@@ -18,8 +18,12 @@ import { useAuthStore } from "@multica/core/auth";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "@multica/views/issues/components";
-import { api } from "@multica/core/api";
-import { useAgentPresenceDetail, useWorkspaceAgentAvailability } from "@multica/core/agents";
+import { api, dispatchReasonCode } from "@multica/core/api";
+import {
+  isAgentRuntimeBound,
+  useAgentPresenceDetail,
+  useWorkspaceAgentAvailability,
+} from "@multica/core/agents";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useAppForeground } from "../../common/use-app-foreground";
 import {
@@ -32,6 +36,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { OfflineBanner } from "./offline-banner";
 import { NoAgentBanner } from "./no-agent-banner";
 import { ArchivedAgentBanner } from "./archived-agent-banner";
+import { RuntimeRequiredBanner } from "./runtime-required-banner";
 import {
   chatSessionsOptions,
   chatMessagesPageOptions,
@@ -240,6 +245,8 @@ export function ChatWindow() {
     availableAgents.find((a) => a.id === selectedAgentId) ??
     availableAgents[0] ??
     null;
+  const activeAgentRuntimeBound =
+    !!activeAgent && isAgentRuntimeBound(activeAgent);
 
   const projectContextSupport = useChatProjectContextSupport(wsId, activeAgent);
 
@@ -461,6 +468,10 @@ export function ChatWindow() {
         });
         return false;
       }
+      if (!activeAgentRuntimeBound) {
+        toast.error(t(($) => $.input.runtime_required_toast));
+        return false;
+      }
 
       const finalContent = content;
 
@@ -479,7 +490,14 @@ export function ChatWindow() {
         sessionId = await ensureSession(finalContent);
       } catch (err) {
         apiLogger.error("sendChatMessage.ensureSession.error", err);
-        toast.error(t(($) => $.input.send_failed_toast));
+        const reason = dispatchReasonCode(err);
+        toast.error(
+          reason === "invocation_not_allowed"
+            ? t(($) => $.input.send_blocked_toast)
+            : reason === "agent_runtime_required"
+              ? t(($) => $.input.runtime_required_toast)
+              : t(($) => $.input.send_failed_toast),
+        );
         return false;
       }
       if (!sessionId) {
@@ -500,7 +518,14 @@ export function ChatWindow() {
         });
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
-        toast.error(t(($) => $.input.send_failed_toast));
+        const reason = dispatchReasonCode(err);
+        toast.error(
+          reason === "invocation_not_allowed"
+            ? t(($) => $.input.send_blocked_toast)
+            : reason === "agent_runtime_required"
+              ? t(($) => $.input.runtime_required_toast)
+              : t(($) => $.input.send_failed_toast),
+        );
         return false;
       }
       apiLogger.info("sendChatMessage.success", {
@@ -582,6 +607,7 @@ export function ChatWindow() {
     [
       activeSessionId,
       activeAgent,
+      activeAgentRuntimeBound,
       isAgentArchived,
       ensureSession,
       cancelChatTask,
@@ -846,7 +872,11 @@ export function ChatWindow() {
           onLoadOlderMessages={() => void fetchOlderMessages()}
           onQuickAction={(action) => handleSend(action.prompt)}
           quickActionsDisabled={
-            !!pendingTaskId || isSessionArchived || isAgentArchived || noAgent
+            !!pendingTaskId ||
+            isSessionArchived ||
+            isAgentArchived ||
+            !activeAgentRuntimeBound ||
+            noAgent
           }
           onRegenerateQuickActions={(message) =>
             activeSessionId
@@ -879,6 +909,11 @@ export function ChatWindow() {
         <NoAgentBanner />
       ) : isAgentArchived ? (
         <ArchivedAgentBanner agentName={activeAgent?.name} />
+      ) : !activeAgentRuntimeBound && activeAgent ? (
+        <RuntimeRequiredBanner
+          agentId={activeAgent.id}
+          agentName={activeAgent.name}
+        />
       ) : (
         <OfflineBanner agentName={activeAgent?.name} availability={availability} />
       )}
@@ -893,9 +928,12 @@ export function ChatWindow() {
         uploadEnabled={!!activeAgent}
         onStop={handleStop}
         isRunning={!!pendingTaskId}
-        disabled={isSessionArchived || isAgentArchived}
+        disabled={
+          isSessionArchived || isAgentArchived || !activeAgentRuntimeBound
+        }
         noAgent={noAgent}
         agentArchived={isAgentArchived}
+        agentRuntimeRequired={!activeAgentRuntimeBound}
         agentName={activeAgent?.name}
         projects={projects}
         projectId={activeProjectId}
@@ -1038,9 +1076,15 @@ function AgentPickerItem({
   isCurrent: boolean;
   onSelect: (agent: Agent) => void;
 }) {
+  const { t } = useT("chat");
+  const runtimeBound = isAgentRuntimeBound(agent);
   return (
     <PickerItem
       selected={isCurrent}
+      disabled={!runtimeBound}
+      tooltip={
+        runtimeBound ? undefined : t(($) => $.window.agent_needs_runtime_hint)
+      }
       onClick={() => onSelect(agent)}
     >
       <ActorAvatar
@@ -1051,6 +1095,11 @@ function AgentPickerItem({
         showStatusDot
       />
       <span className="truncate flex-1">{agent.name}</span>
+      {!runtimeBound && (
+        <span className="shrink-0 text-micro text-amber-600 dark:text-amber-400">
+          {t(($) => $.window.agent_needs_runtime)}
+        </span>
+      )}
     </PickerItem>
   );
 }

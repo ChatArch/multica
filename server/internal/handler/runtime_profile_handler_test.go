@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // insertRuntimeProfileFixture creates a runtime_profile in testWorkspaceID and
@@ -232,6 +234,49 @@ func TestDeleteRuntimeProfile_MissingProfileNoOrphansStillReturns404(t *testing.
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRuntimeProfileDeleteLockSerializesRegistration(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	profileID := insertRuntimeProfileFixture(
+		t,
+		ctx,
+		"Profile Registration Lock",
+		"codex",
+		"profile-lock-codex",
+	)
+	params := db.LockRuntimeProfileForDeleteParams{
+		ID:          parseUUID(profileID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}
+
+	deleteTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin delete transaction: %v", err)
+	}
+	defer deleteTx.Rollback(ctx)
+	if _, err := testHandler.Queries.WithTx(deleteTx).LockRuntimeProfileForDelete(ctx, params); err != nil {
+		t.Fatalf("lock profile for delete: %v", err)
+	}
+
+	registrationTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin registration transaction: %v", err)
+	}
+	defer registrationTx.Rollback(ctx)
+	if _, err := registrationTx.Exec(ctx, `SET LOCAL lock_timeout = '50ms'`); err != nil {
+		t.Fatalf("set lock timeout: %v", err)
+	}
+	_, err = testHandler.Queries.WithTx(registrationTx).LockRuntimeProfileForRegistration(
+		ctx,
+		db.LockRuntimeProfileForRegistrationParams(params),
+	)
+	if err == nil {
+		t.Fatal("registration lock unexpectedly bypassed the profile delete lock")
 	}
 }
 

@@ -58,3 +58,10 @@ ALTER TABLE agent_task_queue
     ADD CONSTRAINT agent_task_queue_active_requires_runtime
     CHECK (runtime_id IS NOT NULL OR completed_at IS NOT NULL)
     NOT VALID;
+
+-- Runtime deletion pauses affected automations so a schedule cannot append one
+-- identical skipped run on every tick forever. The reason is persisted
+-- separately from status: clients can explain the recoverable condition, and a
+-- user can rebind the agent then resume the unchanged automation.
+ALTER TABLE autopilot
+    ADD COLUMN pause_reason TEXT;

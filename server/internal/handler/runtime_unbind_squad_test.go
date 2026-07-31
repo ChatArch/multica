@@ -198,6 +198,20 @@ func TestDeleteAgentRuntime_ActiveSquadWithArchivedLeaderNoLongerConflicts(t *te
 	runtimeID := seedIsolatedRuntime(t, "Runtime With Active Squad And Archived Leader")
 	archivedLeader := seedAgentOnRuntime(t, runtimeID, "Archived Leader Formerly Blocking Delete", true)
 	activeSquad := seedSquad(t, archivedLeader, "Active Squad Formerly Blocking Delete", false)
+	var autopilotID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO autopilot (
+			workspace_id, title, assignee_type, assignee_id,
+			created_by_type, created_by_id, status, execution_mode
+		)
+		VALUES ($1, 'squad runtime pause', 'squad', $2, 'member', $3, 'active', 'run_only')
+		RETURNING id
+	`, testWorkspaceID, activeSquad, testUserID).Scan(&autopilotID); err != nil {
+		t.Fatalf("seed squad autopilot: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+	})
 
 	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
@@ -215,6 +229,15 @@ func TestDeleteAgentRuntime_ActiveSquadWithArchivedLeaderNoLongerConflicts(t *te
 	}
 	if runtimeExists(t, runtimeID) {
 		t.Errorf("runtime should have been deleted")
+	}
+	var status, pauseReason string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status, pause_reason FROM autopilot WHERE id = $1`, autopilotID,
+	).Scan(&status, &pauseReason); err != nil {
+		t.Fatalf("read squad autopilot: %v", err)
+	}
+	if status != "paused" || pauseReason != string(ReasonAgentRuntimeRequired) {
+		t.Fatalf("squad autopilot = (%q, %q), want (paused, agent_runtime_required)", status, pauseReason)
 	}
 }
 
@@ -245,6 +268,88 @@ func TestDeleteAgentRuntime_NoSquadsRegression(t *testing.T) {
 	}
 	if runtimeExists(t, runtimeID) {
 		t.Errorf("runtime should have been deleted")
+	}
+}
+
+func TestUpdateSquad_UnboundLeaderPausesOnlySquadAutopilots(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	boundRuntimeID := seedIsolatedRuntime(t, "Bound Squad Leader Runtime")
+	boundLeaderID := seedAgentOnRuntime(t, boundRuntimeID, "Bound Squad Leader", false)
+	squadID := seedSquad(t, boundLeaderID, "Squad Leader Rotation", false)
+
+	unboundRuntimeID := seedIsolatedRuntime(t, "Unbound Squad Leader Runtime")
+	unboundLeaderID := seedAgentOnRuntime(t, unboundRuntimeID, "Unbound Squad Leader", false)
+	if _, err := testPool.Exec(ctx,
+		`UPDATE agent SET runtime_id = NULL WHERE id = $1`,
+		unboundLeaderID,
+	); err != nil {
+		t.Fatalf("unbind proposed leader: %v", err)
+	}
+
+	var squadAutopilotID, directAutopilotID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO autopilot (
+			workspace_id, title, assignee_type, assignee_id,
+			created_by_type, created_by_id, status, execution_mode
+		)
+		VALUES ($1, 'squad leader rotation pause', 'squad', $2,
+			'member', $3, 'active', 'run_only')
+		RETURNING id
+	`, testWorkspaceID, squadID, testUserID).Scan(&squadAutopilotID); err != nil {
+		t.Fatalf("seed squad autopilot: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO autopilot (
+			workspace_id, title, assignee_type, assignee_id,
+			created_by_type, created_by_id, status, execution_mode
+		)
+		VALUES ($1, 'unrelated direct autopilot', 'agent', $2,
+			'member', $3, 'active', 'run_only')
+		RETURNING id
+	`, testWorkspaceID, unboundLeaderID, testUserID).Scan(&directAutopilotID); err != nil {
+		t.Fatalf("seed direct autopilot: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM autopilot WHERE id = ANY($1::uuid[])`,
+			[]string{squadAutopilotID, directAutopilotID},
+		)
+	})
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateSquad(w, squadScopeReq(
+		"",
+		http.MethodPatch,
+		"/api/squads/"+squadID,
+		map[string]any{"leader_id": unboundLeaderID},
+		map[string]string{"id": squadID},
+	))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateSquad: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var squadStatus, pauseReason, directStatus string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status, pause_reason FROM autopilot WHERE id = $1`,
+		squadAutopilotID,
+	).Scan(&squadStatus, &pauseReason); err != nil {
+		t.Fatalf("read squad autopilot: %v", err)
+	}
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM autopilot WHERE id = $1`,
+		directAutopilotID,
+	).Scan(&directStatus); err != nil {
+		t.Fatalf("read direct autopilot: %v", err)
+	}
+	if squadStatus != "paused" || pauseReason != string(ReasonAgentRuntimeRequired) {
+		t.Fatalf("squad autopilot = (%q, %q), want (paused, agent_runtime_required)", squadStatus, pauseReason)
+	}
+	if directStatus != "active" {
+		t.Fatalf("unrelated direct autopilot status = %q, want active", directStatus)
 	}
 }
 

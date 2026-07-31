@@ -129,19 +129,27 @@ func (q *Queries) CountActiveAgentsByRuntime(ctx context.Context, runtimeID pgty
 	return count, err
 }
 
-const countUndrainedTasksByRuntime = `-- name: CountUndrainedTasksByRuntime :one
+const countUndrainedTasksByRuntimeOrAgent = `-- name: CountUndrainedTasksByRuntimeOrAgent :one
 SELECT count(*) FROM agent_task_queue
-WHERE runtime_id = $1 AND completed_at IS NULL
+WHERE (runtime_id = ANY($1::uuid[]) OR agent_id = ANY($2::uuid[]))
+  AND completed_at IS NULL
 `
 
+type CountUndrainedTasksByRuntimeOrAgentParams struct {
+	RuntimeIds []pgtype.UUID `json:"runtime_ids"`
+	AgentIds   []pgtype.UUID `json:"agent_ids"`
+}
+
 // Belt-and-braces gate for the runtime-delete transaction: after cancelling,
-// every task on this runtime must be terminal (completed_at IS NOT NULL) before
-// the unbind UPDATE runs. Non-zero means some non-terminal status escaped
-// CancelAgentTasksByRuntimeOrAgent — the handler aborts with 409
+// every task on this runtime OR owned by an agent being unbound must be terminal
+// (completed_at IS NOT NULL) before the unbind UPDATE runs. The agent-side
+// predicate must mirror CancelAgentTasksByRuntimeOrAgent: a task can remain
+// pinned to another runtime after its agent moves. Non-zero means some
+// non-terminal status escaped the cancel query — the handler aborts with 409
 // runtime_delete_not_drained rather than letting the CHECK constraint turn it
-// into an opaque 500, and rather than deleting the rows to make it go away.
-func (q *Queries) CountUndrainedTasksByRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countUndrainedTasksByRuntime, runtimeID)
+// into an opaque 500, and rather than deleting rows to make it go away.
+func (q *Queries) CountUndrainedTasksByRuntimeOrAgent(ctx context.Context, arg CountUndrainedTasksByRuntimeOrAgentParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUndrainedTasksByRuntimeOrAgent, arg.RuntimeIds, arg.AgentIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -160,7 +168,11 @@ const deleteStaleOfflineRuntimes = `-- name: DeleteStaleOfflineRuntimes :many
 DELETE FROM agent_runtime
 WHERE status = 'offline'
   AND last_seen_at < now() - make_interval(secs => $1::double precision)
-  AND id NOT IN (SELECT DISTINCT runtime_id FROM agent)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM agent
+    WHERE agent.runtime_id = agent_runtime.id
+  )
 RETURNING id, workspace_id
 `
 
@@ -666,10 +678,9 @@ FOR UPDATE
 //  2. concurrent UPDATE/DELETE of the runtime row itself (e.g. another
 //     delete attempt) waits for us to commit.
 //
-// Combined with ListActiveAgentsByRuntimeForUpdate (which row-locks the
-// existing active set) this closes the plan-compare → archive race that
-// was possible at read-committed isolation between the snapshot and the
-// bulk archive.
+// Combined with ListUserAgentsByRuntimeForUpdate (which row-locks active and
+// archived user agents) this closes both plan drift and archived-agent restore
+// races under read-committed isolation.
 func (q *Queries) LockAgentRuntime(ctx context.Context, id pgtype.UUID) (AgentRuntime, error) {
 	row := q.db.QueryRow(ctx, lockAgentRuntime, id)
 	var i AgentRuntime
@@ -966,8 +977,9 @@ WHERE runtime_id = $1 AND completed_at IS NOT NULL
 // task_message / task_usage / task_token cascade from the task in turn).
 // Restricted to terminal rows: an active task must keep its runtime, per
 // agent_task_queue_active_requires_runtime. The caller runs
-// CancelAgentTasksByRuntimeOrAgent + CountUndrainedTasksByRuntime first, so at
-// this point "terminal" is every row on the runtime.
+// CancelAgentTasksByRuntimeOrAgent +
+// CountUndrainedTasksByRuntimeOrAgent first, so at this point "terminal" is
+// every row on the runtime.
 func (q *Queries) UnbindTasksFromRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, unbindTasksFromRuntime, runtimeID)
 	if err != nil {

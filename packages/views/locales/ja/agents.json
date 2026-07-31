@@ -68,6 +68,7 @@
   "row": {
     "you": "あなた",
     "archived": "アーカイブ済み",
+    "needs_runtime": "ランタイム未設定",
     "no_description": "説明なし",
     "fallback_runtime_cloud": "クラウド",
     "fallback_runtime_local": "ローカル",
@@ -123,6 +124,8 @@
     "no_access_hint": "この非公開エージェントは、エージェントのオーナーまたはワークスペースの admin のみが閲覧できます。",
     "try_again": "再試行",
     "archived_banner": "このエージェントはアーカイブされています。割り当てやメンションはできません。",
+    "runtime_required_banner": "このエージェントの設定と履歴は保持されていますが、実行するにはランタイムを設定する必要があります。",
+    "bind_runtime": "ランタイムを設定",
     "restore": "復元",
     "archive_dialog_title": "エージェントをアーカイブしますか？",
     "archive_dialog_description": "\"{{name}}\" がアーカイブされます。割り当てやメンションはできなくなりますが、履歴はすべて保持されます。後で復元できます。",
@@ -137,6 +140,7 @@
     "restore_failed_toast": "エージェントを復元できませんでした",
     "dm": "DM",
     "dm_no_permission_toast": "このエージェントとチャットする権限がありません。",
+    "runtime_required_toast": "このエージェントを実行する前にランタイムを設定してください。",
     "assign_work": "作業を割り当てる",
     "more_actions_aria": "エージェントの操作",
     "updated": "{{when}}に更新"

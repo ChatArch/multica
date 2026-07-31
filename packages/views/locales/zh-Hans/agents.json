@@ -76,6 +76,7 @@
   "row": {
     "you": "你",
     "archived": "已归档",
+    "needs_runtime": "需绑定运行时",
     "no_description": "暂无描述",
     "fallback_runtime_cloud": "云端",
     "fallback_runtime_local": "本地",
@@ -131,6 +132,8 @@
     "no_access_hint": "只有该私密智能体的拥有者或工作区管理员可以查看。",
     "try_again": "重试",
     "archived_banner": "该智能体已归档，无法被分配或提及。",
+    "runtime_required_banner": "该智能体的配置和历史记录已保留，但需要绑定运行时后才能运行。",
+    "bind_runtime": "绑定运行时",
     "restore": "恢复",
     "archive_dialog_title": "归档智能体？",
     "archive_dialog_description": "\"{{name}}\"将被归档，无法被分配或提及，但所有历史会被保留。可以稍后恢复。",
@@ -145,6 +148,7 @@
     "restore_failed_toast": "恢复智能体失败",
     "dm": "私信",
     "dm_no_permission_toast": "你没有权限与该智能体聊天。",
+    "runtime_required_toast": "请先绑定运行时，再运行该智能体。",
     "assign_work": "分配工作",
     "more_actions_aria": "智能体操作",
     "updated": "{{when}}更新"

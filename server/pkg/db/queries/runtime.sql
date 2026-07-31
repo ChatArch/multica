@@ -26,10 +26,9 @@ WHERE id = ANY(@ids::uuid[]);
 --      our transaction finishes; and
 --   2. concurrent UPDATE/DELETE of the runtime row itself (e.g. another
 --      delete attempt) waits for us to commit.
--- Combined with ListActiveAgentsByRuntimeForUpdate (which row-locks the
--- existing active set) this closes the plan-compare → archive race that
--- was possible at read-committed isolation between the snapshot and the
--- bulk archive.
+-- Combined with ListUserAgentsByRuntimeForUpdate (which row-locks active and
+-- archived user agents) this closes both plan drift and archived-agent restore
+-- races under read-committed isolation.
 SELECT * FROM agent_runtime
 WHERE id = $1
 FOR UPDATE;
@@ -286,15 +285,18 @@ WHERE (runtime_id = ANY(@runtime_ids::uuid[]) OR agent_id = ANY(@agent_ids::uuid
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
--- name: CountUndrainedTasksByRuntime :one
+-- name: CountUndrainedTasksByRuntimeOrAgent :one
 -- Belt-and-braces gate for the runtime-delete transaction: after cancelling,
--- every task on this runtime must be terminal (completed_at IS NOT NULL) before
--- the unbind UPDATE runs. Non-zero means some non-terminal status escaped
--- CancelAgentTasksByRuntimeOrAgent — the handler aborts with 409
+-- every task on this runtime OR owned by an agent being unbound must be terminal
+-- (completed_at IS NOT NULL) before the unbind UPDATE runs. The agent-side
+-- predicate must mirror CancelAgentTasksByRuntimeOrAgent: a task can remain
+-- pinned to another runtime after its agent moves. Non-zero means some
+-- non-terminal status escaped the cancel query — the handler aborts with 409
 -- runtime_delete_not_drained rather than letting the CHECK constraint turn it
--- into an opaque 500, and rather than deleting the rows to make it go away.
+-- into an opaque 500, and rather than deleting rows to make it go away.
 SELECT count(*) FROM agent_task_queue
-WHERE runtime_id = $1 AND completed_at IS NULL;
+WHERE (runtime_id = ANY(@runtime_ids::uuid[]) OR agent_id = ANY(@agent_ids::uuid[]))
+  AND completed_at IS NULL;
 
 -- name: UnbindTasksFromRuntime :execrows
 -- Detaches this runtime's task history so deleting the runtime row cannot
@@ -302,8 +304,9 @@ WHERE runtime_id = $1 AND completed_at IS NULL;
 -- task_message / task_usage / task_token cascade from the task in turn).
 -- Restricted to terminal rows: an active task must keep its runtime, per
 -- agent_task_queue_active_requires_runtime. The caller runs
--- CancelAgentTasksByRuntimeOrAgent + CountUndrainedTasksByRuntime first, so at
--- this point "terminal" is every row on the runtime.
+-- CancelAgentTasksByRuntimeOrAgent +
+-- CountUndrainedTasksByRuntimeOrAgent first, so at this point "terminal" is
+-- every row on the runtime.
 UPDATE agent_task_queue
 SET runtime_id = NULL
 WHERE runtime_id = $1 AND completed_at IS NOT NULL;
@@ -387,5 +390,9 @@ WHERE id = $1;
 DELETE FROM agent_runtime
 WHERE status = 'offline'
   AND last_seen_at < now() - make_interval(secs => @stale_seconds::double precision)
-  AND id NOT IN (SELECT DISTINCT runtime_id FROM agent)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM agent
+    WHERE agent.runtime_id = agent_runtime.id
+  )
 RETURNING id, workspace_id;
