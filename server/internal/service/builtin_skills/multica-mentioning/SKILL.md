@@ -35,7 +35,8 @@ goes.
 One `mention://` form deliberately sits OUTSIDE this parser:
 `[Label](mention://project/<uuid>)`. `project` is absent from the type group
 above, so the backend never parses it and it can enqueue nothing — it is a
-render-only link the clients turn into a project chip. That is the whole point:
+render-only link every client makes navigable (a chip on web and desktop, an
+ordinary link that opens the project on tap on mobile). That is the whole point:
 a project reference should never be able to start a run. Use it freely to point
 at a project (see the multica-projects-and-resources skill); everything else in
 this document is about the four types (plus `all`) the parser does recognize.

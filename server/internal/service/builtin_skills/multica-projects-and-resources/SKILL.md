@@ -64,12 +64,16 @@ the mention-link form instead, with the project UUID from
 
     [Roadmap](mention://project/<project-id>)
 
-It renders as a navigable project chip on web, desktop, and mobile. Unlike
-`@agent` / `@squad`, it is a pure link: `util.MentionRe` does not even include
-`project`, so it enqueues nothing and notifies nobody — the same
-no-side-effect contract as an `issue` mention. Pasting the project's URL
-(`<app>/<slug>/projects/<uuid>`) works too; the reader's client unfurls a bare
-in-app entity URL into that same chip.
+Every client makes it navigable, with different presentation: web and desktop
+render a chip carrying the project's icon and current title, while mobile
+renders an ordinary link that opens the project on tap. Unlike `@agent` /
+`@squad`, it is a pure link: `util.MentionRe` does not even include `project`,
+so it enqueues nothing and notifies nobody — the same no-side-effect contract
+as an `issue` mention.
+
+Prefer this form over pasting the project's URL. Web and desktop do unfurl a
+bare in-app project URL into that same chip, but mobile does not — there a
+pasted URL is handed to the system browser and takes the reader out of the app.
 
 ## When to add a resource
 
