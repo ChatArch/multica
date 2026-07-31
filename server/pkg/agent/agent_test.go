@@ -67,6 +67,21 @@ func TestNewReturnsQoderBackend(t *testing.T) {
 	}
 }
 
+func TestNewReturnsQoderCNBackend(t *testing.T) {
+	t.Parallel()
+	b, err := New("qoderclicn", Config{})
+	if err != nil {
+		t.Fatalf("New(qoderclicn) error: %v", err)
+	}
+	qoder, ok := b.(*qoderBackend)
+	if !ok {
+		t.Fatalf("expected *qoderBackend, got %T", b)
+	}
+	if qoder.defaultExecutable != "qoderclicn" {
+		t.Fatalf("default executable = %q, want qoderclicn", qoder.defaultExecutable)
+	}
+}
+
 func TestNewReturnsAntigravityBackend(t *testing.T) {
 	t.Parallel()
 	b, err := New("antigravity", Config{ExecutablePath: "/nonexistent/agy"})

@@ -4273,9 +4273,10 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 // name when simple title-casing would read awkwardly. Providers not listed
 // here fall back to capitalizing the key (claude → "Claude", codex → "Codex").
 var runtimeDisplayNameOverrides = map[string]string{
-	"traecli": "Trae",
-	"grok":    "Grok",
-	"qwen":    "Qwen Code",
+	"traecli":    "Trae",
+	"grok":       "Grok",
+	"qoderclicn": "Qoder CN",
+	"qwen":       "Qwen Code",
 }
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
