@@ -1011,9 +1011,10 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 }
 
 // renderQuickCreateContext renders issue_context.md for quick-create tasks.
-// This file carries only task data (user input, skills). Behavioral rules
-// and guardrails live in AGENTS.md (runtime config) and the per-turn prompt
-// to avoid redundancy and conflicting instructions.
+// This file carries only task data (the user input). Behavioral rules and
+// guardrails live in AGENTS.md (runtime config) and the per-turn prompt to
+// avoid redundancy and conflicting instructions; the skill index lives in the
+// runtime brief like every other kind (MUL-5529).
 func renderQuickCreateContext(ctx TaskContextForEnv) string {
 	var b strings.Builder
 	b.WriteString("# Quick Create\n\n")

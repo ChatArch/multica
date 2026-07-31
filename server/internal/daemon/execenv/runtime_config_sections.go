@@ -679,7 +679,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Issue Metadata        |    ✓    |   ✓    |     —     |      —       |  —
 //	Instruction Precedence|    —    |   ✓    |     —     |      —       |  —
 //	Sub-issue Creation    |    ✓    |   ✓    |     —     |      —       |  —
-//	Skills                |    ✓    |   ✓    |     ✓    |      —       |  ✓
+//	Skills                |    ✓    |   ✓    |     ✓    |      ✓       |  ✓
 //	Mentions              |    ✓    |   ✓    |     —     |      —       |  —
 //	Attachments           |    ✓    |   ✓    |     —     |      —       |  —
 //
