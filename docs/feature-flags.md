@@ -179,24 +179,15 @@ function Checkout() {
 
 Outside a `FeatureFlagsProvider` (Storybook, unit tests, error pages) `useFlag` / `useVariant` return the supplied default. You never have to mount the provider just to render a component in isolation.
 
-### v0.3.44 compatibility rollout
+### Completed v0.3.44 compatibility rollouts
 
-The following release flag defaults to `false` so the schema can ship before
-the new persisted state is visible to older server pods or a rollback:
-
-```yaml
-# Enable only after every v0.3.43 server pod has drained and rollback reads
-# have been validated against the migrated database.
-settings_resource_labels:
-  default: true
-```
-
-Keep it off for v0.3.44: it is a schema-only deployment for resource labels. A
-later rollout may enable it only after it ships and verifies a rollback
-normalizer for resource-label rows. Do not rely on turning the flag off to make
-a database safe for an older binary; it prevents new writes but cannot remove
-states that already exist. Until that normalizer exists, rollbacks must target
-a version that understands these states or happen before the flag is enabled.
+Resource Labels has completed its schema-first rollout and is now always
+available. Current clients always render agent- and skill-scoped labels, and
+the backend no longer gates their catalog or assignment endpoints.
+`/api/config` still reports `settings_resource_labels: true` so installed
+desktop clients that still gate the UI on this config decision also receive
+the permanently enabled behavior; this is a client-compatibility decision, not
+an operator-controlled flag.
 
 Agent Builder has completed this rollout and is now always available. Current
 clients always render the AI creation entry, and the backend no longer gates the
