@@ -181,10 +181,28 @@ describe("parseWorkspaceEntityLink", () => {
     ).toBeNull();
   });
 
-  // Only the UUID form the app's own "copy link" produces qualifies; an
-  // identifier stays an ordinary link.
-  it("returns null for a non-UUID id", () => {
-    expect(parseWorkspaceEntityLink("/acme/issues/MUL-1")).toBeNull();
+  // `copyLink` / `openInNewTab` build `paths.issueDetail(identifier || id)` and
+  // the issue route rewrites a UUID URL back to the identifier, so this — not
+  // the UUID form — is what a user actually copies out of the app.
+  it("parses an issue addressed by identifier", () => {
+    expect(parseWorkspaceEntityLink("/acme/issues/MUL-1")).toEqual({
+      kind: "issue",
+      id: "MUL-1",
+      slug: "acme",
+    });
+  });
+
+  // A project has no shorthand, so an identifier-shaped id under /projects/
+  // addresses nothing this parser could resolve.
+  it("returns null for an identifier-shaped project id", () => {
+    expect(parseWorkspaceEntityLink("/acme/projects/MUL-1")).toBeNull();
+  });
+
+  it("returns null for an id that is neither a UUID nor an identifier", () => {
+    expect(parseWorkspaceEntityLink("/acme/issues/roadmap")).toBeNull();
+    // Lowercase is not the identifier form — matching it would turn ordinary
+    // hyphenated path segments into entity references.
+    expect(parseWorkspaceEntityLink("/acme/issues/mul-1")).toBeNull();
   });
 
   it("returns null when the slug position holds a reserved slug", () => {

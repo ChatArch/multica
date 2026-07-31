@@ -12,14 +12,24 @@
  * themselves are stubbed, so the assertions are about which branch the renderer
  * took, not about chip internals.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
+import type { Issue } from "@multica/core/types";
+
+// Identifier → issue lookup, set per test. `null` is the honest default: a
+// miss, a still-loading query and a cross-workspace identifier all look the
+// same to the renderer.
+let resolvedIssue: Issue | null = null;
 
 vi.mock("../issues/hooks", () => ({
-  useResolveIssueIdentifier: () => null,
+  useResolveIssueIdentifier: () => resolvedIssue,
 }));
+
+beforeEach(() => {
+  resolvedIssue = null;
+});
 
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
@@ -112,6 +122,34 @@ describe("bare entity URLs in readonly content", () => {
     );
 
     expect(getByTestId("issue-chip").textContent).toBe(ISSUE_ID);
+  });
+
+  // The identifier form — NOT the UUID one — is what leaves the app:
+  // `copyLink` and `openInNewTab` build `paths.issueDetail(identifier || id)`,
+  // and the issue route rewrites a UUID URL back to the identifier, so this is
+  // the shape in the address bar too.
+  it("renders a pasted identifier-form issue URL as an issue chip", () => {
+    resolvedIssue = { id: ISSUE_ID, identifier: "MUL-1" } as Issue;
+
+    const { getByTestId } = renderContent(
+      `Blocked by ${APP_ORIGIN}/acme/issues/MUL-1 for now.`,
+    );
+
+    expect(getByTestId("issue-chip").textContent).toBe(ISSUE_ID);
+  });
+
+  it("keeps the link when an identifier-form issue URL resolves to nothing", () => {
+    // A miss means the issue is gone or lives in a workspace this user cannot
+    // see. The autolink path degrades to plain text there; a URL must not —
+    // the author wrote a link, and dropping it would strip the only pointer.
+    const { container, queryByTestId } = renderContent(
+      `${APP_ORIGIN}/acme/issues/MUL-404`,
+    );
+
+    expect(queryByTestId("issue-chip")).toBeNull();
+    expect(
+      container.querySelector(`a[href="${APP_ORIGIN}/acme/issues/MUL-404"]`),
+    ).not.toBeNull();
   });
 
   it("leaves a link the author labelled alone", () => {

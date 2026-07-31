@@ -116,14 +116,30 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
 }
 
 /**
- * Autolinked bare identifier (e.g. `MUL-123`) routed through
- * `mention://issue/<identifier>` by the preprocessor. Resolves to a real issue
- * in the current workspace; renders a navigable mention on a hit, plain text on
- * a miss / while loading / cross-workspace.
+ * An issue addressed by identifier (e.g. `MUL-123`) rather than by UUID.
+ * Resolves it against the current workspace and renders a navigable mention on
+ * a hit.
+ *
+ * Two entry points reach this, and they need DIFFERENT misses, which is why the
+ * fallback is a prop rather than baked in:
+ *   - the autolink preprocessor, which routes bare prose through
+ *     `mention://issue/<identifier>` — a miss must go back to being the plain
+ *     text the author typed;
+ *   - a bare in-app issue URL, whose miss must stay the original anchor. The
+ *     author wrote a link; degrading it to text would strip a working link off
+ *     an issue this workspace simply cannot see.
+ *
+ * A miss covers not-found, still-loading, and cross-workspace alike.
  */
-function AutolinkedIssueMentionLink({ identifier }: { identifier: string }) {
+function IdentifierIssueMentionLink({
+  identifier,
+  fallback,
+}: {
+  identifier: string;
+  fallback: ReactNode;
+}) {
   const issue = useResolveIssueIdentifier(identifier);
-  if (!issue) return <>{identifier}</>;
+  if (!issue) return <>{fallback}</>;
   return <IssueMentionLink issueId={issue.id} label={identifier} />;
 }
 
@@ -183,8 +199,9 @@ function childrenToLabel(children: ReactNode): string | undefined {
  *   - SAME WORKSPACE: a chip resolves its title against the CURRENT workspace,
  *     so unfurling a link into another workspace would turn a working link into
  *     a permanently empty chip. A slug-less path is current-workspace already.
- *   - Whatever `parseWorkspaceEntityLink` enforces: a UUID id, an exact entity
- *     route, and no query string or fragment.
+ *   - Whatever `parseWorkspaceEntityLink` enforces: an exact entity route, an id
+ *     that addresses one entity (a UUID, or an issue identifier), and no query
+ *     string or fragment.
  */
 function unfurlableEntityLink(
   href: string,
@@ -213,7 +230,12 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
       if (isIssueIdentifier(match[2])) {
-        return <AutolinkedIssueMentionLink identifier={match[2]} />;
+        return (
+          <IdentifierIssueMentionLink
+            identifier={match[2]}
+            fallback={match[2]}
+          />
+        );
       }
       return <IssueMentionLink issueId={match[2]} label={childrenToLabel(children)} />;
     }
@@ -224,20 +246,11 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     return <span className="mention">{children}</span>;
   }
 
-  // A bare in-app entity URL renders as the chip its mention form would.
-  const entity = href
-    ? unfurlableEntityLink(href, children, slug, appOrigin)
-    : null;
-  if (entity?.kind === "issue") {
-    return <IssueMentionLink issueId={entity.id} />;
-  }
-  if (entity?.kind === "project") {
-    return <ProjectMentionLink projectId={entity.id} />;
-  }
-
-  // Regular links — open directly on click. A URL pointing back at this
-  // deployment routes in-app rather than out to the browser.
-  return (
+  // Regular link — open directly on click. A URL pointing back at this
+  // deployment routes in-app rather than out to the browser. Built first
+  // because it is also what an unfurl falls back to when the entity behind the
+  // URL cannot be resolved.
+  const plainLink = (
     <a
       href={href}
       onClick={(e) => {
@@ -248,6 +261,25 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       {children}
     </a>
   );
+
+  // A bare in-app entity URL renders as the chip its mention form would.
+  const entity = href
+    ? unfurlableEntityLink(href, children, slug, appOrigin)
+    : null;
+  if (entity?.kind === "issue") {
+    // `MUL-123` is the shape "Copy link" produces, so it is the shape most
+    // pasted issue URLs carry; it needs a lookup, and keeps the link on a miss.
+    return isIssueIdentifier(entity.id) ? (
+      <IdentifierIssueMentionLink identifier={entity.id} fallback={plainLink} />
+    ) : (
+      <IssueMentionLink issueId={entity.id} />
+    );
+  }
+  if (entity?.kind === "project") {
+    return <ProjectMentionLink projectId={entity.id} />;
+  }
+
+  return plainLink;
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@
  */
 
 import { isGlobalPath, isReservedSlug } from "@multica/core/paths";
+import { isIssueIdentifier } from "@multica/ui/markdown";
 
 /**
  * Top-level workspace-scoped routes. Used to detect "/{route}/..." paths that
@@ -92,7 +93,12 @@ export function toInternalAppPath(
 /** An in-app entity page addressed by a link — the two kinds that have a chip. */
 export interface WorkspaceEntityRef {
   kind: "issue" | "project";
-  /** Entity UUID, decoded from the path. */
+  /**
+   * Entity id, decoded from the path. A UUID for either kind, or — for an
+   * issue only — a bare identifier (`MUL-123`). Callers dispatch on the shape
+   * with `isIssueIdentifier`: an identifier still has to be resolved to a real
+   * issue before it can be rendered as a chip.
+   */
   id: string;
   /**
    * Workspace slug the link names, or `null` for the slug-less legacy form
@@ -109,12 +115,25 @@ const ENTITY_ROUTE_SEGMENTS: Record<string, WorkspaceEntityRef["kind"]> = {
   projects: "project",
 };
 
-// Every link the app itself produces carries a UUID (`paths.issueDetail` /
-// `paths.projectDetail` are called with entity ids). Requiring that shape keeps
-// a hand-written `/issues/MUL-1` out: it stays an ordinary link rather than
-// needing a second, identifier-shaped resolution path here.
-const ENTITY_ID_RE =
+const UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Does this path segment address one entity of `kind`?
+ *
+ * A project is only ever addressed by UUID — it has no shorthand. An issue has
+ * both, and the identifier form is the one that matters most: `copyLink` and
+ * `openInNewTab` both build `paths.issueDetail(identifier || id)`, and the
+ * issue route rewrites a UUID URL back to the identifier, so `MUL-123` is what
+ * a user actually copies out of the app or the address bar. Accepting only the
+ * UUID here would leave the shape people really paste as a raw URL.
+ *
+ * Identifier-shaped ids are candidates, not hits: the caller resolves one
+ * against the current workspace and keeps the plain link when it misses.
+ */
+function isEntityId(kind: WorkspaceEntityRef["kind"], id: string): boolean {
+  return UUID_RE.test(id) || (kind === "issue" && isIssueIdentifier(id));
+}
 
 function decodeSegment(segment: string): string | null {
   try {
@@ -170,7 +189,7 @@ export function parseWorkspaceEntityLink(
   }
 
   const kind = route ? ENTITY_ROUTE_SEGMENTS[route] : undefined;
-  if (!kind || !id || !ENTITY_ID_RE.test(id)) return null;
+  if (!kind || !id || !isEntityId(kind, id)) return null;
   return { kind, id, slug };
 }
 
