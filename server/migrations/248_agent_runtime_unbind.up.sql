@@ -1,4 +1,4 @@
--- Migration 242 (MUL-5559): deleting a runtime unbinds its agents instead of
+-- Migration 248 (MUL-5559): deleting a runtime unbinds its agents instead of
 -- destroying them.
 --
 -- Before this migration an agent physically could not exist without a runtime
@@ -14,7 +14,7 @@
 --   1. agent.runtime_id — NULL now means "unbound": the agent, its
 --      instructions, skills, chats, labels, channel installations and
 --      autopilot config all survive, it simply cannot run until it is bound to
---      a runtime again. Unbound is orthogonal to archived. service.
+--      a runtime again. Unbound is orthogonal to archived.
 --      AgentReadiness already refuses an agent with no runtime, so the
 --      scheduling safety gate needs no change.
 --

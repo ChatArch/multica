@@ -156,10 +156,6 @@ type terminalTaskReport struct {
 	sessionID     string
 	workDir       string
 	failureReason string
-	// quickActionsPending is true when a direct-chat turn will be followed by a
-	// background quick-actions suggestion pass (MUL-5149); the server raises the
-	// client's pill placeholder on chat:done.
-	quickActionsPending bool
 	// sessionRolloutMissing is true when the daemon withheld this task's Codex
 	// session because its rollout was not in the store (MUL-5305). The server
 	// clears the resume pointer and flags the continuity gap for the next claim.
@@ -263,10 +259,6 @@ type Daemon struct {
 	mu           sync.Mutex
 	workspaces   map[string]*workspaceState
 	runtimeIndex map[string]Runtime // runtimeID -> Runtime for provider lookups
-	// chatSuggestCancels maps chat session id -> *chatSuggestHandle for the
-	// in-flight background suggestion pass, so a new turn on the same session
-	// can abort it (stale suggestions + no concurrent resume on one session).
-	chatSuggestCancels sync.Map
 	// profileLaunchSpecs maps a custom runtime profile_id -> the absolute
 	// executable path plus fixed launch args resolved for that profile
 	// (MUL-3284). Populated in registerRuntimesForWorkspace when a profile's
@@ -4128,21 +4120,10 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			branchName:            result.BranchName,
 			sessionID:             result.SessionID,
 			workDir:               result.WorkDir,
-			quickActionsPending:   result.QuickActionsPending,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
 		})
 		if err == nil {
-			// Completion landed: the assistant row exists, so the deferred
-			// suggestion pass can now run and supplement it. Deliberately
-			// detached from taskWG and the daemon root ctx: best-effort and
-			// bounded (~20s pass + 30s report), it must not hold up slot
-			// release or graceful shutdown — a shutdown mid-pass just means
-			// this turn's supplement never arrives and the client skeleton
-			// times out.
-			if result.QuickActionsSuggest != nil {
-				go result.QuickActionsSuggest()
-			}
 			return
 		}
 		// CompleteTask retries transient errors internally. A transient
@@ -4228,7 +4209,7 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.quickActionsPending, report.sessionRolloutMissing, report.retiredSessionID)
+		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID)
 	case terminalTaskReportFail:
 		return d.client.FailTask(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID)
 	default:
@@ -4273,9 +4254,10 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 // name when simple title-casing would read awkwardly. Providers not listed
 // here fall back to capitalizing the key (claude → "Claude", codex → "Codex").
 var runtimeDisplayNameOverrides = map[string]string{
-	"traecli": "Trae",
-	"grok":    "Grok",
-	"qwen":    "Qwen Code",
+	"traecli":    "Trae",
+	"grok":       "Grok",
+	"qoderclicn": "Qoder CN",
+	"qwen":       "Qwen Code",
 }
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
@@ -4743,12 +4725,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// multiple workspaces share a host.
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
-	}
-
-	// A new turn on a chat session supersedes any background suggestion pass
-	// still running for the previous turn (see chat_suggest.go).
-	if task.ChatSessionID != "" {
-		d.cancelPendingChatSuggest(task.ChatSessionID)
 	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
@@ -5406,13 +5382,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		execOpts.SystemPrompt = runtimeBrief
 	}
 
-	// Quick-actions refresh (MUL-5149): this task carries no user turn — it only
-	// re-runs the suggestion pass for an existing assistant reply and supplements
-	// that reply's row. Resume pointer, backend, and workdir are already prepared
-	// above, so diverge here, before the main provider turn, and never write a
-	// reply.
+	// A quick-actions refresh task from a server that predates server-side
+	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
+	// it with, and it must NOT fall through to the ordinary chat path below:
+	// the task carries no user message, so the agent would answer a prompt
+	// nobody wrote and that server would persist the result as a real assistant
+	// reply. Complete it empty instead — the same shape the retired pass
+	// produced on this task, which that server writes no row for. The user's
+	// refresh spinner resolves via the client's own timeout.
 	if task.RegenerateQuickActionsFor != "" {
-		return d.runChatQuickActionsRegenerate(ctx, task, backend, execOpts, provider, taskLog)
+		taskLog.Warn("refusing quick-actions refresh task from an older server; complete the daemon upgrade by updating the server",
+			"target_task", shortID(task.RegenerateQuickActionsFor),
+		)
+		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
 	}
 
 	taskLog.Debug("invoking backend",
@@ -5512,23 +5494,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Follow-up suggestion pass for direct (non-channel) chat turns: one extra
-	// resumed provider turn whose only job is emitting the quick-actions JSON.
-	// Deferred: the completed return below carries the job, and
-	// reportTaskResult starts it only after the completion callback succeeds —
-	// the user's turn ends immediately, suggestions arrive as a supplement.
-	// Skipped for channel-backed sessions (no pill surface), empty replies
-	// (the no_response contract owns those), and poisoned outputs (blocked
-	// path handles those).
-	suggestEligible := result.Status == "completed" && task.ChatSessionID != "" &&
-		task.ChatChannelType == "" && !task.QuickActionsDisabled &&
-		result.SessionID != "" && strings.TrimSpace(result.Output) != ""
-	if suggestEligible {
-		if _, poisoned := classifyPoisonedOutput(result.Output); poisoned {
-			suggestEligible = false
-		}
-	}
-
 	// Convert agent usage map to task usage entries.
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
@@ -5607,16 +5572,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}, nil
 		}
 		taskResult = TaskResult{
-			Status:              "completed",
-			Comment:             result.Output,
-			SessionID:           result.SessionID,
-			WorkDir:             env.WorkDir,
-			EnvRoot:             env.RootDir,
-			Usage:               usageEntries,
-			QuickActionsPending: suggestEligible,
-		}
-		if suggestEligible {
-			taskResult.QuickActionsSuggest = d.chatSuggestJob(task, backend, execOpts, result.SessionID, result.Usage, provider, taskLog)
+			Status:    "completed",
+			Comment:   result.Output,
+			SessionID: result.SessionID,
+			WorkDir:   env.WorkDir,
+			EnvRoot:   env.RootDir,
+			Usage:     usageEntries,
 		}
 		return taskResult, nil
 	case "timeout":
@@ -5774,7 +5735,7 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 	// why this needs its own branch rather than a phrase added to the
 	// rejection list.
 	//
-	// It applies to all 17 backends, not the ResumeRejectionUndetectable
+	// It applies to all 18 backends, not the ResumeRejectionUndetectable
 	// subset below, and that is deliberate: this is the one failure class
 	// where dropping the session is provably the fix without the backend
 	// having to detect anything. The evidence is in the provider's own error
