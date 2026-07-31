@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -62,6 +63,13 @@ type TaskService struct {
 	// state for a self-hosted deployment with no MULTICA_LLM_* configuration.
 	// Wired in router.go from the same *llm.Client that backs chat auto-titling.
 	QuickActions ChatQuickActionsLLM
+	// quickActionsInFlight (chat session id -> struct{}{}) and
+	// quickActionsRunning admit suggestion passes: one per session, and a
+	// process-wide ceiling. Both zero values are usable, so a TaskService built
+	// without NewTaskService still gates correctly rather than deadlocking or
+	// shedding everything.
+	quickActionsInFlight sync.Map
+	quickActionsRunning  atomic.Int64
 
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
@@ -1653,6 +1661,14 @@ func (s *TaskService) RegenerateChatQuickActions(ctx context.Context, chatSessio
 	if busy {
 		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatQuickActionsBusy
 	}
+	// A refresh no longer creates a task row, so the check above cannot see a
+	// generation already running for this session — a second refresh (or one
+	// racing the automatic pass) would otherwise be accepted, spend a second
+	// upstream call, and race the first to write the same row. Refuse it here
+	// so the client rolls its optimistic marker back instead.
+	if s.chatQuickActionsInFlight(chatSession.ID) {
+		return pgtype.UUID{}, db.AgentTaskQueue{}, ErrChatQuickActionsBusy
+	}
 
 	task, err := s.Queries.GetAgentTask(ctx, target.TaskID)
 	if err != nil {
@@ -3032,7 +3048,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		if suggest {
 			// Detached: the reply is already delivered and the user's next turn
 			// must never wait on suggestions.
-			s.GenerateChatQuickActionsAsync(task)
+			s.GenerateChatQuickActionsAsync(task, ChatQuickActionsAutomatic)
 		}
 	}
 

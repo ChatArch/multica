@@ -981,7 +981,7 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 	}
 	// Detached like the automatic pass: answer 202 now, deliver the refreshed
 	// pills over chat:quick_actions.
-	h.TaskService.GenerateChatQuickActionsAsync(targetTask)
+	h.TaskService.GenerateChatQuickActionsAsync(targetTask, service.ChatQuickActionsRefresh)
 	writeJSON(w, http.StatusAccepted, RegenerateChatQuickActionsResponse{
 		MessageID: uuidToString(messageID),
 	})

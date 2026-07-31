@@ -5389,6 +5389,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		execOpts.SystemPrompt = runtimeBrief
 	}
 
+	// A quick-actions refresh task from a server that predates server-side
+	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
+	// it with, and it must NOT fall through to the ordinary chat path below:
+	// the task carries no user message, so the agent would answer a prompt
+	// nobody wrote and that server would persist the result as a real assistant
+	// reply. Complete it empty instead — the same shape the retired pass
+	// produced on this task, which that server writes no row for. The user's
+	// refresh spinner resolves via the client's own timeout.
+	if task.RegenerateQuickActionsFor != "" {
+		taskLog.Warn("refusing quick-actions refresh task from an older server; complete the daemon upgrade by updating the server",
+			"target_task", shortID(task.RegenerateQuickActionsFor),
+		)
+		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
+	}
+
 	taskLog.Debug("invoking backend",
 		"provider", provider,
 		"model", model,

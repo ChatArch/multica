@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -600,12 +601,77 @@ func TestCompleteTask_ChatQuickActionsSupplement(t *testing.T) {
 // upstream, so the refresh gates below can be exercised on a deployment-shaped
 // TaskService (RegenerateChatQuickActions refuses outright when the LLM layer
 // is unconfigured).
-type stubChatQuickActionsLLM struct{}
+type stubChatQuickActionsLLM struct {
+	// lastPrompt records the rendered conversation the pass was given, so a
+	// test can assert WHICH turn the suggestions were built from.
+	lastPrompt *string
+}
 
 func (stubChatQuickActionsLLM) Enabled() bool { return true }
 
-func (stubChatQuickActionsLLM) GenerateJSON(context.Context, string, string, string, float64, int64) (string, error) {
+func (s stubChatQuickActionsLLM) GenerateJSON(_ context.Context, _, _, userPrompt string, _ float64, _ int64) (string, error) {
+	if s.lastPrompt != nil {
+		*s.lastPrompt = userPrompt
+	}
 	return `{"actions":[{"label":"Next","prompt":"do the next thing","primary":true}]}`, nil
+}
+
+// TestChatQuickActions_ContextAnchorsOnTargetTurn pins the anchoring contract:
+// generation runs on a detached goroutine, so by the time it executes the
+// session may already carry a newer turn. The context it builds must end at the
+// assistant turn the pills are written to — not at whatever is newest when the
+// read happens.
+//
+// Without the anchor, a user who types a follow-up in the second after the
+// reply lands leaves the window ending on a user row with no reply to build on,
+// and that turn silently never gets pills.
+func TestChatQuickActions_ContextAnchorsOnTargetTurn(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, _, _ := setupDirectChatSession(t, ctx, "quick-actions anchor")
+
+	taskID := sendDirectChat(t, ctx, agentID, sessionID, "first question")
+	markTaskRunning(t, ctx, taskID)
+	task, err := testHandler.TaskService.CompleteTask(
+		ctx, parseUUID(taskID), completeResult(t, "ANCHOR REPLY"), "", "", false, "")
+	if err != nil {
+		t.Fatalf("complete turn 1: %v", err)
+	}
+
+	// The race: a newer user message lands before the pass reads the session.
+	sendDirectChat(t, ctx, agentID, sessionID, "NEWER USER MESSAGE")
+
+	var prompt string
+	prev := testHandler.TaskService.QuickActions
+	testHandler.TaskService.QuickActions = stubChatQuickActionsLLM{lastPrompt: &prompt}
+	defer func() { testHandler.TaskService.QuickActions = prev }()
+
+	if err := testHandler.TaskService.GenerateChatQuickActionsForTask(
+		ctx, *task, service.ChatQuickActionsAutomatic); err != nil {
+		t.Fatalf("generate quick actions: %v", err)
+	}
+
+	if !strings.Contains(prompt, "ANCHOR REPLY") {
+		t.Fatalf("context must end at the target reply, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "NEWER USER MESSAGE") {
+		t.Fatalf("context must exclude turns newer than the target, got:\n%s", prompt)
+	}
+
+	// And the pills land on the target turn, not the newer one.
+	rows := assistantRows(t, ctx, sessionID)
+	if len(rows) != 1 {
+		t.Fatalf("expected one assistant row, got %d", len(rows))
+	}
+	var actions []protocol.ChatQuickAction
+	if err := json.Unmarshal(rows[0].QuickActions, &actions); err != nil {
+		t.Fatalf("decode quick actions: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Label != "Next" {
+		t.Fatalf("target turn quick actions = %+v", actions)
+	}
 }
 
 // installStubQuickActions enables suggestion generation and returns the undo.

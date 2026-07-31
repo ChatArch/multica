@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/util"
@@ -47,6 +49,28 @@ const (
 	chatQuickActionsTailBudget = 1000
 	// Cap on how many previously-suggested labels are replayed to the model.
 	chatQuickActionsPreviousMax = 6
+)
+
+// chatQuickActionsMaxConcurrent bounds how many suggestion passes may be in
+// flight process-wide. Generation is spawned from request handling with no
+// queue behind it, so without a ceiling a burst of chat traffic (or a client
+// looping the refresh endpoint) scales goroutines, upstream connections, and
+// model spend without limit. Passes over the ceiling are dropped, not queued:
+// a suggestion that arrives after the client's pending window has expired is
+// worth nothing, so shedding beats backlogging.
+const chatQuickActionsMaxConcurrent = 16
+
+// ChatQuickActionsOrigin says which caller asked for a pass. It decides how a
+// failure is reported: an explicit refresh is a user action that must surface
+// its own failure, while the automatic pass is best-effort background work the
+// user never asked for and must fail silently (protocol.ChatQuickActionsPayload
+// documents Failed as false for the automatic pass, and the client turns every
+// failed=true into a "couldn't refresh" toast).
+type ChatQuickActionsOrigin int
+
+const (
+	ChatQuickActionsAutomatic ChatQuickActionsOrigin = iota
+	ChatQuickActionsRefresh
 )
 
 // ChatQuickActionsLLM is the seam TaskService uses to generate follow-up
@@ -115,15 +139,15 @@ No prose, no markdown, no code fences.`
 
 // GenerateChatQuickActionsForTask runs one suggestion pass for a completed chat
 // turn and attaches the result to that turn's assistant row, broadcasting
-// chat:quick_actions either way. It is the synchronous core shared by the
-// automatic post-completion pass and the explicit refresh, and is safe to call
-// directly from tests.
+// chat:quick_actions. It is the synchronous core shared by the automatic
+// post-completion pass and the explicit refresh, and is safe to call directly
+// from tests.
 //
-// A failed generation broadcasts with failed=true rather than silently
-// resolving the client's placeholder as "no suggestions": the two outcomes look
-// identical to a user otherwise, which turns every timeout into an apparent
-// quality problem.
-func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task db.AgentTaskQueue) error {
+// origin decides failure reporting: a refresh surfaces failed=true so the user
+// who pressed the button learns it did not work, while the automatic pass
+// resolves the placeholder quietly. Reporting an automatic failure would pop a
+// "couldn't refresh" toast for an action the user never took.
+func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task db.AgentTaskQueue, origin ChatQuickActionsOrigin) error {
 	if s.QuickActions == nil || !s.QuickActions.Enabled() {
 		return nil
 	}
@@ -131,14 +155,29 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 		return nil
 	}
 
-	prompt, ok, err := s.buildChatQuickActionsPrompt(ctx, task.ChatSessionID)
+	// Resolve the target turn FIRST and anchor everything to it. The context
+	// window, the write, and the broadcast must all describe the same assistant
+	// message: this runs on a detached goroutine, so by the time it executes the
+	// session may already have moved on by a full turn.
+	target, err := s.Queries.GetChatMessageByTaskAssistant(ctx, task.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No assistant row to attach to (no_response, channel empty-drop).
+			// No client is waiting either — the pending flag is only raised for
+			// a written ordinary message.
+			return nil
+		}
+		return fmt.Errorf("load chat quick actions target: %w", err)
+	}
+	if target.MessageKind != protocol.ChatMessageKindMessage || strings.TrimSpace(target.Content) == "" {
+		// Nothing to build suggestions on. Resolve the placeholder rather than
+		// leaving the client's skeleton to time out.
+		return s.SupplementChatQuickActions(ctx, task, "", false)
+	}
+
+	prompt, err := s.buildChatQuickActionsPrompt(ctx, target)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		// Nothing worth prompting on (no assistant turn, or it carries no
-		// text). Resolve the placeholder with the row's current actions.
-		return s.SupplementChatQuickActions(ctx, task, "", false)
 	}
 
 	raw, err := s.QuickActions.GenerateJSON(ctx,
@@ -149,9 +188,9 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 		chatQuickActionsMaxTokens,
 	)
 	if err != nil {
-		// Report the failure to the client instead of rebroadcasting the
-		// existing (usually empty) pills as a successful result.
-		if suppErr := s.SupplementChatQuickActions(ctx, task, "", true); suppErr != nil {
+		// Resolve the placeholder either way; only an explicit refresh reports
+		// the failure to the user (see origin).
+		if suppErr := s.SupplementChatQuickActions(ctx, task, "", origin == ChatQuickActionsRefresh); suppErr != nil {
 			slog.Warn("chat quick actions failure broadcast failed",
 				"task_id", util.UUIDToString(task.ID),
 				"error", suppErr,
@@ -164,15 +203,49 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 
 // GenerateChatQuickActionsAsync runs GenerateChatQuickActionsForTask on a
 // detached goroutine and returns immediately. Used on the completion path,
-// where the user's reply is already delivered and must never wait on this.
+// where the user's reply is already delivered and must never wait on this, and
+// on the refresh path, which answers 202 before the pass runs.
+//
+// Two admission gates before anything is spawned:
+//
+//   - One pass per chat session. Concurrent passes on one session would race to
+//     write the same row and burn duplicate spend for a single visible outcome
+//     — two refreshes of one turn, or a refresh overlapping the automatic pass.
+//   - A process-wide ceiling (chatQuickActionsMaxConcurrent).
+//
+// A rejected pass still resolves the client's placeholder, so a skeleton never
+// hangs waiting for work that was never started.
 //
 // The goroutine owns its own context: the caller's is typically an HTTP request
 // context that is cancelled the moment the completion callback returns.
-func (s *TaskService) GenerateChatQuickActionsAsync(task db.AgentTaskQueue) {
+func (s *TaskService) GenerateChatQuickActionsAsync(task db.AgentTaskQueue, origin ChatQuickActionsOrigin) {
 	if s.QuickActions == nil || !s.QuickActions.Enabled() {
 		return
 	}
+	sessionKey := util.UUIDToString(task.ChatSessionID)
+	if sessionKey == "" {
+		return
+	}
+	if _, inFlight := s.quickActionsInFlight.LoadOrStore(sessionKey, struct{}{}); inFlight {
+		slog.Info("chat quick actions pass skipped: one already running for this session",
+			"chat_session_id", sessionKey, "task_id", util.UUIDToString(task.ID))
+		s.resolveChatQuickActionsPlaceholder(task)
+		return
+	}
+	if s.quickActionsRunning.Add(1) > chatQuickActionsMaxConcurrent {
+		s.quickActionsRunning.Add(-1)
+		s.quickActionsInFlight.Delete(sessionKey)
+		slog.Warn("chat quick actions pass shed: process-wide concurrency ceiling reached",
+			"ceiling", chatQuickActionsMaxConcurrent, "task_id", util.UUIDToString(task.ID))
+		s.resolveChatQuickActionsPlaceholder(task)
+		return
+	}
+
 	go func() {
+		defer func() {
+			s.quickActionsRunning.Add(-1)
+			s.quickActionsInFlight.Delete(sessionKey)
+		}()
 		// Panic containment: this goroutine is detached from the HTTP request,
 		// so chi's Recoverer middleware is not in the call stack and a panic
 		// here would take down the whole server process. Suggestions are a
@@ -189,32 +262,62 @@ func (s *TaskService) GenerateChatQuickActionsAsync(task db.AgentTaskQueue) {
 		ctx, cancel := context.WithTimeout(context.Background(), chatQuickActionsTimeout)
 		defer cancel()
 
-		if err := s.GenerateChatQuickActionsForTask(ctx, task); err != nil {
+		if err := s.GenerateChatQuickActionsForTask(ctx, task, origin); err != nil {
 			slog.Warn("chat quick actions generation failed",
 				"task_id", util.UUIDToString(task.ID),
-				"chat_session_id", util.UUIDToString(task.ChatSessionID),
+				"chat_session_id", sessionKey,
 				"error", err,
 			)
 		}
 	}()
 }
 
-// buildChatQuickActionsPrompt loads the tail of a session and renders the user
-// message for the pass. ok=false means the session has nothing to build on —
-// no assistant turn yet, or its text is empty — and the caller should skip the
-// upstream call entirely.
-func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, sessionID pgtype.UUID) (string, bool, error) {
-	// Newest-first; reversed below. Over-fetch so dropped rows (no_response,
-	// failures) don't shrink the window below the intended turn count.
+// chatQuickActionsInFlight reports whether a pass is already running for this
+// session. The refresh endpoint checks it so a duplicate request is refused
+// with a 409 the client can act on, instead of being accepted and silently
+// dropped by the admission gate in GenerateChatQuickActionsAsync.
+func (s *TaskService) chatQuickActionsInFlight(sessionID pgtype.UUID) bool {
+	_, running := s.quickActionsInFlight.Load(util.UUIDToString(sessionID))
+	return running
+}
+
+// resolveChatQuickActionsPlaceholder ends a client's pending skeleton without
+// generating anything, rebroadcasting the turn's current pills. Used when a
+// pass is refused admission — the placeholder was already raised by chat:done,
+// and leaving it to expire would show a spinner for work that never started.
+func (s *TaskService) resolveChatQuickActionsPlaceholder(task db.AgentTaskQueue) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.SupplementChatQuickActions(ctx, task, "", false); err != nil {
+		slog.Warn("chat quick actions placeholder resolve failed",
+			"task_id", util.UUIDToString(task.ID), "error", err)
+	}
+}
+
+// buildChatQuickActionsPrompt renders the pass's user message from the window
+// of conversation ENDING AT target, which is the assistant turn the suggestions
+// will be attached to.
+//
+// Anchoring on the target (rather than re-reading the session's newest
+// messages) is what keeps an async pass correct: a turn that lands between the
+// completion callback and this read would otherwise supply the context while
+// the result is still written to the older turn, and a newly-sent user message
+// would leave the window ending on a user row with no reply to build on.
+func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, target db.ChatMessage) (string, error) {
+	// Strictly older than target, newest-first; reversed below. Over-fetch so
+	// dropped rows (no_response, failures) don't shrink the window below the
+	// intended turn count.
 	rows, err := s.Queries.ListChatMessagesPage(ctx, db.ListChatMessagesPageParams{
-		ChatSessionID: sessionID,
-		Limit:         chatQuickActionsContextMessages * 2,
+		ChatSessionID:   target.ChatSessionID,
+		Limit:           chatQuickActionsContextMessages * 2,
+		BeforeCreatedAt: target.CreatedAt,
+		BeforeID:        target.ID,
 	})
 	if err != nil {
-		return "", false, fmt.Errorf("load chat messages for quick actions: %w", err)
+		return "", fmt.Errorf("load chat messages for quick actions: %w", err)
 	}
 
-	msgs := make([]db.ChatMessage, 0, len(rows))
+	msgs := make([]db.ChatMessage, 0, len(rows)+1)
 	for i := len(rows) - 1; i >= 0; i-- {
 		msg := rows[i]
 		// Only ordinary turns carry usable text. A no_response row holds an
@@ -228,13 +331,11 @@ func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, sessionID
 		}
 		msgs = append(msgs, msg)
 	}
-	if len(msgs) > chatQuickActionsContextMessages {
-		msgs = msgs[len(msgs)-chatQuickActionsContextMessages:]
+	if len(msgs) > chatQuickActionsContextMessages-1 {
+		msgs = msgs[len(msgs)-(chatQuickActionsContextMessages-1):]
 	}
-	if len(msgs) == 0 || msgs[len(msgs)-1].Role != "assistant" {
-		return "", false, nil
-	}
-	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs)), true, nil
+	msgs = append(msgs, target)
+	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs)), nil
 }
 
 // collectPreviousChatQuickActions gathers the labels already offered in this
