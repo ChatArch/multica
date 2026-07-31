@@ -838,7 +838,7 @@ LIMIT 1;
 --
 -- failure_reason is returned rather than filtered here on purpose: which
 -- reasons are transient enough to skip is decided ONCE in Go
--- (transientResumeSafeReasons). This file and internal/service/task.go have
+-- (transcriptNeutralReasons). This file and internal/service/task.go have
 -- drifted apart before — the sibling NOT IN blacklist above exists in three
 -- places precisely because of that — so the set that is expected to grow
 -- lives in one language only.
@@ -851,7 +851,11 @@ WHERE t.agent_id = $1 AND t.issue_id = $2
       SELECT MAX(COALESCE(c.completed_at, c.started_at, c.dispatched_at, c.created_at))
       FROM agent_task_queue c
       WHERE c.agent_id = $1 AND c.issue_id = $2 AND c.status = 'completed'
-  ), '-infinity'::timestamptz);
+  ), '-infinity'::timestamptz)
+-- Newest first, with id as a tiebreak so rows sharing a timestamp keep a
+-- stable order. The caller retires the most recent DIFFERENT session id it
+-- sees, which is only well-defined if this ordering is.
+ORDER BY COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) DESC, t.id DESC;
 
 -- name: IsSessionRetiredForIssue :one
 -- Reports whether any task on this (agent_id, issue_id) pair has retired the
@@ -873,6 +877,13 @@ SELECT EXISTS (
 -- (MUL-5305): without it the circuit breaker would silently drop the
 -- conversation, which is the behaviour GH #6143 complained about in the first
 -- place — the user could not tell why the agent had lost its context.
+--
+-- Only the LATEST terminal row is consulted, mirroring
+-- GetLatestTaskRolloutMissing. A transcript-neutral failure landing between the
+-- breaker and the next claim (retirement, then a runtime_offline run) therefore
+-- hides the disclosure, and that turn starts fresh without saying so. Rare, and
+-- the alternative — scanning back to the last success — would keep re-announcing
+-- the same retirement on every later turn, which is worse.
 SELECT COALESCE(failure_reason, '') = 'session_resume_exhausted' AS exhausted
 FROM agent_task_queue
 WHERE agent_id = $1 AND issue_id = $2

@@ -3055,6 +3055,13 @@ type GetLatestTaskResumeExhaustedParams struct {
 // (MUL-5305): without it the circuit breaker would silently drop the
 // conversation, which is the behaviour GH #6143 complained about in the first
 // place — the user could not tell why the agent had lost its context.
+//
+// Only the LATEST terminal row is consulted, mirroring
+// GetLatestTaskRolloutMissing. A transcript-neutral failure landing between the
+// breaker and the next claim (retirement, then a runtime_offline run) therefore
+// hides the disclosure, and that turn starts fresh without saying so. Rare, and
+// the alternative — scanning back to the last success — would keep re-announcing
+// the same retirement on every later turn, which is worse.
 func (q *Queries) GetLatestTaskResumeExhausted(ctx context.Context, arg GetLatestTaskResumeExhaustedParams) (bool, error) {
 	row := q.db.QueryRow(ctx, getLatestTaskResumeExhausted, arg.AgentID, arg.IssueID)
 	var exhausted bool
@@ -4202,6 +4209,7 @@ WHERE t.agent_id = $1 AND t.issue_id = $2
       FROM agent_task_queue c
       WHERE c.agent_id = $1 AND c.issue_id = $2 AND c.status = 'completed'
   ), '-infinity'::timestamptz)
+ORDER BY COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) DESC, t.id DESC
 `
 
 type ListResumeFailuresSinceLastSuccessParams struct {
@@ -4236,10 +4244,13 @@ type ListResumeFailuresSinceLastSuccessRow struct {
 //
 // failure_reason is returned rather than filtered here on purpose: which
 // reasons are transient enough to skip is decided ONCE in Go
-// (transientResumeSafeReasons). This file and internal/service/task.go have
+// (transcriptNeutralReasons). This file and internal/service/task.go have
 // drifted apart before — the sibling NOT IN blacklist above exists in three
 // places precisely because of that — so the set that is expected to grow
 // lives in one language only.
+// Newest first, with id as a tiebreak so rows sharing a timestamp keep a
+// stable order. The caller retires the most recent DIFFERENT session id it
+// sees, which is only well-defined if this ordering is.
 func (q *Queries) ListResumeFailuresSinceLastSuccess(ctx context.Context, arg ListResumeFailuresSinceLastSuccessParams) ([]ListResumeFailuresSinceLastSuccessRow, error) {
 	rows, err := q.db.Query(ctx, listResumeFailuresSinceLastSuccess, arg.AgentID, arg.IssueID, arg.ID)
 	if err != nil {

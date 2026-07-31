@@ -3667,30 +3667,70 @@ var retryableReasons = map[string]bool{
 // resume itself that just demonstrably failed. The cost of an unrecognised
 // error therefore tops out at one wasted run rather than a permanently dead
 // (agent, issue) pair.
+//
+// The threshold latches, by design. session_resume_exhausted is itself a
+// counting reason, so once the breaker has fired the window stays at or above
+// the threshold until a run finally succeeds — meaning every subsequent fresh
+// session is retired on its FIRST failure rather than its second. For a
+// genuinely broken pairing (a gateway that keeps rejecting) that is the right
+// behaviour: each turn gets a clean conversation and an explicit disclosure
+// instead of inheriting a known-dead one. Practically it means "2" describes
+// the first round only. Treating an exhausted row as a window boundary would
+// give each new session its own two attempts; that trades faster recovery for
+// more wasted runs in the case that is already known to be failing, so it is
+// deliberately not done.
 const sessionResumeExhaustedThreshold = 2
 
-// transientResumeSafeReasons are failures that say nothing about whether the
-// conversation can be replayed, so they neither count toward
-// sessionResumeExhaustedThreshold nor reset it. A daemon that went offline
-// twice has not shown the transcript to be bad, and treating it as such would
-// discard a healthy session — the exact false positive the GH #6143 review
-// pushed back on when a broad "any 400" text match was proposed.
+// transcriptNeutralReasons are failures that carry NO evidence about whether
+// the conversation can be replayed, so they neither count toward
+// sessionResumeExhaustedThreshold nor reset it.
 //
-// Explicitly a SUPERSET of retryableReasons, and the extra members are the
-// point: provider_capacity_or_rate_limit and provider_server_error are not
-// auto-retried (they have no safe idempotent replay) but are unambiguously
-// transient, so two rate-limited runs in a row must not burn the session.
-// queued_expired never started an agent process at all.
+// "Transcript-neutral" rather than "transient" is the actual criterion, and
+// the distinction matters when deciding whether a new reason belongs here: an
+// expired API key is not transient at all — it persists until the user acts —
+// but it says exactly as much about the transcript as a daemon outage does,
+// which is nothing. The question to ask of a candidate is "could replaying the
+// conversation have caused this?", not "will it go away on its own?".
+//
+// Getting that wrong is a real regression, not a theoretical one. Two runs
+// failing on an expired key would otherwise retire a perfectly healthy session
+// AND relabel the failure as session_resume_exhausted — destroying the one
+// signal the user could act on ("Auth failed") and losing their context for a
+// problem that had nothing to do with it.
+//
+// Explicitly a SUPERSET of retryableReasons, because auto-retry safety implies
+// transcript-neutrality but not the reverse: rate limit and provider 5xx are
+// not auto-retried (no safe idempotent replay) yet are plainly neutral here.
+//
+// Deliberately NOT listed, so they keep counting: process_failure,
+// empty_or_unparseable_output and agent_timeout can all be produced BY
+// replaying an oversized or malformed history, so counting them is the
+// fail-safe direction. agent_error.unknown is the whole point of the breaker.
+// A legacy or un-upgraded daemon reporting a bare agent_error also counts,
+// which is intended for genuinely unclassified failures and is an accepted
+// deploy-window cost for the transient ones it may mislabel.
 //
 // Skipping without resetting is deliberate: fail(unknown) → fail(runtime_offline)
 // → fail(unknown) is two pieces of evidence about the conversation with an
 // unrelated infrastructure blip in the middle, not one. Letting the blip clear
 // the count would let a flaky daemon mask a genuinely dead session forever.
-var transientResumeSafeReasons = func() map[string]bool {
+var transcriptNeutralReasons = func() map[string]bool {
 	m := map[string]bool{
+		// Transient provider conditions.
 		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit): true,
 		string(taskfailure.ReasonAgentProviderServerError):         true,
-		string(taskfailure.ReasonQueuedExpired):                    true,
+		// Never reached an agent process at all.
+		string(taskfailure.ReasonQueuedExpired): true,
+		// The user must fix something OUTSIDE the conversation: credentials,
+		// billing, model id, runner install. Each persists until they act, and
+		// each leaves the transcript untouched — so a second failure is the
+		// same unfixed environment, not a second piece of evidence.
+		string(taskfailure.ReasonAgentProviderAuthOrAccess):       true,
+		string(taskfailure.ReasonAgentProviderQuotaLimit):         true,
+		string(taskfailure.ReasonAgentModelNotFoundOrUnavailable): true,
+		string(taskfailure.ReasonAgentMissingConfig):              true,
+		string(taskfailure.ReasonAgentRuntimeVersionUnsupported):  true,
+		string(taskfailure.ReasonAgentRuntimeMissingExecutable):   true,
 	}
 	for reason := range retryableReasons {
 		m[reason] = true
@@ -3716,7 +3756,7 @@ var transientResumeSafeReasons = func() map[string]bool {
 func (s *TaskService) sessionResumeExhausted(ctx context.Context, taskID pgtype.UUID, failureReason, sessionID string) (bool, string) {
 	// Cheap gate before any query: the overwhelmingly common failure is a
 	// transient one that can never trip the breaker.
-	if transientResumeSafeReasons[failureReason] {
+	if transcriptNeutralReasons[failureReason] {
 		return false, ""
 	}
 	parent, err := s.Queries.GetAgentTask(ctx, taskID)
@@ -3760,18 +3800,24 @@ type priorResumeFailure struct {
 // this failure and the earlier ones since the last success, decide whether the
 // conversation is retired and which session id to record.
 func evaluateResumeExhaustion(currentReason, currentSessionID string, prior []priorResumeFailure) (bool, string) {
-	if transientResumeSafeReasons[currentReason] {
+	if transcriptNeutralReasons[currentReason] {
 		return false, ""
 	}
 	count := 1 // this failure
 	retireSessionID := currentSessionID
 	for _, p := range prior {
-		if transientResumeSafeReasons[p.FailureReason] {
+		if transcriptNeutralReasons[p.FailureReason] {
 			continue
 		}
 		count++
-		// Prefer an id the upgraded reason on THIS row cannot retire.
-		if p.SessionID != "" && p.SessionID != currentSessionID {
+		// Prefer an id the upgraded reason on THIS row cannot retire, taking
+		// the most recent such id — prior is ordered newest-first, so the
+		// first match is the session this run was actually told to resume.
+		// Only one id fits in retired_session_id, so with more than one
+		// drifted predecessor the older ones are left to their own rows: each
+		// carries its own failure reason and is re-evaluated on the next
+		// failure, which bounds the leak at an extra run rather than a loop.
+		if retireSessionID == currentSessionID && p.SessionID != "" && p.SessionID != currentSessionID {
 			retireSessionID = p.SessionID
 		}
 	}

@@ -131,6 +131,54 @@ func TestEvaluateResumeExhaustionTransient(t *testing.T) {
 			},
 			wantRetire: false,
 		},
+		{
+			// The regression the PR review caught. An expired key fails every
+			// run until the user re-auths, so without this the second failure
+			// would retire a healthy session AND relabel the failure — hiding
+			// "Auth failed", the one thing the user could act on.
+			name:          "expired credentials never retire",
+			currentReason: "agent_error.provider_auth_or_access",
+			prior: []priorResumeFailure{
+				{SessionID: "sess-a", FailureReason: "agent_error.provider_auth_or_access"},
+			},
+			wantRetire: false,
+		},
+		{
+			name:          "exhausted billing never retires",
+			currentReason: "agent_error.provider_quota_limit",
+			prior: []priorResumeFailure{
+				{SessionID: "sess-a", FailureReason: "agent_error.provider_quota_limit"},
+			},
+			wantRetire: false,
+		},
+		{
+			name:          "misconfigured model never retires",
+			currentReason: "agent_error.model_not_found_or_unavailable",
+			prior: []priorResumeFailure{
+				{SessionID: "sess-a", FailureReason: "agent_error.model_not_found_or_unavailable"},
+			},
+			wantRetire: false,
+		},
+		{
+			name:          "missing runner binary never retires",
+			currentReason: "agent_error.runtime_missing_executable",
+			prior: []priorResumeFailure{
+				{SessionID: "sess-a", FailureReason: "agent_error.missing_config"},
+				{SessionID: "sess-a", FailureReason: "agent_error.runtime_version_unsupported"},
+			},
+			wantRetire: false,
+		},
+		{
+			// Counting these IS intended: replaying an oversized or malformed
+			// history is a plausible cause, so the fail-safe direction is to
+			// treat them as evidence about the transcript.
+			name:          "agent process crashes still count",
+			currentReason: "agent_error.process_failure",
+			prior: []priorResumeFailure{
+				{SessionID: "sess-a", FailureReason: "agent_error.process_failure"},
+			},
+			wantRetire: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -213,27 +261,70 @@ func TestSessionResumeExhaustedIsResumeUnsafe(t *testing.T) {
 	}
 }
 
-// TestTransientResumeSafeSupersetOfRetryable pins the superset relationship. If
-// a reason is safe enough to auto-retry it is safe enough not to burn the
+// TestTranscriptNeutralSupersetOfRetryable pins the superset relationship. If a
+// reason is safe enough to auto-retry it is safe enough not to burn the
 // session, and a future addition to retryableReasons must not silently start
 // tripping the breaker.
-func TestTransientResumeSafeSupersetOfRetryable(t *testing.T) {
+func TestTranscriptNeutralSupersetOfRetryable(t *testing.T) {
 	t.Parallel()
 
 	for reason := range retryableReasons {
-		if !transientResumeSafeReasons[reason] {
-			t.Errorf("retryable reason %q is not in transientResumeSafeReasons", reason)
+		if !transcriptNeutralReasons[reason] {
+			t.Errorf("retryable reason %q is not in transcriptNeutralReasons", reason)
 		}
 	}
 	// The members that are NOT auto-retryable are the whole reason this set
-	// exists separately; losing them would reintroduce the false positive.
+	// exists separately; losing any of them reintroduces a false positive that
+	// costs the user their conversation context.
 	for _, reason := range []string{
+		// Transient, but with no safe idempotent replay.
 		"agent_error.provider_capacity_or_rate_limit",
 		"agent_error.provider_server_error",
 		"queued_expired",
+		// Not transient at all — they persist until the user fixes the
+		// environment — but equally silent about whether the transcript
+		// replays, which is the actual membership test for this set.
+		"agent_error.provider_auth_or_access",
+		"agent_error.provider_quota_limit",
+		"agent_error.model_not_found_or_unavailable",
+		"agent_error.missing_config",
+		"agent_error.runtime_version_unsupported",
+		"agent_error.runtime_missing_executable",
 	} {
-		if !transientResumeSafeReasons[reason] {
-			t.Errorf("transient reason %q must not count toward the breaker", reason)
+		if !transcriptNeutralReasons[reason] {
+			t.Errorf("transcript-neutral reason %q must not count toward the breaker", reason)
 		}
+	}
+	// The counting side of the contract. These can plausibly be CAUSED by
+	// replaying a bad history, so excluding them would blind the breaker.
+	for _, reason := range []string{
+		"agent_error.unknown",
+		"agent_error.process_failure",
+		"agent_error.empty_or_unparseable_output",
+		"agent_error.agent_timeout",
+	} {
+		if transcriptNeutralReasons[reason] {
+			t.Errorf("reason %q must keep counting toward the breaker", reason)
+		}
+	}
+}
+
+// TestEvaluateResumeExhaustionPrefersMostRecentDriftedID pins the ordering
+// contract with ListResumeFailuresSinceLastSuccess, which returns newest-first.
+// Only one id fits in retired_session_id, so when several drifted predecessors
+// exist the one worth retiring is the session this run was actually told to
+// resume — the most recent.
+func TestEvaluateResumeExhaustionPrefersMostRecentDriftedID(t *testing.T) {
+	t.Parallel()
+
+	retire, sessionID := evaluateResumeExhaustion(gh6143GatewayError, "sess-c", []priorResumeFailure{
+		{SessionID: "sess-b", FailureReason: gh6143GatewayError},
+		{SessionID: "sess-a", FailureReason: gh6143GatewayError},
+	})
+	if !retire {
+		t.Fatal("retire = false, want true")
+	}
+	if sessionID != "sess-b" {
+		t.Fatalf("retired session = %q, want %q (the most recent drifted id)", sessionID, "sess-b")
 	}
 }
