@@ -185,9 +185,20 @@ Resource Labels has completed its schema-first rollout and is now always
 available. Current clients always render agent- and skill-scoped labels, and
 the backend no longer gates their catalog or assignment endpoints.
 `/api/config` still reports `settings_resource_labels: true` so installed
-desktop clients that still gate the UI on this config decision also receive
-the permanently enabled behavior; this is a client-compatibility decision, not
-an operator-controlled flag.
+v0.4.0 desktop clients that still gate the UI on this config decision also
+receive the permanently enabled behavior; this is a client-compatibility
+decision, not an operator-controlled flag.
+
+The rollback prerequisite that originally justified the flag is implemented by
+the down-migration chain: `174_legacy_label_index_rollback_prep.down.sql`
+deletes all agent- and skill-scoped label rows before
+`171_drop_legacy_label_namespace_index.down.sql` recreates the pre-162
+workspace-wide unique name index. The remaining down migrations then remove
+the resource-label junction tables and `resource_type` column.
+
+Now that users can create resource-scoped labels, rollback to the pre-v0.3.44
+schema is no longer supported: migration 174 would delete user data. Roll back
+only to a release that understands resource-scoped labels.
 
 Agent Builder has completed this rollout and is now always available. Current
 clients always render the AI creation entry, and the backend no longer gates the
