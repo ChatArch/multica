@@ -156,6 +156,32 @@ describe("parseWorkspaceEntityLink", () => {
     ).toBeNull();
   });
 
+  // A leading slash does not mean "this site". Both of these name another host
+  // and a browser follows them there, so the parser has to resolve the href
+  // rather than test its prefix.
+  it("returns null for a host-bearing href that still starts with a slash", () => {
+    expect(
+      parseWorkspaceEntityLink(`//evil.example/projects/${PROJECT_ID}`, APP_ORIGIN),
+    ).toBeNull();
+    // Backslashes are normalised to slashes, so this names evil.example too —
+    // and it slips past a `//` prefix test.
+    expect(
+      parseWorkspaceEntityLink(`/\\evil.example/projects/${PROJECT_ID}`, APP_ORIGIN),
+    ).toBeNull();
+  });
+
+  it("returns null for a non-http scheme", () => {
+    expect(parseWorkspaceEntityLink("javascript:alert(1)", APP_ORIGIN)).toBeNull();
+  });
+
+  // The slugless form resolves against the current workspace either way; the
+  // two spellings must not disagree about that.
+  it("treats the slugless form the same whether or not it carries the origin", () => {
+    expect(
+      parseWorkspaceEntityLink(`${APP_ORIGIN}/projects/${PROJECT_ID}`, APP_ORIGIN),
+    ).toEqual({ kind: "project", id: PROJECT_ID, slug: null });
+  });
+
   it("returns null for a list page", () => {
     expect(parseWorkspaceEntityLink("/acme/projects")).toBeNull();
   });

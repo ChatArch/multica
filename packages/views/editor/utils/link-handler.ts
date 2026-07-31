@@ -144,18 +144,60 @@ function decodeSegment(segment: string): string | null {
 }
 
 /**
+ * Stand-in origin for resolving a href that carries no origin of its own. The
+ * `.invalid` TLD is reserved as permanently unresolvable (RFC 2606), so no
+ * deployment can ever be served from it and no href can use it to pass as one.
+ */
+const RELATIVE_BASE = "https://link.invalid";
+
+/**
+ * Resolve a link to the path it addresses on THIS deployment; `null` when it
+ * addresses anywhere else.
+ *
+ * Resolving through `URL` rather than testing the string is what makes the
+ * answer trustworthy. A leading slash does not mean "this site":
+ * `//other.example/x` and `/\other.example/x` both start with one and both name
+ * another host, which is where a browser goes. A parser sees the host; a prefix
+ * test cannot, and no amount of extra prefixes closes the gap — that is why the
+ * shape of this check matters more than the cases it currently rejects.
+ *
+ * With no `appOrigin` (a platform that cannot report one), only a genuinely
+ * relative href resolves: anything carrying a host of its own fails the
+ * comparison, which is the safe direction.
+ */
+function toSameOriginPath(
+  href: string,
+  appOrigin?: string | null,
+): string | null {
+  const base = appOrigin || RELATIVE_BASE;
+  let target: URL;
+  let expected: URL;
+  try {
+    target = new URL(href, base);
+    expected = new URL(base);
+  } catch {
+    return null;
+  }
+  // Opaque origins (`javascript:`, `data:`) stringify to "null" and can never
+  // equal a real one, so they fall out here too.
+  if (target.origin !== expected.origin) return null;
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+
+/**
  * Parse a link that addresses exactly one issue or project page on this
  * deployment; `null` for everything else — external URLs, list pages, deeper
  * routes, and links carrying a query string or fragment.
  *
- * Accepts the same two forms `openLink` navigates: a site-relative path, and an
- * absolute URL pointing back at this deployment's app origin.
+ * Accepts a site-relative path and an absolute URL pointing back at this
+ * deployment's app origin. Both go through the same origin comparison, so the
+ * two forms cannot disagree about what counts as in-app.
  */
 export function parseWorkspaceEntityLink(
   href: string,
   appOrigin?: string | null,
 ): WorkspaceEntityRef | null {
-  const path = href.startsWith("/") ? href : toInternalAppPath(href, appOrigin);
+  const path = toSameOriginPath(href, appOrigin);
   if (!path) return null;
   // A query string or fragment addresses something more specific than the
   // entity page (a saved filter, an anchored comment). Collapsing that to a
