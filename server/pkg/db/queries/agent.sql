@@ -205,9 +205,17 @@ RETURNING *;
 -- Used when revoking a leaving member's runtimes so agents pinned to those
 -- runtimes can no longer be assigned new work. Returns the affected rows so
 -- the caller can broadcast agent:archived per agent.
+--
+-- System agents are exempt: they belong to the workspace rather than to the
+-- member who happened to create them, and the workspace's entry point runs
+-- through one. Archiving Mika because a colleague left would take the default
+-- agent away from everyone. Its runtime does go offline with the departure, so
+-- it needs rebinding — but it stays visible and recoverable instead of
+-- vanishing.
 UPDATE agent
 SET archived_at = now(), archived_by = @archived_by, updated_at = now()
 WHERE runtime_id = ANY(@runtime_ids::uuid[]) AND archived_at IS NULL
+  AND (system_key IS NULL OR system_key = '')
 RETURNING *;
 
 -- name: ArchiveAgentsByIDs :many
@@ -1589,4 +1597,37 @@ SET status = CASE WHEN EXISTS (
 ) THEN 'working' ELSE 'idle' END,
     updated_at = now()
 WHERE a.id = $1
+RETURNING *;
+
+-- name: GetAgentBySystemKey :one
+-- Resolves a workspace's built-in agent by its stable system_key. This is the
+-- identity lookup for system agents: their display name is owner-editable, so
+-- nothing server-side may key off it.
+SELECT * FROM agent
+WHERE workspace_id = $1 AND system_key = $2 AND archived_at IS NULL
+ORDER BY created_at ASC, id ASC
+LIMIT 1;
+
+-- name: CreateSystemUserAgent :one
+-- Creates a product-defined agent that members can still see, chat with, and
+-- assign issues to. Deliberately kind='user': kind='system' hides the row from
+-- agent lists and assignment surfaces and hard deletes it with its runtime.
+-- Every product-owned field is a server constant; instructions stays empty
+-- because the system half ships with the binary and is layered in at claim
+-- time, leaving this column free for the workspace's own notes.
+--
+-- CONTRACT: call only while holding the per-workspace mika advisory lock. The
+-- one-per-workspace invariant rests on a check inside that lock, not on a
+-- unique index — migration 172's index keys on (workspace_id, owner_id,
+-- runtime_id, system_key), so two different owners or runtimes are distinct
+-- tuples and would both insert.
+INSERT INTO agent (
+    workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
+    runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
+    instructions, custom_env, custom_args, kind, system_key
+) VALUES (
+    @workspace_id, @name, @description, @avatar_url, @runtime_mode, '{}'::jsonb,
+    @runtime_id, @visibility, @permission_mode, @max_concurrent_tasks, @owner_id,
+    '', '{}'::jsonb, '[]'::jsonb, 'user', @system_key
+)
 RETURNING *;

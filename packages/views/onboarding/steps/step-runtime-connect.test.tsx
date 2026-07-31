@@ -78,10 +78,10 @@ describe("StepRuntimeConnect", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not render a permanently-disabled Start exploring while scanning", () => {
+  it("does not render a permanently-disabled Mika action while scanning", () => {
     renderStep();
     expect(
-      screen.queryByRole("button", { name: /start exploring/i }),
+      screen.queryByRole("button", { name: /start with mika/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -129,9 +129,9 @@ describe("StepRuntimeConnect", () => {
     expect(
       screen.queryByText(/no agent runtime found/i),
     ).not.toBeInTheDocument();
-    // Continue is actionable in the found phase.
+    // Starting with Mika is actionable in the found phase.
     expect(
-      screen.getByRole("button", { name: /start exploring/i }),
+      screen.getByRole("button", { name: /start with mika/i }),
     ).toBeInTheDocument();
   });
 

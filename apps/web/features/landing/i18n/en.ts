@@ -1614,7 +1614,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         title: "Smarter Welcome, Live Work Signals & Safer Collaboration",
         changes: [],
         features: [
-          "New users now enter a guided welcome experience where Multica Helper can introduce the workspace, give a tour, or build a slide-style welcome page",
+          "New users now enter a guided Mika conversation that helps them complete one real first task and add specialists only when needed",
           "Issue lists now show when agents are actively working, with per-Issue indicators, hover details, and a quick filter for work in progress",
           "When a child Issue is finished, the parent Issue now receives a platform-generated update and can notify the right parent owner without creating loops",
           "The public site now includes a Contact Sales flow with a business-email form and submission protection",

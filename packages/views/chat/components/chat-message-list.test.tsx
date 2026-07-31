@@ -304,6 +304,45 @@ describe("ChatMessageList quick actions skeleton", () => {
   });
 });
 
+describe("ChatMessageList onboarding kickoff", () => {
+  it("hides the product-authored kickoff while rendering Mika's reply", async () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList
+            messages={[
+              {
+                id: "kickoff",
+                chat_session_id: "s1",
+                role: "user",
+                content: "INTERNAL ONBOARDING PROMPT",
+                task_id: TASK_ID,
+                created_at: new Date(0).toISOString(),
+                message_kind: "onboarding_kickoff",
+              },
+              {
+                id: "reply",
+                chat_session_id: "s1",
+                role: "assistant",
+                content: "Hi, I'm Mika.",
+                task_id: TASK_ID,
+                created_at: new Date(1).toISOString(),
+              },
+            ]}
+            pendingTask={undefined}
+            availability="online"
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText("Hi, I'm Mika.")).toBeInTheDocument();
+    expect(
+      screen.queryByText("INTERNAL ONBOARDING PROMPT"),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
   // The backend moved to the refined taxonomy (agent_error.*) in MUL-2946 but
   // the copy map stayed on the six coarse values, so an exact-key lookup

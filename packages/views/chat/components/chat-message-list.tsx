@@ -228,14 +228,18 @@ export function ChatMessageList({
   // Persisted messages plus, while a task is in flight, one synthetic trailing
   // row for it. When the assistant message persists, `hasLive` goes false and
   // the message takes the SAME key at the SAME position — an in-place data
-  // swap, not a remount.
+  // swap, not a remount. The onboarding kickoff is a server-authored carrier
+  // for Mika's first task, not something the member typed, so it never becomes
+  // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
-    const items: ChatRenderItem[] = messages.map((message) => ({
-      key: messageRowKey(message),
-      kind: "message" as const,
-      message,
-      taskId: message.task_id ?? null,
-    }));
+    const items: ChatRenderItem[] = messages
+      .filter((message) => message.message_kind !== "onboarding_kickoff")
+      .map((message) => ({
+        key: messageRowKey(message),
+        kind: "message" as const,
+        message,
+        taskId: message.task_id ?? null,
+      }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
     }

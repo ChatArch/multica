@@ -139,57 +139,16 @@
     "failed_toast": "Failed to join waitlist"
   },
   "welcome_after_onboarding": {
-    "loading_helper": "Preparing your Helper…",
-    "error_title": "Couldn't finish setup",
-    "error_generic": "Something went wrong. Try again.",
-    "retry": "Try again",
-    "dismiss_error": "Dismiss",
-    "error_close": "Close",
-    "user_context_heading": "About me",
-    "user_context_role_label": "Role",
-    "user_context_use_case_label": "What I want to do with Multica",
-    "runtime": {
-      "greeting": "Hi, welcome to Multica",
-      "subtitle": "I'm your first Agent assistant.",
-      "capabilities": "Ask me anything about how to use Multica. You can also have me get things done in your workspace — create issues, set up cron tasks, build new agents…",
-      "section_label": "Pick one or more tasks to start with:",
-      "assign_empty": "Pick one or more",
-      "assign_count": "Assign {{count}} task to me →",
-      "assign_count_plural": "Assign {{count}} tasks to me →",
-      "cards": {
-        "intro": {
-          "subtitle": "Let me explain in 1–2 paragraphs what Multica is and what it can do."
-        },
-        "tour": {
-          "subtitle": "I'll walk you through how issue, agent, squad, autopilot fit together."
-        },
-        "welcome_page": {
-          "subtitle": "I'll build you a single-file HTML slide deck — tailored to your role, ready to copy and open in a browser."
-        }
-      },
-      "success": {
-        "title": "All set!",
-        "subtitle": "Sit tight — your {{agentName}} is on it ☕",
-        "tip_inbox": "When there's progress, you'll see it in your Inbox.",
-        "tip_chat": "Want to chat live? Click the chat bubble at the bottom-right.",
-        "got_it": "Got it →"
-      }
-    },
     "skip": {
       "loading": "Setting up your workspace…",
       "title": "Welcome to Multica!",
-      "subtitle": "We've added two tasks to help you with the next step.",
+      "subtitle": "We've added one task to help you connect a runtime. When it's ready, start with Mika from Runtimes.",
       "got_it": "Got it",
       "status_in_progress": "In progress",
-      "status_todo": "Todo",
       "cards": {
         "install_runtime": {
           "title": "Connect a runtime",
-          "subtitle": "Install Codex or Kimi to bring agents online."
-        },
-        "create_agent": {
-          "title": "Create your first agent",
-          "subtitle": "Once a runtime is online, build your first Multica agent."
+          "subtitle": "Install Codex or Kimi, then start the guided Mika chat from Runtimes."
         }
       }
     }
@@ -203,6 +162,7 @@
     "lede_resume": "Resume setup with the workspace you already have, or create a new one alongside it — you can belong to any number of workspaces.",
     "name_label": "Workspace name",
     "name_placeholder": "Acme Inc, My Lab, Side Projects…",
+    "random_name": "Random",
     "url_label": "URL",
     "slug_placeholder": "acme",
     "issue_prefix_label": "Issue prefix",
@@ -232,12 +192,12 @@
     "side_preview_name": "Your workspace",
     "side_preview_slug": "workspace",
     "perk_assign": "Assign issues to agents like you would a teammate",
-    "perk_chat": "Chat with any agent without creating an issue",
+    "perk_chat": "Ask questions and coordinate with any agent in chat",
     "perk_invite": "Invite teammates — they see only this workspace",
     "perk_switch": "Switch to other workspaces anytime from the top-left",
     "next_runtime": "Connect a computer so your agents have somewhere to run",
-    "next_agent": "Create Multica Helper from your connected runtime",
-    "next_starter": "Open one onboarding issue for your next step",
+    "next_agent": "We'll create Mika as your default workspace agent",
+    "next_starter": "Turn one real goal into an issue and start it with Mika",
     "preview": {
       "inbox_label": "Inbox",
       "inbox_meta": "your notifications",
@@ -269,7 +229,8 @@
     "scanning_lede_prefix": "Your agent works through an AI coding tool you already have — like ",
     "scanning_lede_suffix": ", and others. We're checking this computer for ones you've installed.",
     "found_headline": "This computer is connected. Pick an agent runtime.",
-    "found_lede": "These are the agent runtimes we found on this computer. Pick one for your first agent — you can switch or add more later.",
+    "found_lede": "These are the agent runtimes we found on this computer. Pick one for Mika — you can switch it or add more runtimes later.",
+    "remote_computer_later_note": "Prefer to run agents on a remote computer, or don't have a local runtime? You can skip this step and connect a remote computer later.",
     "runtime_count_one": "{{count}} agent runtime",
     "runtime_count_other": "{{count}} agent runtimes",
     "status_all_online": "all online",
@@ -290,10 +251,10 @@
     "refresh": "Refresh",
     "refreshing": "Refreshing…",
     "hint_selected": "Selected: {{name}}",
-    "hint_pick": "Pick an agent runtime above to continue.",
+    "hint_pick": "Pick an agent runtime above to start with Mika.",
     "hint_waiting": "Waiting for the first result…",
     "hint_skip_or_refresh": "Refresh after installing one, or skip to enter your workspace.",
-    "start_exploring": "Start exploring"
+    "continue": "Start with Mika"
   },
   "step_platform": {
     "eyebrow": "Connect a computer",
@@ -330,6 +291,7 @@
     "stage_stalled_suffix": " is the smoother path — one click and this computer is connected. Close this dialog and pick Desktop, or hit Skip to continue."
   },
   "errors": {
-    "skip_failed": "Failed to finish onboarding"
+    "skip_failed": "Failed to finish onboarding",
+    "mika_setup_failed": "Couldn't start your Mika workspace"
   }
 }

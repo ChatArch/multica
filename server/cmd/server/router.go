@@ -1305,6 +1305,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// workspace (find-or-create by name) and creates the agent
 				// with the template's instructions in one transaction.
 				r.Post("/from-template", h.CreateAgentFromTemplate)
+				// The workspace's built-in Chief of Staff. Server-owned: the
+				// caller supplies only a runtime and a language, so a client
+				// cannot mint an agent carrying `system_key` and thereby claim
+				// the system instruction layer. Idempotent per workspace.
+				r.Post("/mika", h.CreateMikaAgent)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
@@ -1459,6 +1464,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
+					r.Post("/onboarding", h.StartMikaOnboarding)
 					// Explicit "refresh" of a turn's quick actions: re-runs the
 					// daemon suggestion pass for the latest assistant reply (MUL-5149).
 					r.Post("/quick-actions/regenerate", h.RegenerateChatQuickActions)

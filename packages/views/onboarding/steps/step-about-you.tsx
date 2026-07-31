@@ -35,10 +35,10 @@ import { useT } from "../../i18n";
 /**
  * Step 1 — "About you": role (single-select) and use case
  * (multi-select) on ONE screen. They were separate steps once, but
- * they share the same eyebrow, the same consumer (the Helper "About
- * me" context block built by `buildUserContextSection`), and neither
- * deserves a full screen of its own — merging them cut the onboarding
- * progress bar from five steps to three.
+ * they share the same eyebrow and neither deserves a full screen of
+ * its own — merging them cut the onboarding progress bar from five
+ * steps to three. The answers remain useful for product personalization
+ * and onboarding analytics, independent of agent creation.
  *
  * Answering is optional per group:
  *   - Continue is enabled as soon as EITHER group has a committed
@@ -94,9 +94,8 @@ export function StepAboutYou({
     { slug: "other", icon: <MoreHorizontal className="h-4 w-4" />, label: t(($) => $.questions.use_case.other), isOther: true },
   ];
 
-  // Role stays single-select — downstream personalization (the Helper
-  // "About me" block, the tailored intro slides) wants one primary
-  // identity, not a blend.
+  // Role stays single-select — downstream personalization wants one
+  // primary identity, not a blend.
   const roleSelected: readonly string[] = answers.role ? [answers.role] : [];
   const roleOtherFilled = (answers.role_other ?? "").trim().length > 0;
   const roleAnswered =
@@ -181,7 +180,7 @@ export function StepAboutYou({
   return (
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
-      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
+      <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-2 sm:px-10 md:px-14 lg:px-16">
         {onBack ? (
           <button
             type="button"
@@ -204,7 +203,7 @@ export function StepAboutYou({
         style={fadeStyle}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        <div className="mx-auto w-full max-w-[920px] px-6 py-10 sm:px-10 md:px-14 lg:py-14">
+        <div className="mx-auto w-full max-w-[920px] px-6 py-8 sm:px-10 md:px-14">
           <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
             {t(($) => $.questions.eyebrow_about_you)}
           </div>
@@ -237,7 +236,7 @@ export function StepAboutYou({
             multiSelect
           />
 
-          <div className="mt-10 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+          <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
             <span
               aria-live="polite"
               className="mr-auto text-caption text-muted-foreground"
@@ -297,7 +296,7 @@ function QuestionGroup({
     : false;
 
   return (
-    <section className="mt-10">
+    <section className="mt-8">
       <div className="flex items-baseline gap-3">
         <span aria-hidden className="font-mono text-caption text-muted-foreground">
           {String(number).padStart(2, "0")}
@@ -309,7 +308,7 @@ function QuestionGroup({
       <fieldset
         role={multiSelect ? "group" : "radiogroup"}
         aria-label={question}
-        className="m-0 mt-4 grid grid-cols-1 gap-3 p-0 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className="m-0 mt-3 grid grid-cols-1 gap-2.5 p-0 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
       >
         {options.map((option) =>
           option.isOther ? (

@@ -409,10 +409,8 @@ func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
 
 // buildChatPrompt constructs a prompt for interactive chat tasks.
 func buildChatPrompt(task Task) string {
-	// Proactive self-introduction: the agent was just created and is opening the
-	// conversation. There is no user message to reply to — the agent sends the
-	// first message so the thread reads as the agent messaging its creator, not
-	// the creator prompting the agent (MUL-4230).
+	// Legacy compatibility for historical proactive-introduction sessions.
+	// New agent creation no longer creates a chat or runs this prompt.
 	if task.ChatIntro {
 		var b strings.Builder
 		b.WriteString("You are running as a chat assistant for a Multica workspace.\n")

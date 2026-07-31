@@ -385,7 +385,16 @@ export interface Agent {
   runtime_bound?: boolean;
   name: string;
   description: string;
+  /** What this agent's owner wrote. For a system agent this holds only the
+   *  workspace's own notes — the product half is `system_instructions`. */
   instructions: string;
+  /** Set for product-defined agents (e.g. "mika"). Absent for user- and
+   *  template-created agents. Identity for "maintained by Multica" checks —
+   *  never the display name, which owners may change. */
+  system_key?: string;
+  /** Read-only product half of a system agent's prompt, served from the
+   *  backend binary. Absent for ordinary agents. */
+  system_instructions?: string;
   avatar_url: string | null;
   runtime_mode: AgentRuntimeMode;
   runtime_config: Record<string, unknown>;

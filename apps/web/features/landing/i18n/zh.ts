@@ -1616,7 +1616,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
         features: [
           "父 Issue 会在子 Issue 完成时自动收到更新，并通知对应负责人",
           "Issue 列表新增实时智能体工作状态，支持详情查看和工作中筛选",
-          "新用户完成设置后，会进入由 Multica Helper 引导的欢迎体验",
+          "新用户完成设置后，会进入 Mika 的交互式引导，先完成一个真实 task，再按需添加 specialist",
           "官网新增 Contact Sales 流程，支持商务邮箱提交和防滥用保护",
           "桌面端支持 macOS 触控板前进/后退手势",
         ],

@@ -4,19 +4,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronRight,
   Cloud,
+  Loader2,
   Monitor,
   Plus,
   Server,
+  Sparkles,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useBootstrapMika } from "@multica/core/onboarding";
+import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { runtimeProfileListOptions } from "@multica/core/runtimes";
 import { runtimeListOptions, runtimeKeys } from "@multica/core/runtimes/queries";
 import { useWSEvent } from "@multica/core/realtime";
 import { agentListOptions } from "@multica/core/workspace/queries";
+import type { AgentRuntime } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
@@ -25,7 +30,11 @@ import {
   CollectionPageState,
 } from "../../layout/collection-page";
 import { PageHeader } from "../../layout/page-header";
-import { AppLink } from "../../navigation";
+import { AppLink, useNavigation } from "../../navigation";
+import {
+  getMikaOnboarding,
+  pickContentLang,
+} from "../../onboarding/templates";
 import { ConnectRemoteDialog } from "./connect-remote-dialog";
 import { CloudRuntimeDialog } from "./cloud-runtime-dialog";
 import { ProviderLogo } from "./provider-logo";
@@ -78,7 +87,9 @@ export function RuntimesPage({
   const { data: runtimeProfiles = [], isLoading: profilesLoading } = useQuery(
     runtimeProfileListOptions(wsId),
   );
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: agents = [], isLoading: agentsLoading } = useQuery(
+    agentListOptions(wsId),
+  );
   const { data: snapshot = [] } = useQuery(agentTaskSnapshotOptions(wsId));
 
   const handleDaemonEvent = useCallback(() => {
@@ -149,6 +160,15 @@ export function RuntimesPage({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[1440px] flex-col p-4 sm:p-6">
+            {!agentsLoading && agents.length === 0 && runtimes.length > 0 && (
+              <MikaSetupCard
+                workspaceId={wsId}
+                runtime={
+                  runtimes.find((runtime) => runtime.status === "online") ??
+                  runtimes[0]!
+                }
+              />
+            )}
             {(machines.length > 0 || bootstrapping) && (
               <MachineList
                 machines={machines}
@@ -172,6 +192,64 @@ export function RuntimesPage({
       {cloudRuntimeEnabled && showCloudRuntimeDialog && (
         <CloudRuntimeDialog onClose={() => setShowCloudRuntimeDialog(false)} />
       )}
+    </div>
+  );
+}
+
+function MikaSetupCard({
+  workspaceId,
+  runtime,
+}: {
+  workspaceId: string;
+  runtime: AgentRuntime;
+}) {
+  const { t, i18n } = useT("runtimes");
+  const navigation = useNavigation();
+  const paths = useWorkspacePaths();
+  const wsSlug = useRequiredWorkspaceSlug();
+  const bootstrapMika = useBootstrapMika(workspaceId);
+
+  const handleStart = async () => {
+    const lang = pickContentLang(i18n.language);
+    try {
+      const result = await bootstrapMika.mutateAsync({
+        workspaceSlug: wsSlug,
+        runtimeId: runtime.id,
+        ...getMikaOnboarding(lang),
+      });
+      navigation.push(paths.chatSession(result.chatSession.id));
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t(($) => $.mika_setup.failed),
+      );
+    }
+  };
+
+  return (
+    <div className="mb-6 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
+        <Sparkles aria-hidden className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <h2 className="text-sm font-semibold">
+          {t(($) => $.mika_setup.title)}
+        </h2>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          {t(($) => $.mika_setup.description)}
+        </p>
+      </div>
+      <Button
+        className="shrink-0"
+        disabled={bootstrapMika.isPending}
+        onClick={handleStart}
+      >
+        {bootstrapMika.isPending && (
+          <Loader2 aria-hidden className="size-4 animate-spin" />
+        )}
+        {t(($) => $.mika_setup.action)}
+      </Button>
     </div>
   );
 }

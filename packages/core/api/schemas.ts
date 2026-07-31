@@ -1298,6 +1298,8 @@ export const AgentTemplateSchema = AgentTemplateSummarySchemaBase.extend({
   // Detail-only field. Default "" so a malformed detail still renders the
   // header + skill list; the user just sees an empty Instructions block.
   instructions: z.string().default(""),
+  system_key: z.string().optional(),
+  system_instructions: z.string().optional(),
 }).loose();
 
 // Used as the parse fallback for `GET /api/agent-templates/:slug`. Slug comes
@@ -1460,6 +1462,8 @@ export const SquadSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   instructions: z.string().default(""),
+  system_key: z.string().optional(),
+  system_instructions: z.string().optional(),
   avatar_url: z.string().nullable().optional().transform((v) => v ?? null),
   leader_id: z.string(),
   creator_id: z.string(),

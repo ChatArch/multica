@@ -27,6 +27,12 @@
       "hint": "通常需要几秒钟。守护进程正在向工作区注册。"
     }
   },
+  "mika_setup": {
+    "title": "运行时已准备好，和 Mika 开始。",
+    "description": "Mika 会把你的目标转化为 issue、协调合适的智能体，并在工作流需要时帮你添加可复用的 specialist。",
+    "action": "和 Mika 开始",
+    "failed": "无法启动 Mika"
+  },
   "machine": {
     "search_placeholder": "搜索机器...",
     "filters": {

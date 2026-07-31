@@ -131,6 +131,7 @@ const archiveAgentsByRuntime = `-- name: ArchiveAgentsByRuntime :many
 UPDATE agent
 SET archived_at = now(), archived_by = $1, updated_at = now()
 WHERE runtime_id = ANY($2::uuid[]) AND archived_at IS NULL
+  AND (system_key IS NULL OR system_key = '')
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
 `
 
@@ -143,6 +144,13 @@ type ArchiveAgentsByRuntimeParams struct {
 // Used when revoking a leaving member's runtimes so agents pinned to those
 // runtimes can no longer be assigned new work. Returns the affected rows so
 // the caller can broadcast agent:archived per agent.
+//
+// System agents are exempt: they belong to the workspace rather than to the
+// member who happened to create them, and the workspace's entry point runs
+// through one. Archiving Mika because a colleague left would take the default
+// agent away from everyone. Its runtime does go offline with the departure, so
+// it needs rebinding — but it stays visible and recoverable instead of
+// vanishing.
 func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsByRuntimeParams) ([]Agent, error) {
 	rows, err := q.db.Query(ctx, archiveAgentsByRuntime, arg.ArchivedBy, arg.RuntimeIds)
 	if err != nil {
@@ -2082,6 +2090,87 @@ func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams
 	return i, err
 }
 
+const createSystemUserAgent = `-- name: CreateSystemUserAgent :one
+INSERT INTO agent (
+    workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
+    runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
+    instructions, custom_env, custom_args, kind, system_key
+) VALUES (
+    $1, $2, $3, $4, $5, '{}'::jsonb,
+    $6, $7, $8, $9, $10,
+    '', '{}'::jsonb, '[]'::jsonb, 'user', $11
+)
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type CreateSystemUserAgentParams struct {
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	Name               string      `json:"name"`
+	Description        string      `json:"description"`
+	AvatarUrl          pgtype.Text `json:"avatar_url"`
+	RuntimeMode        string      `json:"runtime_mode"`
+	RuntimeID          pgtype.UUID `json:"runtime_id"`
+	Visibility         string      `json:"visibility"`
+	PermissionMode     string      `json:"permission_mode"`
+	MaxConcurrentTasks int32       `json:"max_concurrent_tasks"`
+	OwnerID            pgtype.UUID `json:"owner_id"`
+	SystemKey          pgtype.Text `json:"system_key"`
+}
+
+// Creates a product-defined agent that members can still see, chat with, and
+// assign issues to. Deliberately kind='user': kind='system' hides the row from
+// agent lists and assignment surfaces and hard deletes it with its runtime.
+// Every product-owned field is a server constant; instructions stays empty
+// because the system half ships with the binary and is layered in at claim
+// time, leaving this column free for the workspace's own notes.
+func (q *Queries) CreateSystemUserAgent(ctx context.Context, arg CreateSystemUserAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, createSystemUserAgent,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Description,
+		arg.AvatarUrl,
+		arg.RuntimeMode,
+		arg.RuntimeID,
+		arg.Visibility,
+		arg.PermissionMode,
+		arg.MaxConcurrentTasks,
+		arg.OwnerID,
+		arg.SystemKey,
+	)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}
+
 const deleteSystemAgentByID = `-- name: DeleteSystemAgentByID :exec
 DELETE FROM agent
 WHERE id = $1 AND kind = 'system' AND system_key LIKE 'agent_builder:%'
@@ -2548,6 +2637,57 @@ WHERE id = $1
 
 func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
 	row := q.db.QueryRow(ctx, getAgent, id)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+	)
+	return i, err
+}
+
+const getAgentBySystemKey = `-- name: GetAgentBySystemKey :one
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier FROM agent
+WHERE workspace_id = $1 AND system_key = $2 AND archived_at IS NULL
+ORDER BY created_at ASC, id ASC
+LIMIT 1
+`
+
+type GetAgentBySystemKeyParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SystemKey   pgtype.Text `json:"system_key"`
+}
+
+// Resolves a workspace's built-in agent by its stable system_key. This is the
+// identity lookup for system agents: their display name is owner-editable, so
+// nothing server-side may key off it.
+func (q *Queries) GetAgentBySystemKey(ctx context.Context, arg GetAgentBySystemKeyParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, getAgentBySystemKey, arg.WorkspaceID, arg.SystemKey)
 	var i Agent
 	err := row.Scan(
 		&i.ID,

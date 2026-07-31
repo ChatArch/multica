@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Dices,
   FolderKanban,
   Inbox,
   ListTodo,
@@ -24,6 +25,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
 import type { Workspace } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
+import { matchLocale } from "@multica/core/i18n";
 import { useConfigStore } from "@multica/core/config";
 import { workspaceUrlHost } from "@multica/core/workspace/workspace-url";
 import { DragStrip } from "@multica/views/platform";
@@ -36,6 +38,7 @@ import {
   WORKSPACE_SLUG_REGEX,
   isWorkspaceSlugConflict,
   nameToWorkspaceSlug,
+  randomCelestialWorkspaceIdentity,
 } from "../../workspace/slug";
 import { isReservedSlug } from "@multica/core/paths";
 
@@ -80,7 +83,8 @@ export function StepWorkspace({
   onCreated: (workspace: Workspace) => void | Promise<void>;
   onBack?: () => void;
 }) {
-  const { t } = useT("onboarding");
+  const { t, i18n } = useT("onboarding");
+  const locale = matchLocale([i18n.resolvedLanguage ?? i18n.language]);
   const mainRef = useRef<HTMLElement>(null);
   const fadeStyle = useScrollFade(mainRef);
   const workspaceCreationDisabled = useConfigStore((s) => s.workspaceCreationDisabled);
@@ -140,6 +144,14 @@ export function StepWorkspace({
   const handleSlugChange = (value: string) => {
     slugTouched.current = true;
     setSlug(value);
+    setSlugServerError(null);
+  };
+
+  const handleRandomName = () => {
+    const identity = randomCelestialWorkspaceIdentity(locale);
+    slugTouched.current = true;
+    setName(identity.name);
+    setSlug(identity.slug);
     setSlugServerError(null);
   };
 
@@ -224,18 +236,31 @@ export function StepWorkspace({
         >
           {t(($) => $.step_workspace.name_label)}
         </Label>
-        <Input
-          id="ws-name"
-          autoFocus
-          type="text"
-          value={name}
-          onChange={(e) => handleNameChange(e.target.value)}
-          placeholder={t(($) => $.step_workspace.name_placeholder)}
-          onKeyDown={(e) => {
-            if (isImeComposing(e)) return;
-            if (e.key === "Enter") handleCreate();
-          }}
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            id="ws-name"
+            autoFocus
+            type="text"
+            value={name}
+            onChange={(e) => handleNameChange(e.target.value)}
+            placeholder={t(($) => $.step_workspace.name_placeholder)}
+            className="min-w-0"
+            onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
+              if (e.key === "Enter") handleCreate();
+            }}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleRandomName}
+            disabled={isCreating}
+            className="shrink-0"
+          >
+            <Dices className="h-4 w-4" />
+            {t(($) => $.step_workspace.random_name)}
+          </Button>
+        </div>
       </div>
       <div className="flex flex-col gap-1.5">
         <Label
