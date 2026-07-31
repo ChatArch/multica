@@ -25,11 +25,12 @@ import (
 const (
 	chatQuickActionsTimeout     = 8 * time.Second
 	chatQuickActionsTemperature = 0.3
-	// Output cap. Three actions at the sanitizer's ceilings (80-rune label,
-	// 500-rune prompt) fit comfortably; the headroom exists so a verbose model
-	// is truncated by sanitizeChatQuickActions rather than by the upstream
-	// mid-JSON, which would fail the parse outright.
-	chatQuickActionsMaxCompletionTokens = 800
+	// Output cap. GenerateJSON disables GPT-5.6 reasoning for this
+	// latency-sensitive utility call, so the whole budget is available for the
+	// JSON response. The headroom keeps verbose or multibyte actions from being
+	// cut off mid-object; sanitizeChatQuickActions still applies the product's
+	// visible size limits.
+	chatQuickActionsMaxCompletionTokens = 2048
 )
 
 // Context window for the pass. Suggestions are about where the conversation

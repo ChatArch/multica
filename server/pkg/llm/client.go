@@ -202,8 +202,14 @@ func (c *Client) GenerateText(ctx context.Context, model, systemPrompt, userProm
 // word "JSON" has to appear somewhere in the prompt, or OpenAI-compatible
 // endpoints reject the request outright.
 //
-// temperature and maxCompletionTokens apply only when positive; zero leaves
-// the upstream default in place. Model empty -> the configured default.
+// This helper is for small, latency-sensitive utility work. For the GPT-5.6
+// family it explicitly disables reasoning and leaves sampling controls at the
+// model default. That keeps maxCompletionTokens available to the visible JSON
+// instead of spending it on reasoning, and avoids sampling parameters that
+// those models may reject. Other models keep the caller's temperature so a
+// configurable deployment does not change behavior. temperature and
+// maxCompletionTokens apply only when positive; zero leaves the corresponding
+// upstream default in place. Model empty -> the configured default.
 func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error) {
 	if !c.Enabled() {
 		return "", ErrNotConfigured
@@ -222,7 +228,16 @@ func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userProm
 			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		},
 	}
-	if temperature > 0 {
+	effectiveModel := strings.TrimSpace(model)
+	if effectiveModel == "" {
+		effectiveModel = c.defaultModel
+	}
+	if isGPT56Family(effectiveModel) {
+		// GPT-5.6 defaults to medium reasoning. This path generates a tiny JSON
+		// object under a strict wall-clock budget, so reasoning would add latency
+		// and consume the completion-token limit without improving the contract.
+		params.ReasoningEffort = shared.ReasoningEffortNone
+	} else if temperature > 0 {
 		params.Temperature = openai.Float(temperature)
 	}
 	if maxCompletionTokens > 0 {
@@ -238,30 +253,58 @@ func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userProm
 	ctx, cancel := withDefaultTimeout(ctx)
 	defer cancel()
 
-	completion, err := c.Chat(ctx, params)
-	if err != nil && maxCompletionTokens > 0 && isBadRequestForParameter(err, "max_completion_tokens") {
-		// Some older OpenAI-compatible gateways only recognize max_tokens.
-		// A parameter-validation 400 happens before generation, so one bounded
-		// retry is safe and preserves compatibility without duplicating model
-		// work. Never retry other errors or retry more than once.
-		params.MaxCompletionTokens = param.Opt[int64]{}
-		params.MaxTokens = openai.Int(maxCompletionTokens)
+	// Some older OpenAI-compatible gateways have not implemented one or both
+	// modern fields. Negotiate only when the upstream explicitly identifies an
+	// unsupported parameter: validation fails before generation, and each field
+	// can be removed or replaced at most once under the shared deadline.
+	var completion *openai.ChatCompletion
+	for compatibilityRetries := 0; ; compatibilityRetries++ {
+		var err error
 		completion, err = c.Chat(ctx, params)
-	}
-	if err != nil {
-		return "", err
+		if err == nil {
+			break
+		}
+		if compatibilityRetries >= 2 {
+			return "", err
+		}
+
+		switch {
+		case params.MaxCompletionTokens.Valid() && isUnsupportedParameter(err, "max_completion_tokens"):
+			params.MaxCompletionTokens = param.Opt[int64]{}
+			params.MaxTokens = openai.Int(maxCompletionTokens)
+		case params.ReasoningEffort != "" && isUnsupportedParameter(err, "reasoning_effort"):
+			params.ReasoningEffort = ""
+		default:
+			return "", err
+		}
 	}
 	if len(completion.Choices) == 0 {
 		return "", errors.New("llm: upstream returned no choices")
 	}
-	return completion.Choices[0].Message.Content, nil
+	choice := completion.Choices[0]
+	if choice.FinishReason == "length" {
+		return "", errors.New("llm: upstream reached the max completion token limit before producing complete JSON")
+	}
+	if strings.TrimSpace(choice.Message.Content) == "" {
+		return "", errors.New("llm: upstream returned empty JSON content")
+	}
+	return choice.Message.Content, nil
 }
 
-func isBadRequestForParameter(err error, parameter string) bool {
+func isUnsupportedParameter(err error, parameter string) bool {
 	var apiErr *openai.Error
-	return errors.As(err, &apiErr) &&
-		apiErr.StatusCode == http.StatusBadRequest &&
-		apiErr.Param == parameter
+	if !errors.As(err, &apiErr) ||
+		apiErr.StatusCode != http.StatusBadRequest ||
+		apiErr.Param != parameter {
+		return false
+	}
+	return apiErr.Code == "unsupported_parameter" ||
+		(apiErr.Code == "" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(apiErr.Message)), "unsupported parameter"))
+}
+
+func isGPT56Family(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "gpt-5.6" || strings.HasPrefix(model, "gpt-5.6-")
 }
 
 // withDefaultTimeout returns ctx unchanged (with a no-op cancel) when it already
