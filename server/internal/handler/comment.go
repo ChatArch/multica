@@ -275,6 +275,28 @@ func foldResolvedThreads(comments []db.Comment) ([]db.Comment, map[string]foldSt
 // number of rows on a single issue.
 const commentHardCap = 2000
 
+// commentProbeLimit reads one row past the cap so a truncated read can be told
+// apart from an issue holding exactly commentHardCap comments. The difference
+// matters: a truncated read suppresses the thread fold, so a false positive on
+// the boundary would silently stop folding a complete issue.
+const commentProbeLimit = commentHardCap + 1
+
+// Budgets for parent-chain completion (completeCommentParentChains).
+//
+// commentAncestorBudget caps the extra rows the walk may add, so a response is
+// provably bounded by commentHardCap + commentAncestorBudget comments regardless
+// of thread shape. commentAncestorMaxDepth caps how many levels it climbs, which
+// bounds the number of round trips at one query per level.
+//
+// Both are needed because reply depth is genuinely unbounded in stored data: the
+// general write path saves the exact comment being replied to, so chains can run
+// far deeper than the two levels the UI usually renders. Without a budget the
+// completion pass would defeat the row cap it is meant to preserve.
+const (
+	commentAncestorBudget   = 2000
+	commentAncestorMaxDepth = 64
+)
+
 // ListComments returns comments for an issue. The default behaviour is
 // unchanged — full chronological dump capped at commentHardCap — so existing
 // callers and the desktop UI keep working as-is. Optional query params give
@@ -579,11 +601,18 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	// Apply the resolve-aware fold before anything keys off the comment set
 	// (reaction/attachment grouping, the response array): folding drops comments,
 	// and the dropped ones should not pay a reactions/attachments round-trip or
-	// appear in the response. fetchCommentsForList only ever returns complete
-	// threads on the modes fold is allowed with (default, recent, untailed
-	// thread), which is the precondition foldResolvedThreads documents.
+	// appear in the response.
+	//
+	// Skipped when the hard cap truncated the read. fetchCommentsForList closes
+	// parent chains so no reply is orphaned, but that does NOT make the threads
+	// complete — older siblings and descendants stay outside the window. Folding a
+	// partial thread produces wrong answers, not merely incomplete ones: a
+	// resolution reply outside the window makes a resolved thread look unresolved,
+	// and folded_count would report a total derived from only the retained
+	// replies. The modes fold is otherwise allowed on (--recent, untailed
+	// --thread) still return whole threads and are unaffected.
 	var foldInfo map[string]foldStat
-	if fold {
+	if fold && !result.CommentsTruncated {
 		result.Comments, foldInfo = foldResolvedThreads(result.Comments)
 	}
 
@@ -671,6 +700,11 @@ type fetchCommentsResult struct {
 	// RootStats carries per-root orientation stats keyed by comment id string.
 	// Populated only on the roots_only path; nil for every other mode.
 	RootStats map[string]rootStat
+	// CommentsTruncated reports that the hard cap dropped older comments, so the
+	// set holds partial threads. Derived from a probe read, never from the length
+	// of Comments — parent-chain completion adds rows, so the final length says
+	// nothing about whether anything was cut.
+	CommentsTruncated bool
 }
 
 // rootStat is the per-thread orientation metadata attached to each root comment
@@ -993,23 +1027,29 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
-		Limit:       commentHardCap,
+		Limit:       commentProbeLimit,
 	})
 	if err != nil {
 		return fetchCommentsResult{}, err
 	}
-	// The cap now keeps the NEWEST commentHardCap comments (MUL-5492), so a
-	// thread can be cut in half: an old root outside the window, a fresh reply
-	// inside it. Complete the parent chains before returning — the default mode
-	// is one of the modes foldResolvedThreads is allowed to run on, and it
-	// documents a COMPLETE-thread set as its precondition.
-	if len(comments) == commentHardCap {
-		comments, err = h.backfillCommentParents(ctx, issue.WorkspaceID, comments)
+	// Probe read: an issue holding exactly commentHardCap comments is complete,
+	// and calling that truncated would needlessly suppress the thread fold below.
+	truncated := len(comments) > commentHardCap
+	if truncated {
+		comments = comments[len(comments)-commentHardCap:]
+		// The cap keeps the NEWEST comments (MUL-5492), so a thread can be cut
+		// in half: an old root outside the window, a fresh reply inside it. An
+		// orphaned reply is invisible in the UI, so close the parent chains.
+		//
+		// This makes replies renderable. It does NOT make threads complete —
+		// older siblings and descendants stay outside the window — which is why
+		// the fold is disabled on a truncated read rather than run on this set.
+		comments, err = h.completeCommentParentChains(ctx, issue.ID, issue.WorkspaceID, comments)
 		if err != nil {
 			return fetchCommentsResult{}, err
 		}
 	}
-	return fetchCommentsResult{Comments: comments}, nil
+	return fetchCommentsResult{Comments: comments, CommentsTruncated: truncated}, nil
 }
 
 // backfillCommentParents re-adds the ancestors of any reply whose parent fell
@@ -1027,60 +1067,88 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 // parent_id" and renders replies by looking them up under their parent, so an
 // orphan sits in the map with no card to render it — the exact shape of MUL-1847
 // (1 root + 29 replies, root dropped, all 29 vanished from the UI while the API
-// returned them). It also violates the COMPLETE-thread precondition that
-// foldResolvedThreads documents.
+// returned them).
 //
-// The result is deliberately no longer a pure time window: backfilled ancestors
-// are older than the window floor. Completing a thread is worth more than the
-// window being describable by a single timestamp — and unlike clamping, this
-// only ever ADDS rows, so it cannot hide anything the caller would have seen.
-func (h *Handler) backfillCommentParents(ctx context.Context, workspaceID pgtype.UUID, comments []db.Comment) ([]db.Comment, error) {
-	if len(comments) == 0 {
-		return comments, nil
+// What it does NOT do: make threads complete. Older siblings and descendants of
+// a retained reply stay outside the window, so thread-level derivations
+// (foldResolvedThreads' thread_resolved and folded_count) must not be computed
+// from the result — the caller disables the fold on a truncated read instead.
+//
+// Budgets. The walk climbs at most commentAncestorMaxDepth levels and adds at
+// most commentAncestorBudget comments, so the returned set is provably bounded
+// by commentHardCap + commentAncestorBudget. An unbounded walk would defeat the
+// row cap outright: the comment write path stores the exact parent being replied
+// to, so real data can form chains far deeper than the two levels the UI usually
+// shows, and a deep chain would drag its whole ancestry back.
+//
+// When a budget is exhausted, a parent row is missing, or a parent belongs to
+// another issue or workspace, the affected replies are dropped by
+// keepRootConnected rather than returned as unrenderable orphans. Returning
+// fewer new replies is a conservative degradation that the caller already
+// signals as a truncated read; leaking another tenant's comments, returning an
+// unbounded response, or emitting orphans are all worse.
+func (h *Handler) completeCommentParentChains(ctx context.Context, issueID, workspaceID pgtype.UUID, window []db.Comment) ([]db.Comment, error) {
+	if len(window) == 0 {
+		return window, nil
 	}
 
-	present := make(map[string]struct{}, len(comments))
-	ids := make([]pgtype.UUID, len(comments))
-	for i, c := range comments {
-		present[uuidToString(c.ID)] = struct{}{}
-		ids[i] = c.ID
+	byID := make(map[string]db.Comment, len(window)+commentAncestorBudget/8)
+	for _, c := range window {
+		byID[uuidToString(c.ID)] = c
 	}
 
-	orphaned := false
-	for _, c := range comments {
-		if !c.ParentID.Valid {
-			continue
+	added := 0
+	for depth := 0; depth < commentAncestorMaxDepth; depth++ {
+		// Distinct parents referenced by the current set but not in it. Dedup is
+		// what keeps many replies sharing one ancestor from fetching it twice.
+		var missing []pgtype.UUID
+		seen := make(map[string]struct{})
+		for _, c := range byID {
+			if !c.ParentID.Valid {
+				continue
+			}
+			pid := uuidToString(c.ParentID)
+			if _, have := byID[pid]; have {
+				continue
+			}
+			if _, dup := seen[pid]; dup {
+				continue
+			}
+			seen[pid] = struct{}{}
+			missing = append(missing, c.ParentID)
 		}
-		if _, ok := present[uuidToString(c.ParentID)]; !ok {
-			orphaned = true
+		if len(missing) == 0 {
 			break
 		}
-	}
-	if !orphaned {
-		return comments, nil
-	}
+		if added+len(missing) > commentAncestorBudget {
+			break
+		}
 
-	rows, err := h.Queries.ListMissingAncestorComments(ctx, db.ListMissingAncestorCommentsParams{
-		Ids:         ids,
-		IssueID:     comments[0].IssueID,
-		WorkspaceID: workspaceID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]db.Comment, 0, len(comments)+len(rows))
-	out = append(out, comments...)
-	for _, r := range rows {
-		out = append(out, db.Comment{
-			ID: r.ID, IssueID: r.IssueID, AuthorType: r.AuthorType, AuthorID: r.AuthorID,
-			Content: r.Content, Type: r.Type, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
-			ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
-			ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
-			SourceTaskID: r.SourceTaskID,
+		// Tenant-scoped: a parent in another issue or workspace simply does not
+		// come back, and keepRootConnected then prunes the reply that pointed at
+		// it. The filter is on every level, not just the first.
+		rows, err := h.Queries.ListCommentsByIDsForIssue(ctx, db.ListCommentsByIDsForIssueParams{
+			Ids:         missing,
+			IssueID:     issueID,
+			WorkspaceID: workspaceID,
 		})
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, r := range rows {
+			id := uuidToString(r.ID)
+			if _, have := byID[id]; have {
+				continue
+			}
+			byID[id] = r
+			added++
+		}
 	}
-	// Restore the ascending (created_at, id) contract every caller relies on.
+
+	out := keepRootConnected(byID)
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].CreatedAt.Time.Equal(out[j].CreatedAt.Time) {
 			return out[i].CreatedAt.Time.Before(out[j].CreatedAt.Time)
@@ -1088,6 +1156,61 @@ func (h *Handler) backfillCommentParents(ctx context.Context, workspaceID pgtype
 		return bytes.Compare(out[i].ID.Bytes[:], out[j].ID.Bytes[:]) < 0
 	})
 	return out, nil
+}
+
+// keepRootConnected returns only the comments whose parent chain terminates at a
+// root (parent_id IS NULL) inside the set.
+//
+// A comment whose chain leaves the set, loops, or dead-ends is unrenderable: the
+// UI needs a top-level card to hang the thread from. Dropping such a comment also
+// drops its descendants, because their chains run through it and therefore fail
+// the same test — no separate descendant pass is needed.
+//
+// The walk is bounded by the visited set, so a cycle in stored data terminates
+// instead of hanging. Real cycles are impossible via the write path, but a graph
+// walk over stored data should never assume that.
+func keepRootConnected(byID map[string]db.Comment) []db.Comment {
+	connected := make(map[string]bool, len(byID))
+
+	for id := range byID {
+		if _, decided := connected[id]; decided {
+			continue
+		}
+		var path []string
+		visited := make(map[string]struct{})
+		verdict := false
+		for cur := id; ; {
+			if v, decided := connected[cur]; decided {
+				verdict = v
+				break
+			}
+			if _, loop := visited[cur]; loop {
+				break // cycle: nothing on this path reaches a root
+			}
+			c, present := byID[cur]
+			if !present {
+				break // chain leaves the set
+			}
+			visited[cur] = struct{}{}
+			path = append(path, cur)
+			if !c.ParentID.Valid {
+				verdict = true // a real root, inside the set
+				break
+			}
+			cur = uuidToString(c.ParentID)
+		}
+		for _, p := range path {
+			connected[p] = verdict
+		}
+	}
+
+	out := make([]db.Comment, 0, len(byID))
+	for id, c := range byID {
+		if connected[id] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 type CreateCommentRequest struct {

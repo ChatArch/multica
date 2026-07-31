@@ -16,12 +16,15 @@ import (
 // timelineHardCap rows the cap discarded the NEWEST ones and the timeline
 // silently appeared to stop at some point in the past.
 //
-// These tests pin three properties:
+// These tests pin four properties:
 //  1. the cap keeps the newest window, not the oldest;
-//  2. the window is contiguous — no region where only one of
-//     (comments, activities) survives, which would look like a complete
-//     history while missing half of it;
-//  3. truncation is reported instead of being silent.
+//  2. each list is capped independently — activity truncation must never delete
+//     comments, so the range may legitimately hold comments older than the
+//     oldest activity;
+//  3. every retained reply arrives with a parent chain that reaches a root in
+//     the same response, because an orphaned reply is invisible in the UI;
+//  4. truncation is reported instead of being silent, naming which kinds were
+//     affected.
 
 // fetchTimelineRecorder issues GET /timeline and returns the raw recorder so
 // tests can assert on response headers as well as the body.
@@ -244,6 +247,53 @@ func assertNoOrphanedReplies(t *testing.T, entries []TimelineEntry) {
 			t.Errorf("comment %s references parent %s which is absent from the response", e.ID, *e.ParentID)
 		}
 	}
+}
+
+// TestListTimeline_BackfilledRootKeepsQuickActionID guards the projection of
+// newly-added comment columns through parent-chain completion. An earlier
+// revision hand-copied SQL rows into db.Comment field by field, which silently
+// dropped quick_action_id when main added it — a backfilled quick-action root
+// would have rendered as a raw prompt instead of a quick-action card. The query
+// now returns db.Comment directly so new columns cannot be lost this way.
+func TestListTimeline_BackfilledRootKeepsQuickActionID(t *testing.T) {
+	issueID := createIssueForTimeline(t, "backfilled root keeps quick_action_id")
+
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	quickActionID := "11111111-2222-3333-4444-555555555555"
+	var rootID string
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type,
+		                     created_at, updated_at, quick_action_id)
+		VALUES ($1, $2, 'member', $3, 'quick action root', 'comment', $4, $4, $5)
+		RETURNING id
+	`, issueID, testWorkspaceID, testUserID, base, quickActionID).Scan(&rootID)
+	if err != nil {
+		t.Fatalf("seed quick-action root: %v", err)
+	}
+
+	// Push the root out of the window, then reply to it from inside the window.
+	bulkSeedComments(t, issueID, base.Add(time.Minute), timelineHardCap+50)
+	seedComment(t, issueID, time.Now().UTC().Truncate(time.Second), "reply to quick action root", &rootID)
+
+	w := fetchTimelineRecorder(t, issueID, "")
+	entries := decodeTimelineEntries(t, w)
+
+	var root *TimelineEntry
+	for i := range entries {
+		if entries[i].ID == rootID {
+			root = &entries[i]
+		}
+	}
+	if root == nil {
+		t.Fatal("the quick-action root was not backfilled")
+	}
+	if root.QuickActionID == nil {
+		t.Fatal("quick_action_id was dropped on the backfilled root: the UI would show a raw prompt instead of a quick-action card")
+	}
+	if *root.QuickActionID != quickActionID {
+		t.Errorf("quick_action_id = %s, want %s", *root.QuickActionID, quickActionID)
+	}
+	assertNoOrphanedReplies(t, entries)
 }
 
 // TestListTimeline_ExactlyAtCapIsNotTruncated pins the cap+1 probe read. An

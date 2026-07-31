@@ -189,10 +189,14 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	// in the UI: the timeline groups top-level entries as "activities + comments
 	// with no parent_id" and looks replies up under their parent, so an orphan
 	// sits in the map with no card to render it (MUL-1847 / #2263 was exactly
-	// this). Pull the missing ancestors back before merging.
+	// this). Close the parent chains before merging.
+	//
+	// This makes replies renderable; it does not make threads complete. The
+	// timeline has no thread-level derivation to get wrong, so that is enough
+	// here — the comment list endpoint additionally suppresses its fold.
 	if commentsTruncated {
 		var err error
-		comments, err = h.backfillCommentParents(ctx, issue.WorkspaceID, comments)
+		comments, err = h.completeCommentParentChains(ctx, issue.ID, issue.WorkspaceID, comments)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to complete comment threads")
 			return

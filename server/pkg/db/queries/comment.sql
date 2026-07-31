@@ -3,8 +3,14 @@
 --
 -- Same shape and same reason as ListActivitiesForIssue: the inner query takes
 -- the window with the keyset ordering so the cap discards the OLDEST rows, and
--- the outer query restores the ascending contract callers rely on. Backed by
--- idx_comment_issue_keyset (migration 068).
+-- the outer query restores the ascending contract callers rely on. The ordering
+-- is satisfied by idx_comment_issue_keyset (migration 068) without a sort step.
+--
+-- A newest-N window is a suffix of the timeline, and unlike a prefix it is NOT
+-- closed under "parent of": a reply is always newer than its parent, so an old
+-- thread root can fall outside the window while a fresh reply to it stays
+-- inside. Callers that render threads must close the parent chains afterwards —
+-- see completeCommentParentChains (MUL-5492).
 --
 -- The cap is still purely defensive here — issue p99 is ~30 comments and the max
 -- ever observed in prod is ~1.1k — but "defensive" is not a reason to drop the
@@ -17,41 +23,21 @@ SELECT * FROM (
 ) AS recent
 ORDER BY created_at ASC, id ASC;
 
--- name: ListMissingAncestorComments :many
--- The ancestors of @ids that are NOT themselves in @ids, walking parent_id
--- upward to each thread root.
+-- name: ListCommentsByIDsForIssue :many
+-- The subset of @ids that exists within this issue and workspace.
 --
--- Restores the "every retained reply's parent is in the same set" invariant
--- after a newest-N window cut a thread in half. Taking the OLDEST n comments
--- could never do that — a reply is always newer than its parent, so a prefix of
--- the timeline is closed under "parent of" — but a newest-N window is a suffix
--- and is not: an old thread root falls outside the window while a fresh reply to
--- it stays inside.
---
--- An orphan is not merely mis-nested, it is invisible. The timeline groups
--- top-level entries as "activities + comments with no parent_id" and renders
--- replies by looking them up under their parent, so a reply whose parent is
--- absent sits in the map with no card to render it (MUL-1847 / #2263). It also
--- breaks the COMPLETE-thread precondition foldResolvedThreads documents.
---
--- Recursive rather than a single parent_id lookup because the schema permits
--- reply-of-reply; the write path collapses replies to the thread root today but
--- does not enforce it, and the read paths already handle depth > 1.
-WITH RECURSIVE ancestors AS (
-    SELECT p.*
-    FROM comment p
-    JOIN comment child ON child.parent_id = p.id
-    WHERE child.id = ANY(@ids::uuid[])
-      AND p.issue_id = @issue_id
-      AND p.workspace_id = @workspace_id
-    UNION
-    SELECT p.*
-    FROM comment p
-    JOIN ancestors a ON a.parent_id = p.id
-)
-SELECT a.* FROM ancestors a
-WHERE NOT (a.id = ANY(@ids::uuid[]))
-ORDER BY a.created_at ASC, a.id ASC;
+-- Used to walk parent chains one level at a time (see completeCommentParentChains).
+-- Deliberately NOT a recursive CTE: an earlier revision walked parent_id upward
+-- in SQL, which had no depth bound — a deep chain could pull tens of thousands of
+-- ancestors back and defeat the whole point of the row cap — and its recursive
+-- branch matched on parent_id alone, so a stray cross-workspace parent reference
+-- would have dragged another tenant's comments into the response. Both tenant
+-- columns are required here on every level, and the caller owns the budget.
+SELECT * FROM comment
+WHERE id = ANY(@ids::uuid[])
+  AND issue_id = @issue_id
+  AND workspace_id = @workspace_id
+ORDER BY created_at ASC, id ASC;
 
 -- name: ListCommentsSinceForIssue :many
 -- Comments created strictly after $3 in chronological order, capped at $4.
@@ -73,9 +59,10 @@ LIMIT $4;
 -- page of size @row_limit), so the recursive `membership` walk only expands
 -- those threads' subtrees instead of every thread in the issue. membership
 -- labels each comment with its thread root by walking down from the selected
--- roots, so the counts stay correct even if the schema ever allows
--- reply-of-reply (the write path collapses to root today, but does not enforce
--- it). Mirrors ListRecentThreadCommentsForIssue's stats CTE.
+-- roots, so the counts stay correct at any reply depth. Depth > 2 is genuinely
+-- reachable: the general write path stores the exact comment being replied to
+-- (see CreateComment), and only the agent path collapses to the thread root.
+-- Mirrors ListRecentThreadCommentsForIssue's stats CTE.
 WITH RECURSIVE selected_roots AS (
     SELECT c.id, c.created_at
     FROM comment c

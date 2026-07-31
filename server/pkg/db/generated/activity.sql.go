@@ -162,9 +162,11 @@ type ListActivitiesForIssueParams struct {
 // The NEWEST $2 activities for an issue, returned in chronological order.
 //
 // The cap has to bite at the OLD end, not the new one. The inner query takes
-// the window with the keyset ordering (created_at DESC, id DESC) — served as an
-// index-only scan by idx_activity_log_issue_keyset, migration 068 — and the
-// outer query re-sorts it ascending so every caller keeps the chronological
+// the window with the keyset ordering (created_at DESC, id DESC), which
+// idx_activity_log_issue_keyset (migration 068) satisfies without a sort step —
+// it is not an index-only scan, since the index does not cover the columns
+// SELECT * needs, so the heap is still read for the rows in the window. The
+// outer query re-sorts ascending so every caller keeps the chronological
 // contract it already had.
 //
 // Capping with ORDER BY created_at ASC instead discards the newest rows, which
