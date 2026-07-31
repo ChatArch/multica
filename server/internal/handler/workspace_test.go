@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -246,6 +247,141 @@ RETURNING id
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_property WHERE id = $1`, propertyID)
 	})
 
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_runtime (
+	workspace_id, name, runtime_mode, provider, status, device_info, metadata, owner_id
+)
+VALUES ($1, 'Workspace delete runtime', 'cloud', 'delete-test', 'offline', '', '{}'::jsonb, $2)
+RETURNING id
+`, wsID, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("create workspace runtime: %v", err)
+	}
+
+	var agentID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO agent (
+	workspace_id, name, runtime_mode, runtime_config, runtime_id, owner_id
+)
+VALUES ($1, 'Workspace delete agent', 'cloud', '{}'::jsonb, $2, $3)
+RETURNING id
+`, wsID, runtimeID, testUserID).Scan(&agentID); err != nil {
+		t.Fatalf("create workspace agent: %v", err)
+	}
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_type, creator_id)
+VALUES ($1, 'Workspace delete issue', 'member', $2)
+RETURNING id
+`, wsID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create workspace issue: %v", err)
+	}
+
+	var autopilotID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO autopilot (
+	workspace_id, title, assignee_id, created_by_type, created_by_id
+)
+VALUES ($1, 'Workspace delete autopilot', $2, 'member', $3)
+RETURNING id
+`, wsID, agentID, testUserID).Scan(&autopilotID); err != nil {
+		t.Fatalf("create workspace autopilot: %v", err)
+	}
+
+	var autopilotRunID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO autopilot_run (autopilot_id, source, status, issue_id)
+VALUES ($1, 'manual', 'completed', $2)
+RETURNING id
+`, autopilotID, issueID).Scan(&autopilotRunID); err != nil {
+		t.Fatalf("create workspace autopilot run: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_task_queue (
+	agent_id, runtime_id, issue_id, status, priority, autopilot_run_id
+)
+VALUES ($1, $2, $3, 'completed', 0, $4)
+RETURNING id
+`, agentID, runtimeID, issueID, autopilotRunID).Scan(&taskID); err != nil {
+		t.Fatalf("create workspace task: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+UPDATE autopilot_run SET task_id = $2 WHERE id = $1
+`, autopilotRunID, taskID); err != nil {
+		t.Fatalf("link workspace autopilot run to task: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens)
+VALUES ($1, 'delete-test', 'workspace-delete', 10, 5)
+`, taskID); err != nil {
+		t.Fatalf("create workspace task usage: %v", err)
+	}
+
+	var rollupRuntimeID, rollupAgentID string
+	if err := testPool.QueryRow(ctx, `SELECT gen_random_uuid(), gen_random_uuid()`).Scan(&rollupRuntimeID, &rollupAgentID); err != nil {
+		t.Fatalf("create rollup fixture IDs: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO task_usage_hourly (
+	bucket_hour, workspace_id, runtime_id, agent_id, provider, model,
+	input_tokens, output_tokens, task_count, event_count
+)
+VALUES (date_trunc('hour', now()), $1, $2, $3, 'delete-test', 'workspace-rollup', 10, 5, 1, 1)
+`, wsID, rollupRuntimeID, rollupAgentID); err != nil {
+		t.Fatalf("create workspace hourly usage: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO task_usage_hourly_dirty (
+	bucket_hour, workspace_id, runtime_id, agent_id, provider, model
+)
+VALUES (date_trunc('hour', now()), $1, $2, $3, 'delete-test', 'workspace-rollup')
+`, wsID, rollupRuntimeID, rollupAgentID); err != nil {
+		t.Fatalf("create workspace dirty usage: %v", err)
+	}
+
+	var runtimeProfileID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO runtime_profile (
+	workspace_id, display_name, protocol_family, command_name, created_by
+)
+VALUES ($1, 'Delete cleanup profile', 'codex', 'codex', $2)
+RETURNING id
+`, wsID, testUserID).Scan(&runtimeProfileID); err != nil {
+		t.Fatalf("create runtime profile: %v", err)
+	}
+
+	var ruleVersionID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO autopilot_rule_version (
+	autopilot_id, workspace_id, published_by_type, published_by_id
+)
+VALUES (gen_random_uuid(), $1, 'member', $2)
+RETURNING id
+`, wsID, testUserID).Scan(&ruleVersionID); err != nil {
+		t.Fatalf("create autopilot rule version: %v", err)
+	}
+
+	const pendingObjectKey = "workspace-delete-pending-object"
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO channel_media_pending_object (
+	storage_key, workspace_id, chat_message_id, storage_url
+)
+VALUES ($1, $2, gen_random_uuid(), 's3://workspace-delete/pending-object')
+`, pendingObjectKey, wsID); err != nil {
+		t.Fatalf("create pending channel media object: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, runtimeProfileID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM autopilot_rule_version WHERE id = $1`, ruleVersionID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM channel_media_pending_object WHERE storage_key = $1`, pendingObjectKey)
+	})
+
 	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+wsID, nil)
 	req = withURLParam(req, "id", wsID)
@@ -285,6 +421,55 @@ RETURNING id
 	}
 	if propertyCount != 0 {
 		t.Fatalf("issue properties were not cleaned up for deleted workspace: %d", propertyCount)
+	}
+
+	for _, table := range []string{
+		"task_usage_hourly_dirty",
+		"task_usage_hourly",
+		"runtime_profile",
+		"autopilot_rule_version",
+	} {
+		var count int
+		if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM `+table+` WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
+			t.Fatalf("verify %s cleanup: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows survived workspace delete: %d", table, count)
+		}
+	}
+
+	var pendingObjectState string
+	if err := testPool.QueryRow(ctx, `
+SELECT state
+FROM channel_media_pending_object
+WHERE storage_key = $1
+`, pendingObjectKey).Scan(&pendingObjectState); err != nil {
+		t.Fatalf("verify pending channel media object handoff: %v", err)
+	}
+	if pendingObjectState != "deleting" {
+		t.Fatalf("pending channel media object state = %q, want deleting", pendingObjectState)
+	}
+}
+
+func TestDeleteWorkspace_DirtyTriggersHaveTeardownGuard(t *testing.T) {
+	ctx := context.Background()
+	for _, triggerName := range []string{
+		"trg_atq_dirty_hourly",
+		"trg_issue_delete_dirty_hourly",
+		"trg_tu_dirty_hourly",
+	} {
+		var definition string
+		if err := testPool.QueryRow(ctx, `
+SELECT pg_get_triggerdef(oid)
+FROM pg_trigger
+WHERE tgname = $1
+  AND NOT tgisinternal
+`, triggerName).Scan(&definition); err != nil {
+			t.Fatalf("read trigger %s: %v", triggerName, err)
+		}
+		if !strings.Contains(definition, "multica.workspace_teardown") {
+			t.Fatalf("trigger %s does not guard workspace teardown: %s", triggerName, definition)
+		}
 	}
 }
 
