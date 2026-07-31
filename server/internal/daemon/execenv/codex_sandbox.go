@@ -433,8 +433,10 @@ func stripLegacySandboxDirectives(content string) string {
 // twice produces the same file contents. The file is created if it doesn't
 // exist.
 //
-// The function logs (at warn level) when it falls back to danger-full-access
-// on macOS so the incident is visible in daemon logs.
+// The function logs (at warn level) whenever the resolved mode is
+// danger-full-access — the Linux default, the macOS seatbelt fallback, and the
+// Windows no-native-sandbox fallback alike — so that every unsandboxed task is
+// visible in daemon logs.
 func ensureCodexSandboxConfig(configPath string, policy codexSandboxPolicy, detectedVersion string, logger *slog.Logger) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {

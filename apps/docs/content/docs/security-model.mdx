@@ -9,7 +9,9 @@ When an agent picks up a task, the daemon spawns an AI coding tool (Codex, Claud
 
 ## The boundary is the daemon user
 
-A task runs with the **full permissions of the operating-system user running the daemon**. It can read and write every file that user can, use that user's credentials, and reach the network without restriction.
+By default a task runs with the **full permissions of the operating-system user running the daemon**. It can read and write every file that user can, use that user's credentials, and reach the network without restriction.
+
+Multica makes no filesystem-sandbox guarantee. One narrow exception exists today — Windows, where you have explicitly opted into Codex's native sandbox — but which platform and configuration combinations sandbox anything is a compatibility detail that moves with tool versions. Treat every task as unsandboxed and put the boundary outside the daemon.
 
 <Callout type="warning">
 Multica does not sandbox the filesystem for you. If the daemon runs as your personal user account, a task can read your SSH keys, edit your shell profile, and delete your documents. Isolation has to come from the boundary you put the daemon in.
@@ -39,11 +41,11 @@ These are real, but they are conveniences and blast-radius reduction — not a s
 
 ## What is not a boundary
 
-- **The coding tool's own sandbox and approval settings.** Multica runs agents unattended, which means approval prompts are answered automatically and the filesystem sandbox is off. Codex runs with `sandbox_mode = "danger-full-access"`, Claude Code with `--permission-mode bypassPermissions`.
+- **The coding tool's own sandbox and approval settings.** Multica runs agents unattended, so approval prompts are answered automatically. On the default path the filesystem sandbox is off as well: Codex runs with `sandbox_mode = "danger-full-access"` and Claude Code with `--permission-mode bypassPermissions`. The exception is Windows — if you explicitly configure Codex's native sandbox (`windows.sandbox = "unelevated"` or `"elevated"`), Multica honors that opt-in and keeps `workspace-write` for those tasks. Worth doing where it fits, but it is one tool on one platform and it does not change how you should scope the daemon user.
 - **Your `HOME` directory layout.** Tasks inherit the daemon user's real `HOME` and `XDG_*` variables, which is what makes host CLIs (`gh`, `aws`, `kubectl`, `gcloud`, `glab`) work inside a task exactly as they do in your shell. It also means everything under that home is reachable.
 
 <Callout>
-On Linux, Codex tasks previously ran under the `workspace-write` sandbox with a redirected per-task `HOME`. That was removed: it left host CLIs unconfigured inside tasks, and because it restricted writes only, it never prevented a task from reading and exfiltrating credentials. Linux now matches macOS and Windows.
+On Linux, Codex tasks previously ran under the `workspace-write` sandbox with a redirected per-task `HOME`. That was removed: it left host CLIs unconfigured inside tasks, and because it restricted writes only, it never prevented a task from reading and exfiltrating credentials. Linux now matches the macOS and Windows default.
 </Callout>
 
 ## Checking what a task ran with

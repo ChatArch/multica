@@ -86,9 +86,10 @@ type CodexHomeOptions struct {
 }
 
 // prepareCodexHome is a thin wrapper around prepareCodexHomeWithOpts kept for
-// tests that don't care about platform-aware sandbox configuration. It
-// assumes a Linux-like environment where workspace-write + network_access
-// works correctly.
+// tests that don't care about platform-aware sandbox configuration. It pins
+// GOOS to linux, which resolves to the danger-full-access default (MUL-5578),
+// so the sandbox block it writes is stable regardless of the host running the
+// test.
 func prepareCodexHome(codexHome string, logger *slog.Logger) error {
 	return prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger)
 }
