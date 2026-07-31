@@ -83,6 +83,23 @@ func bulkSeedComments(t *testing.T, issueID string, start time.Time, n int) {
 	}
 }
 
+// bulkSeedReplies inserts n direct replies to parentID one second apart.
+func bulkSeedReplies(t *testing.T, issueID, parentID string, start time.Time, n int) {
+	t.Helper()
+	_, err := testPool.Exec(context.Background(), `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type,
+		                     created_at, updated_at, parent_id)
+		SELECT $1, $2, 'member', $3, 'bulk reply ' || g, 'comment',
+		       $4::timestamptz + (g * interval '1 second'),
+		       $4::timestamptz + (g * interval '1 second'),
+		       $5
+		FROM generate_series(0, $6::int - 1) AS g
+	`, issueID, testWorkspaceID, testUserID, start, parentID, n)
+	if err != nil {
+		t.Fatalf("bulk seed %d replies: %v", n, err)
+	}
+}
+
 // seedComment inserts a single comment at an exact timestamp, optionally as a
 // reply, and returns its id.
 func seedComment(t *testing.T, issueID string, at time.Time, content string, parentID *string) string {
@@ -228,6 +245,134 @@ func TestListTimeline_NoOrphanedReplies(t *testing.T) {
 		t.Error("the reply's parent (an old thread root) was not backfilled: the reply would be invisible in the UI")
 	}
 	assertNoOrphanedReplies(t, entries)
+}
+
+// TestListTimeline_RootResolvedThreadIsComplete is the root-resolution variant
+// of the partial-thread regression. The timeline UI folds immediately when the
+// root has resolved_at, so returning only a backfilled root plus the newest
+// reply would make its collapsed count and author list look complete while five
+// older replies were missing.
+func TestListTimeline_RootResolvedThreadIsComplete(t *testing.T) {
+	issueID := createIssueForTimeline(t, "root-resolved thread is complete")
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	resolvedAt := base
+	rootID := seedCommentRow(t, issueID, base, "settled topic", nil, &resolvedAt)
+	oldReplyIDs := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		oldReplyIDs = append(oldReplyIDs, seedCommentRow(
+			t,
+			issueID,
+			base.Add(time.Duration(i+1)*time.Second),
+			"old reply",
+			&rootID,
+			nil,
+		))
+	}
+
+	bulkSeedComments(t, issueID, base.Add(time.Minute), timelineHardCap+50)
+	freshReplyID := seedCommentRow(
+		t,
+		issueID,
+		time.Now().UTC().Truncate(time.Second),
+		"fresh reply",
+		&rootID,
+		nil,
+	)
+
+	w := fetchTimelineRecorder(t, issueID, "")
+	entries := decodeTimelineEntries(t, w)
+	byID := make(map[string]TimelineEntry, len(entries))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+
+	if _, ok := byID[rootID]; !ok {
+		t.Fatal("resolved root is missing")
+	}
+	for _, id := range append(oldReplyIDs, freshReplyID) {
+		if _, ok := byID[id]; !ok {
+			t.Errorf("resolved thread is partial: comment %s is missing", id)
+		}
+	}
+	assertNoOrphanedReplies(t, entries)
+}
+
+// TestListTimeline_ReplyResolutionOutsideWindowIsRestored covers the opposite
+// stale-state failure. When the resolution reply falls outside the newest
+// window but a later reply remains, deriveThreadResolution would otherwise see
+// no resolution and render an already-resolved thread as unresolved.
+func TestListTimeline_ReplyResolutionOutsideWindowIsRestored(t *testing.T) {
+	issueID := createIssueForTimeline(t, "reply resolution is restored")
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	rootID := seedCommentRow(t, issueID, base, "root question", nil, nil)
+	resolvedAt := base.Add(time.Second)
+	resolutionID := seedCommentRow(
+		t,
+		issueID,
+		resolvedAt,
+		"the conclusion",
+		&rootID,
+		&resolvedAt,
+	)
+
+	bulkSeedComments(t, issueID, base.Add(time.Minute), timelineHardCap+50)
+	freshReplyID := seedCommentRow(
+		t,
+		issueID,
+		time.Now().UTC().Truncate(time.Second),
+		"later follow-up",
+		&rootID,
+		nil,
+	)
+
+	w := fetchTimelineRecorder(t, issueID, "")
+	entries := decodeTimelineEntries(t, w)
+	byID := make(map[string]TimelineEntry, len(entries))
+	for _, entry := range entries {
+		byID[entry.ID] = entry
+	}
+
+	resolution, ok := byID[resolutionID]
+	if !ok {
+		t.Fatal("resolution reply outside the newest window was not restored")
+	}
+	if resolution.ResolvedAt == nil {
+		t.Fatal("restored resolution reply lost resolved_at")
+	}
+	if _, ok := byID[freshReplyID]; !ok {
+		t.Fatal("fresh reply is missing")
+	}
+	assertNoOrphanedReplies(t, entries)
+}
+
+// TestListTimeline_OversizedAffectedThreadIsDroppedWhole pins the bounded
+// fallback. If one cut thread cannot fit in the shared context budget, returning
+// its root plus an arbitrary suffix would let old clients fold partial data.
+// The whole affected thread must disappear while truncation remains explicit.
+func TestListTimeline_OversizedAffectedThreadIsDroppedWhole(t *testing.T) {
+	issueID := createIssueForTimeline(t, "oversized affected thread is dropped")
+
+	base := time.Now().UTC().Add(-6 * time.Hour).Truncate(time.Second)
+	rootID := seedComment(t, issueID, base, "oversized thread root", nil)
+	bulkSeedReplies(
+		t,
+		issueID,
+		rootID,
+		base.Add(time.Second),
+		commentHardCap+commentThreadContextBudget+1,
+	)
+
+	w := fetchTimelineRecorder(t, issueID, "")
+	entries := decodeTimelineEntries(t, w)
+	commentCount, _ := countByType(entries)
+	if commentCount != 0 {
+		t.Errorf("comment count = %d, want 0: an over-budget affected thread must be dropped whole", commentCount)
+	}
+	if got := w.Header().Get(HeaderTimelineTruncated); got != "comment" {
+		t.Errorf("%s = %q, want \"comment\"", HeaderTimelineTruncated, got)
+	}
 }
 
 // assertNoOrphanedReplies pins the invariant issue-detail.tsx relies on and

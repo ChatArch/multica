@@ -133,8 +133,8 @@ type timelinePaginatedResponse struct {
 //
 // When the hard cap fires each list is independently reduced to its newest
 // entries and X-Timeline-Truncated names which kinds were affected. Comment
-// threads are completed afterwards, so a retained reply always arrives with its
-// parent chain even when that chain predates the window (MUL-5492).
+// threads cut by the window are completed afterwards within a bounded context
+// budget; a thread that cannot be completed is omitted as one unit (MUL-5492).
 func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
@@ -181,22 +181,18 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	// Not clamping costs only activity density in the older part of the range,
 	// which is metadata, not content — and it is reported rather than hidden.
 	// It also keeps the comment set from being cut at an arbitrary row, which is
-	// what produced orphaned replies (see backfillCommentParents).
+	// why completeCommentThreads repairs any affected thread below.
 	comments, commentsTruncated := takeNewest(comments)
 	activities, activitiesTruncated := takeNewest(activities)
 
-	// A retained reply whose parent fell outside the comment window is invisible
-	// in the UI: the timeline groups top-level entries as "activities + comments
-	// with no parent_id" and looks replies up under their parent, so an orphan
-	// sits in the map with no card to render it (MUL-1847 / #2263 was exactly
-	// this). Close the parent chains before merging.
-	//
-	// This makes replies renderable; it does not make threads complete. The
-	// timeline has no thread-level derivation to get wrong, so that is enough
-	// here — the comment list endpoint additionally suppresses its fold.
+	// Timeline clients derive resolution bars, author lists, and folded counts
+	// from the comments in this response. A parent-only repair would therefore
+	// make a partial thread look complete. Restore all missing siblings and
+	// descendants for affected roots within the shared context budget; if the
+	// walk cannot prove a thread complete, omit that thread as one unit.
 	if commentsTruncated {
 		var err error
-		comments, err = h.completeCommentParentChains(ctx, issue.ID, issue.WorkspaceID, comments)
+		comments, err = h.completeCommentThreads(ctx, issue.ID, issue.WorkspaceID, comments)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to complete comment threads")
 			return

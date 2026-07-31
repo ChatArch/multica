@@ -440,6 +440,77 @@ func (q *Queries) HasAgentRepliedInThread(ctx context.Context, arg HasAgentRepli
 	return has_replied, err
 }
 
+const listChildCommentsForParents = `-- name: ListChildCommentsForParents :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id FROM comment
+WHERE parent_id = ANY($1::uuid[])
+  AND issue_id = $2
+  AND workspace_id = $3
+  AND (created_at, id) <= ($4::timestamptz, $5::uuid)
+ORDER BY parent_id ASC, created_at ASC, id ASC
+LIMIT $6
+`
+
+type ListChildCommentsForParentsParams struct {
+	ParentIds   []pgtype.UUID      `json:"parent_ids"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ThroughAt   pgtype.Timestamptz `json:"through_at"`
+	ThroughID   pgtype.UUID        `json:"through_id"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+// Fetch one descendant level for a bounded set of parent comments. Each parent
+// maps back to its thread root in the Go breadth-first walk, avoiding one query
+// per root.
+//
+// Both tenant predicates apply at every level. row_limit is always a probe
+// limit owned by completeCommentThreads; it prevents a wide level from defeating
+// the response budget. through_at/through_id pin the walk to the newest row in
+// the original window, so replies created concurrently are left to realtime
+// delivery instead of making the multi-query snapshot internally inconsistent.
+func (q *Queries) ListChildCommentsForParents(ctx context.Context, arg ListChildCommentsForParentsParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listChildCommentsForParents,
+		arg.ParentIds,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.ThroughAt,
+		arg.ThroughID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCommentsByIDsForIssue = `-- name: ListCommentsByIDsForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id FROM comment
 WHERE id = ANY($1::uuid[])
@@ -456,7 +527,7 @@ type ListCommentsByIDsForIssueParams struct {
 
 // The subset of @ids that exists within this issue and workspace.
 //
-// Used to walk parent chains one level at a time (see completeCommentParentChains).
+// Used to walk parent chains one level at a time (see completeCommentThreads).
 // Deliberately NOT a recursive CTE: an earlier revision walked parent_id upward
 // in SQL, which had no depth bound — a deep chain could pull tens of thousands of
 // ancestors back and defeat the whole point of the row cap — and its recursive
@@ -520,7 +591,8 @@ type ListCommentsForIssueParams struct {
 // Same shape and same reason as ListActivitiesForIssue: the inner query takes
 // the window with the keyset ordering so the cap discards the OLDEST rows, and
 // the outer query restores the ascending contract callers rely on. The ordering
-// is satisfied by idx_comment_issue_keyset (migration 068) without a sort step.
+// of the inner window is satisfied by idx_comment_issue_keyset (migration 068);
+// the outer query sorts that bounded window back into chronological order.
 //
 // A newest-N window is a suffix of the timeline, and unlike a prefix it is NOT
 // closed under "parent of": a reply is always newer than its parent, so an old

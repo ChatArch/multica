@@ -4,7 +4,8 @@
 -- Same shape and same reason as ListActivitiesForIssue: the inner query takes
 -- the window with the keyset ordering so the cap discards the OLDEST rows, and
 -- the outer query restores the ascending contract callers rely on. The ordering
--- is satisfied by idx_comment_issue_keyset (migration 068) without a sort step.
+-- of the inner window is satisfied by idx_comment_issue_keyset (migration 068);
+-- the outer query sorts that bounded window back into chronological order.
 --
 -- A newest-N window is a suffix of the timeline, and unlike a prefix it is NOT
 -- closed under "parent of": a reply is always newer than its parent, so an old
@@ -26,7 +27,7 @@ ORDER BY created_at ASC, id ASC;
 -- name: ListCommentsByIDsForIssue :many
 -- The subset of @ids that exists within this issue and workspace.
 --
--- Used to walk parent chains one level at a time (see completeCommentParentChains).
+-- Used to walk parent chains one level at a time (see completeCommentThreads).
 -- Deliberately NOT a recursive CTE: an earlier revision walked parent_id upward
 -- in SQL, which had no depth bound — a deep chain could pull tens of thousands of
 -- ancestors back and defeat the whole point of the row cap — and its recursive
@@ -38,6 +39,24 @@ WHERE id = ANY(@ids::uuid[])
   AND issue_id = @issue_id
   AND workspace_id = @workspace_id
 ORDER BY created_at ASC, id ASC;
+
+-- name: ListChildCommentsForParents :many
+-- Fetch one descendant level for a bounded set of parent comments. Each parent
+-- maps back to its thread root in the Go breadth-first walk, avoiding one query
+-- per root.
+--
+-- Both tenant predicates apply at every level. row_limit is always a probe
+-- limit owned by completeCommentThreads; it prevents a wide level from defeating
+-- the response budget. through_at/through_id pin the walk to the newest row in
+-- the original window, so replies created concurrently are left to realtime
+-- delivery instead of making the multi-query snapshot internally inconsistent.
+SELECT * FROM comment
+WHERE parent_id = ANY(@parent_ids::uuid[])
+  AND issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND (created_at, id) <= (@through_at::timestamptz, @through_id::uuid)
+ORDER BY parent_id ASC, created_at ASC, id ASC
+LIMIT @row_limit;
 
 -- name: ListCommentsSinceForIssue :many
 -- Comments created strictly after $3 in chronological order, capped at $4.

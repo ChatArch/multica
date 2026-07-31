@@ -10,15 +10,17 @@ import (
 // newest-N window (MUL-5492) can cut a thread in half here too: an old root
 // outside the window, a fresh reply inside it.
 //
-// Two separate properties are at stake, and conflating them was the bug in the
-// previous revision of this fix:
+// Two separate properties are at stake:
 //
-//   - PARENT-CHAIN CLOSURE makes a reply renderable. completeCommentParentChains
-//     guarantees it, within explicit budgets.
+//   - PARENT-CHAIN CLOSURE makes a reply renderable.
 //   - THREAD COMPLETENESS is what foldResolvedThreads needs. Closure does NOT
 //     provide it: older siblings and descendants of a retained reply stay outside
-//     the window. Folding a partial thread produces wrong answers rather than
-//     merely incomplete ones, so the fold is suppressed on a truncated read.
+//     the window.
+//
+// completeCommentThreads now handles both: it restores a whole affected thread
+// within explicit budgets or drops that thread as one unit. The comment-list
+// endpoint still suppresses its optional fold on every truncated read so the
+// agent-facing projection keeps its conservative, explicit contract.
 
 // seedCommentRow inserts one comment at an exact timestamp and returns its id.
 // resolvedAt marks it as the thread's resolution when non-nil.
@@ -186,7 +188,7 @@ func TestListComments_RootResolvedTruncatedNoFalseFoldedCount(t *testing.T) {
 }
 
 // TestListComments_DeepChainBeyondBudgetIsPrunedNotOrphaned exercises the depth
-// budget. A chain deeper than commentAncestorMaxDepth cannot be closed, so the
+// budget. A chain deeper than commentThreadMaxDepth cannot be closed, so the
 // affected reply is dropped rather than returned as an unrenderable orphan. The
 // response must stay bounded and must terminate.
 func TestListComments_DeepChainBeyondBudgetIsPrunedNotOrphaned(t *testing.T) {
@@ -194,7 +196,7 @@ func TestListComments_DeepChainBeyondBudgetIsPrunedNotOrphaned(t *testing.T) {
 
 	base := time.Now().UTC().Add(-6 * time.Hour).Truncate(time.Second)
 	// A chain deeper than the walk is allowed to climb.
-	depth := commentAncestorMaxDepth + 6
+	depth := commentThreadMaxDepth + 6
 	rootID := seedCommentRow(t, issueID, base, "chain root", nil, nil)
 	parent := rootID
 	for i := 0; i < depth; i++ {
@@ -211,9 +213,9 @@ func TestListComments_DeepChainBeyondBudgetIsPrunedNotOrphaned(t *testing.T) {
 	}
 
 	// Bounded: window plus at most the ancestor budget.
-	if len(rows) > commentHardCap+commentAncestorBudget {
+	if len(rows) > commentHardCap+commentThreadContextBudget {
 		t.Errorf("returned %d comments, exceeds the provable bound of %d",
-			len(rows), commentHardCap+commentAncestorBudget)
+			len(rows), commentHardCap+commentThreadContextBudget)
 	}
 	// The chain could not be closed, so the deep reply is dropped rather than
 	// emitted as an orphan.
@@ -294,6 +296,136 @@ func TestListComments_CrossIssueParentNeverCrossesBoundary(t *testing.T) {
 		if c.ID == strayID {
 			t.Error("the reply with an out-of-issue parent was returned as an orphan")
 		}
+	}
+	assertNoOrphanCommentRows(t, rows)
+}
+
+// TestListComments_CrossWorkspaceParentNeverCrossesBoundary independently pins
+// the workspace predicate. The parent deliberately carries the target issue_id
+// but a different workspace_id, so retaining issue_id filtering while removing
+// workspace_id filtering must still make this test fail.
+func TestListComments_CrossWorkspaceParentNeverCrossesBoundary(t *testing.T) {
+	ctx := context.Background()
+	issueID := createIssueForTimeline(t, "cross workspace parent")
+
+	var otherWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('Comment parent boundary', 'comment-parent-boundary-' || gen_random_uuid()::text,
+		        'Foreign workspace', 'CPB')
+		RETURNING id
+	`).Scan(&otherWorkspaceID); err != nil {
+		t.Fatalf("insert foreign workspace: %v", err)
+	}
+
+	var foreignID string
+	t.Cleanup(func() {
+		if foreignID != "" {
+			// Deleting the foreign parent cascades to the anomalous reply below.
+			testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, foreignID)
+		}
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
+	})
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type,
+		                     created_at, updated_at)
+		VALUES ($1, $2, 'member', $3, 'comment belonging to another workspace', 'comment',
+		        $4, $4)
+		RETURNING id
+	`, issueID, otherWorkspaceID, testUserID, time.Now().UTC().Add(-time.Hour)).Scan(&foreignID); err != nil {
+		t.Fatalf("seed foreign-workspace comment: %v", err)
+	}
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	bulkSeedComments(t, issueID, base, commentHardCap+50)
+	strayID := seedCommentRow(
+		t,
+		issueID,
+		time.Now().UTC().Truncate(time.Second),
+		"reply with a foreign-workspace parent",
+		&foreignID,
+		nil,
+	)
+
+	_, rows := listComments(t, issueID, "")
+	if rows == nil {
+		t.Fatal("ListComments returned no rows")
+	}
+
+	for _, c := range rows {
+		if c.ID == foreignID {
+			t.Error("a comment from another workspace leaked into this workspace's response")
+		}
+		if c.ID == strayID {
+			t.Error("the reply with an out-of-workspace parent was returned as an orphan")
+		}
+	}
+	assertNoOrphanCommentRows(t, rows)
+}
+
+// TestListComments_CrossWorkspaceDescendantNeverCrossesBoundary covers the
+// downward half of completeCommentThreads. The restored root belongs to this
+// workspace, but one of its stored children does not; the batched descendant
+// query must not pull that child into the response.
+func TestListComments_CrossWorkspaceDescendantNeverCrossesBoundary(t *testing.T) {
+	ctx := context.Background()
+	issueID := createIssueForTimeline(t, "cross workspace descendant")
+
+	var otherWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('Comment descendant boundary', 'comment-descendant-boundary-' || gen_random_uuid()::text,
+		        'Foreign workspace', 'CDB')
+		RETURNING id
+	`).Scan(&otherWorkspaceID); err != nil {
+		t.Fatalf("insert foreign workspace: %v", err)
+	}
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	rootID := seedCommentRow(t, issueID, base, "old local root", nil, nil)
+	var foreignChildID string
+	t.Cleanup(func() {
+		if foreignChildID != "" {
+			testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, foreignChildID)
+		}
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
+	})
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type,
+		                     created_at, updated_at, parent_id)
+		VALUES ($1, $2, 'member', $3, 'foreign-workspace child', 'comment', $4, $4, $5)
+		RETURNING id
+	`, issueID, otherWorkspaceID, testUserID, base.Add(time.Second), rootID).Scan(&foreignChildID); err != nil {
+		t.Fatalf("seed foreign-workspace child: %v", err)
+	}
+
+	bulkSeedComments(t, issueID, base.Add(time.Minute), commentHardCap+50)
+	freshReplyID := seedCommentRow(
+		t,
+		issueID,
+		time.Now().UTC().Truncate(time.Second),
+		"fresh local reply",
+		&rootID,
+		nil,
+	)
+
+	_, rows := listComments(t, issueID, "")
+	if rows == nil {
+		t.Fatal("ListComments returned no rows")
+	}
+
+	present := make(map[string]struct{}, len(rows))
+	for _, c := range rows {
+		present[c.ID] = struct{}{}
+	}
+	if _, leaked := present[foreignChildID]; leaked {
+		t.Error("a descendant from another workspace leaked into the response")
+	}
+	if _, ok := present[rootID]; !ok {
+		t.Error("the same-workspace root was not restored")
+	}
+	if _, ok := present[freshReplyID]; !ok {
+		t.Error("the same-workspace fresh reply is missing")
 	}
 	assertNoOrphanCommentRows(t, rows)
 }
