@@ -44,15 +44,14 @@ export function resolveDocsUrl(env: RuntimeEnv): string | undefined {
 export function resolveDevRemoteApiUrl(env: RuntimeEnv): string {
   const configured = resolveRemoteApiUrl(env);
   if (configured) return configured;
-  // Same backend port chain as Makefile, scripts/local-env.sh and
-  // scripts/install.sh: PORT is the value to edit, the rest are aliases that
-  // override it. Reading only BACKEND_PORT pointed `pnpm dev` at 8080 for
-  // anyone who moved the backend by setting PORT.
+  // Next writes process.env.PORT with the frontend listener port before it
+  // evaluates next.config.ts. Treating that generic variable as a backend port
+  // would make every dev rewrite point back to the frontend itself. Only the
+  // backend-specific aliases are safe fallbacks in this process.
   const backendPort =
     env.BACKEND_PORT?.trim() ||
     env.API_PORT?.trim() ||
     env.SERVER_PORT?.trim() ||
-    env.PORT?.trim() ||
     "8080";
   return `http://localhost:${backendPort}`;
 }

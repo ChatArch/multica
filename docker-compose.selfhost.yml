@@ -19,8 +19,9 @@
 # The published values above are HOST ports; the containers always listen on
 # 8080 / 3000 internally, so changing them never needs a rebuild. PORT is the
 # variable to edit; BACKEND_PORT, API_PORT and SERVER_PORT are optional aliases
-# that override it in that order. Keep this alias order identical to Makefile,
-# scripts/local-env.sh and apps/web/config/runtime-urls.ts.
+# that override it in that order. Keep this alias order identical to Makefile
+# and scripts/local-env.sh. The web dev fallback intentionally omits PORT
+# because Next uses that variable for its own frontend listener.
 #
 # Note that *which source* wins differs per entry point — Compose lets the
 # calling environment outrank this file, while make lets the included env file
