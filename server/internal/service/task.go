@@ -3344,6 +3344,23 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// reason is what decides retry eligibility.
 	failureReason = taskfailure.NormalizeDaemonReason(failureReason, errMsg).String()
 
+	// GH #6143: retire a conversation that has now failed on resume twice with
+	// no success in between. This runs BEFORE the retry pre-compute and before
+	// the chat-pointer writes inside the transaction, because both branch on
+	// failureReason and must see the upgraded value — otherwise this would
+	// retire the session and then immediately re-pin it as resumable.
+	//
+	// Only the reason is upgraded when the caller already named a retired
+	// session: the daemon detected the dead conversation itself, which is
+	// strictly better evidence than our count, and clobbering its id could
+	// leave the session it abandoned resumable.
+	if retire, retireID := s.sessionResumeExhausted(ctx, taskID, failureReason, sessionID); retire {
+		failureReason = string(taskfailure.ReasonSessionResumeExhausted)
+		if retiredSessionID == "" {
+			retiredSessionID = retireID
+		}
+	}
+
 	// Pre-compute the auto-retry so the retry child can be created inside the
 	// SAME transaction as the fail (MUL-4351). Doing it atomically closes the
 	// window between the fail committing and the retry appearing during which a
@@ -3639,6 +3656,131 @@ var retryableReasons = map[string]bool{
 	string(taskfailure.ReasonSkillBundleUnavailable): true,
 }
 
+// sessionResumeExhaustedThreshold is how many consecutive non-transient
+// failures on one (agent, issue) pair retire the conversation (GH #6143).
+//
+// Two, so the first failure still resumes normally. Something the classifier
+// has never seen is not yet evidence that the transcript is the problem, and
+// starting over on the first stumble would throw away conversation context
+// every time a provider hiccupped in a way we do not recognise. A second
+// consecutive failure with no success in between IS that evidence — it is the
+// resume itself that just demonstrably failed. The cost of an unrecognised
+// error therefore tops out at one wasted run rather than a permanently dead
+// (agent, issue) pair.
+const sessionResumeExhaustedThreshold = 2
+
+// transientResumeSafeReasons are failures that say nothing about whether the
+// conversation can be replayed, so they neither count toward
+// sessionResumeExhaustedThreshold nor reset it. A daemon that went offline
+// twice has not shown the transcript to be bad, and treating it as such would
+// discard a healthy session — the exact false positive the GH #6143 review
+// pushed back on when a broad "any 400" text match was proposed.
+//
+// Explicitly a SUPERSET of retryableReasons, and the extra members are the
+// point: provider_capacity_or_rate_limit and provider_server_error are not
+// auto-retried (they have no safe idempotent replay) but are unambiguously
+// transient, so two rate-limited runs in a row must not burn the session.
+// queued_expired never started an agent process at all.
+//
+// Skipping without resetting is deliberate: fail(unknown) → fail(runtime_offline)
+// → fail(unknown) is two pieces of evidence about the conversation with an
+// unrelated infrastructure blip in the middle, not one. Letting the blip clear
+// the count would let a flaky daemon mask a genuinely dead session forever.
+var transientResumeSafeReasons = func() map[string]bool {
+	m := map[string]bool{
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit): true,
+		string(taskfailure.ReasonAgentProviderServerError):         true,
+		string(taskfailure.ReasonQueuedExpired):                    true,
+	}
+	for reason := range retryableReasons {
+		m[reason] = true
+	}
+	return m
+}()
+
+// sessionResumeExhausted reports whether this failure retires the
+// conversation, and which session id to record as retired.
+//
+// The count is per (agent, issue) rather than per session id: see
+// ListResumeFailuresSinceLastSuccess for why keying on the id breaks on ACP
+// backends that hand back a different id on resume. retireSessionID prefers a
+// DIFFERENT id seen earlier in the window over the current one, because that
+// is the id the upgraded failure_reason cannot cover — the reason only
+// excludes the row it is written on, so under id drift the earlier session
+// would stay eligible and be resumed next turn.
+//
+// Scoped to issue tasks. Chat tasks are excluded because the count is keyed on
+// issue_id, and a chat-only task carries none; chat sessions keep their
+// existing resume-unsafe handling until a follow-up extends the window to
+// chat_session_id.
+func (s *TaskService) sessionResumeExhausted(ctx context.Context, taskID pgtype.UUID, failureReason, sessionID string) (bool, string) {
+	// Cheap gate before any query: the overwhelmingly common failure is a
+	// transient one that can never trip the breaker.
+	if transientResumeSafeReasons[failureReason] {
+		return false, ""
+	}
+	parent, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		// Best-effort: a failed lookup must not block recording the failure.
+		slog.Warn("session resume breaker: load task failed",
+			"task_id", util.UUIDToString(taskID), "error", err)
+		return false, ""
+	}
+	if !parent.IssueID.Valid || !parent.AgentID.Valid {
+		return false, ""
+	}
+	prior, err := s.Queries.ListResumeFailuresSinceLastSuccess(ctx, db.ListResumeFailuresSinceLastSuccessParams{
+		AgentID: parent.AgentID,
+		IssueID: parent.IssueID,
+		ID:      taskID,
+	})
+	if err != nil {
+		slog.Warn("session resume breaker: count prior failures failed",
+			"task_id", util.UUIDToString(taskID), "error", err)
+		return false, ""
+	}
+	window := make([]priorResumeFailure, 0, len(prior))
+	for _, row := range prior {
+		window = append(window, priorResumeFailure{
+			SessionID:     row.SessionID.String,
+			FailureReason: row.FailureReason,
+		})
+	}
+	return evaluateResumeExhaustion(failureReason, sessionID, window)
+}
+
+// priorResumeFailure is one earlier failed run in the current window, reduced
+// to the two fields the decision needs.
+type priorResumeFailure struct {
+	SessionID     string
+	FailureReason string
+}
+
+// evaluateResumeExhaustion is the pure half of sessionResumeExhausted: given
+// this failure and the earlier ones since the last success, decide whether the
+// conversation is retired and which session id to record.
+func evaluateResumeExhaustion(currentReason, currentSessionID string, prior []priorResumeFailure) (bool, string) {
+	if transientResumeSafeReasons[currentReason] {
+		return false, ""
+	}
+	count := 1 // this failure
+	retireSessionID := currentSessionID
+	for _, p := range prior {
+		if transientResumeSafeReasons[p.FailureReason] {
+			continue
+		}
+		count++
+		// Prefer an id the upgraded reason on THIS row cannot retire.
+		if p.SessionID != "" && p.SessionID != currentSessionID {
+			retireSessionID = p.SessionID
+		}
+	}
+	if count < sessionResumeExhaustedThreshold {
+		return false, ""
+	}
+	return true, retireSessionID
+}
+
 // Transient provider stream cuts (provider_network) get a bespoke three-tier
 // schedule (MUL-4910): first run + immediate retry + one retry deferred ~5s.
 // A blip that survives the immediate retry gets a short cooldown before the
@@ -3691,7 +3833,12 @@ func resumeUnsafeFailureReason(reason string) bool {
 	// blacklists. (CreateRetryTask's fresh-session CASE WHEN only needs the
 	// subset of these that is also auto-retryable, currently
 	// codex_semantic_inactivity.)
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow":
+	// session_resume_exhausted is the behavioural member of this set: the other
+	// reasons name a defect recognised in the provider's error text, it names a
+	// conversation that simply kept failing (GH #6143). Listing it here is what
+	// makes the manual-rerun path honour the breaker — that path reads the exact
+	// source task and never consults the retired_sessions CTE.
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow", "session_resume_exhausted":
 		return true
 	default:
 		return false
