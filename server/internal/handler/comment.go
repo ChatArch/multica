@@ -275,10 +275,15 @@ func foldResolvedThreads(comments []db.Comment) ([]db.Comment, map[string]foldSt
 // number of rows on a single issue.
 const commentHardCap = 2000
 
+// HeaderCommentsTruncated tells browser and CLI callers that a defensive
+// comment-list cap omitted rows. It is deliberately separate from the timeline
+// header: /comments has several projections (roots, one thread, since) whose
+// truncation cannot be described as a timeline activity kind.
+const HeaderCommentsTruncated = "X-Comments-Truncated"
+
 // commentProbeLimit reads one row past the cap so a truncated read can be told
 // apart from an issue holding exactly commentHardCap comments. The difference
-// matters: a truncated read suppresses the thread fold, so a false positive on
-// the boundary would silently stop folding a complete issue.
+// matters: exact-cap reads are complete and must not advertise data loss.
 const commentProbeLimit = commentHardCap + 1
 
 // Budgets for thread completion (completeCommentThreads).
@@ -298,11 +303,13 @@ const (
 	commentThreadMaxDepth      = 64
 )
 
-// ListComments returns comments for an issue. The default behaviour is
-// unchanged — full chronological dump capped at commentHardCap — so existing
-// callers and the desktop UI keep working as-is. Optional query params give
-// agent-style readers bounded views that scale to long issues without dragging
-// every prior reply into context:
+// ListComments returns comments for an issue. The default path returns the
+// newest commentHardCap comments in chronological order. If that defensive cap
+// fires, completeCommentThreads restores each affected thread within a bounded
+// context budget (or drops that thread as a unit), and the response sets
+// HeaderCommentsTruncated. Optional query params give agent-style readers
+// bounded views that scale to long issues without dragging every prior reply
+// into context:
 //
 //   - roots_only=true — return only top-level comments (parent_id IS NULL),
 //     each annotated with reply_count + last_activity_at so the caller can
@@ -604,16 +611,14 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	// and the dropped ones should not pay a reactions/attachments round-trip or
 	// appear in the response.
 	//
-	// Skipped when the hard cap truncated the read. fetchCommentsForList closes
-	// parent chains so no reply is orphaned, but that does NOT make the threads
-	// complete — older siblings and descendants stay outside the window. Folding a
-	// partial thread produces wrong answers, not merely incomplete ones: a
-	// resolution reply outside the window makes a resolved thread look unresolved,
-	// and folded_count would report a total derived from only the retained
-	// replies. The modes fold is otherwise allowed on (--recent, untailed
-	// --thread) still return whole threads and are unaffected.
+	// fetchCommentsForList marks FoldUnsafe only when a returned thread is known
+	// to be partial. The default capped path is safe: completeCommentThreads
+	// either restores every affected thread or removes it as one unit. An
+	// oversized untailed --thread read, however, intentionally keeps only the
+	// newest replies, so folding that partial thread would invent resolution
+	// state and folded_count.
 	var foldInfo map[string]foldStat
-	if fold && !result.CommentsTruncated {
+	if fold && !result.FoldUnsafe {
 		result.Comments, foldInfo = foldResolvedThreads(result.Comments)
 	}
 
@@ -665,6 +670,9 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Multica-Next-Before", result.NextBefore)
 		w.Header().Set("X-Multica-Next-Before-Id", result.NextBeforeID)
 	}
+	if result.CommentsTruncated {
+		w.Header().Set(HeaderCommentsTruncated, "true")
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -701,11 +709,13 @@ type fetchCommentsResult struct {
 	// RootStats carries per-root orientation stats keyed by comment id string.
 	// Populated only on the roots_only path; nil for every other mode.
 	RootStats map[string]rootStat
-	// CommentsTruncated reports that the hard cap dropped older comments, so the
-	// set holds partial threads. Derived from a probe read, never from the length
-	// of Comments — parent-chain completion adds rows, so the final length says
-	// nothing about whether anything was cut.
+	// CommentsTruncated reports that a defensive cap omitted comments. Derived
+	// from a probe read, never from the final response length.
 	CommentsTruncated bool
+	// FoldUnsafe reports that the response contains a known-partial thread.
+	// Truncation alone does not imply this: completeCommentThreads makes the
+	// default newest window safe to fold by restoring or dropping whole threads.
+	FoldUnsafe bool
 }
 
 // rootStat is the per-thread orientation metadata attached to each root comment
@@ -785,6 +795,8 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 					ResolvedAt:     r.ResolvedAt,
 					ResolvedByType: r.ResolvedByType,
 					ResolvedByID:   r.ResolvedByID,
+					SourceTaskID:   r.SourceTaskID,
+					QuickActionID:  r.QuickActionID,
 				}
 				if !r.ParentID.Valid {
 					root := c
@@ -843,11 +855,15 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			}
 			return res, nil
 		}
-		rows, err := h.Queries.ListThreadCommentsForIssue(ctx, db.ListThreadCommentsForIssueParams{
+		// Untailed reads use the same newest-reply query as the paged path.
+		// Probe with commentHardCap replies: because the root is unconditional,
+		// 2000 replies proves the total thread exceeds the 2000-row response cap.
+		// We then drop the oldest reply and retain root + newest 1999 replies.
+		rows, err := h.Queries.ListThreadCommentsForIssuePaged(ctx, db.ListThreadCommentsForIssuePagedParams{
 			AnchorID:    anchor,
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
-			RowLimit:    commentHardCap,
+			ReplyLimit:  commentHardCap,
 		})
 		if err != nil {
 			return fetchCommentsResult{}, err
@@ -855,12 +871,10 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 		if len(rows) == 0 {
 			return fetchCommentsResult{}, errCommentThreadNotFound
 		}
-		out := make([]db.Comment, 0, len(rows))
+		var rootComment *db.Comment
+		replies := make([]db.Comment, 0, len(rows))
 		for _, r := range rows {
-			if args.Since.Valid && !r.CreatedAt.Time.After(args.Since.Time) {
-				continue
-			}
-			out = append(out, db.Comment{
+			c := db.Comment{
 				ID:             r.ID,
 				IssueID:        r.IssueID,
 				AuthorType:     r.AuthorType,
@@ -874,9 +888,35 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				ResolvedAt:     r.ResolvedAt,
 				ResolvedByType: r.ResolvedByType,
 				ResolvedByID:   r.ResolvedByID,
-			})
+				SourceTaskID:   r.SourceTaskID,
+				QuickActionID:  r.QuickActionID,
+			}
+			if !r.ParentID.Valid {
+				root := c
+				rootComment = &root
+				continue
+			}
+			replies = append(replies, c)
 		}
-		return fetchCommentsResult{Comments: out}, nil
+		truncated := len(replies) >= commentHardCap
+		if truncated {
+			replies = replies[1:]
+		}
+		out := make([]db.Comment, 0, len(replies)+1)
+		if rootComment != nil && (!args.Since.Valid || rootComment.CreatedAt.Time.After(args.Since.Time)) {
+			out = append(out, *rootComment)
+		}
+		for _, reply := range replies {
+			if args.Since.Valid && !reply.CreatedAt.Time.After(args.Since.Time) {
+				continue
+			}
+			out = append(out, reply)
+		}
+		return fetchCommentsResult{
+			Comments:          out,
+			CommentsTruncated: truncated,
+			FoldUnsafe:        truncated,
+		}, nil
 	}
 
 	// Thread-grouped recent read: N most recently active threads.
@@ -935,6 +975,8 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				ResolvedAt:     r.ResolvedAt,
 				ResolvedByType: r.ResolvedByType,
 				ResolvedByID:   r.ResolvedByID,
+				SourceTaskID:   r.SourceTaskID,
+				QuickActionID:  r.QuickActionID,
 			})
 		}
 
@@ -975,10 +1017,16 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				IssueID:     issue.ID,
 				WorkspaceID: issue.WorkspaceID,
 				Since:       args.Since,
-				RowLimit:    commentHardCap,
+				RowLimit:    commentProbeLimit,
 			})
 			if err != nil {
 				return fetchCommentsResult{}, err
+			}
+			truncated := len(rows) > commentHardCap
+			if truncated {
+				// Since is an incremental stream: keep the first page after the
+				// cursor so callers can advance without skipping a gap.
+				rows = rows[:commentHardCap]
 			}
 			comments := make([]db.Comment, len(rows))
 			for i, r := range rows {
@@ -987,19 +1035,28 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 					Content: r.Content, Type: r.Type, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 					ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
 					ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
+					SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID,
 				}
 				stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
 			}
-			return fetchCommentsResult{Comments: comments, RootStats: stats}, nil
+			return fetchCommentsResult{
+				Comments: comments, RootStats: stats, CommentsTruncated: truncated,
+			}, nil
 		}
 
 		rows, err := h.Queries.ListRootCommentsForIssue(ctx, db.ListRootCommentsForIssueParams{
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
-			RowLimit:    commentHardCap,
+			RowLimit:    commentProbeLimit,
 		})
 		if err != nil {
 			return fetchCommentsResult{}, err
+		}
+		truncated := len(rows) > commentHardCap
+		if truncated {
+			// The SQL returns selected roots chronologically after taking the
+			// newest probe window, so the overflow row is the oldest.
+			rows = rows[1:]
 		}
 		comments := make([]db.Comment, len(rows))
 		for i, r := range rows {
@@ -1008,21 +1065,32 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				Content: r.Content, Type: r.Type, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 				ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
 				ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
+				SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID,
 			}
 			stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
 		}
-		return fetchCommentsResult{Comments: comments, RootStats: stats}, nil
+		return fetchCommentsResult{
+			Comments: comments, RootStats: stats, CommentsTruncated: truncated,
+		}, nil
 	}
 
-	// Since reads keep their existing chronological capped shape.
+	// Since reads keep their chronological page shape. A probe makes the cap
+	// visible without skipping the next page of the incremental stream.
 	if args.Since.Valid {
 		comments, err := h.Queries.ListCommentsSinceForIssue(ctx, db.ListCommentsSinceForIssueParams{
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
 			CreatedAt:   args.Since,
-			Limit:       commentHardCap,
+			Limit:       commentProbeLimit,
 		})
-		return fetchCommentsResult{Comments: comments}, err
+		if err != nil {
+			return fetchCommentsResult{}, err
+		}
+		truncated := len(comments) > commentHardCap
+		if truncated {
+			comments = comments[:commentHardCap]
+		}
+		return fetchCommentsResult{Comments: comments, CommentsTruncated: truncated}, nil
 	}
 	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
@@ -1042,9 +1110,6 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 		// inside it. Complete every affected thread within the shared context
 		// budget. If a thread cannot be completed, it is dropped as one unit.
 		//
-		// The comment-list fold remains disabled on every truncated read. That
-		// preserves the explicit projection contract and keeps this defensive
-		// cap from changing what agents see as settled discussion.
 		comments, err = h.completeCommentThreads(ctx, issue.ID, issue.WorkspaceID, comments)
 		if err != nil {
 			return fetchCommentsResult{}, err

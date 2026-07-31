@@ -598,7 +598,7 @@ type ListCommentsForIssueParams struct {
 // closed under "parent of": a reply is always newer than its parent, so an old
 // thread root can fall outside the window while a fresh reply to it stays
 // inside. Callers that render threads must close the parent chains afterwards —
-// see completeCommentParentChains (MUL-5492).
+// see completeCommentThreads (MUL-5492).
 //
 // The cap is still purely defensive here — issue p99 is ~30 comments and the max
 // ever observed in prod is ~1.1k — but "defensive" is not a reason to drop the
@@ -730,6 +730,7 @@ picked AS (
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
+       c.source_task_id, c.quick_action_id,
        p.root_id AS thread_root_id,
        p.last_activity_at AS thread_last_activity_at
 FROM picked p
@@ -761,6 +762,8 @@ type ListRecentThreadCommentsForIssueRow struct {
 	ResolvedAt           pgtype.Timestamptz `json:"resolved_at"`
 	ResolvedByType       pgtype.Text        `json:"resolved_by_type"`
 	ResolvedByID         pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
+	QuickActionID        pgtype.UUID        `json:"quick_action_id"`
 	ThreadRootID         pgtype.UUID        `json:"thread_root_id"`
 	ThreadLastActivityAt pgtype.Timestamptz `json:"thread_last_activity_at"`
 }
@@ -823,6 +826,8 @@ func (q *Queries) ListRecentThreadCommentsForIssue(ctx context.Context, arg List
 			&i.ResolvedAt,
 			&i.ResolvedByType,
 			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
 			&i.ThreadRootID,
 			&i.ThreadLastActivityAt,
 		); err != nil {
@@ -923,7 +928,7 @@ WITH RECURSIVE selected_roots AS (
     WHERE c.issue_id = $1
       AND c.workspace_id = $2
       AND c.parent_id IS NULL
-    ORDER BY c.created_at ASC, c.id ASC
+    ORDER BY c.created_at DESC, c.id DESC
     LIMIT $3
 ),
 membership(id, root_id, comment_created_at) AS (
@@ -946,6 +951,7 @@ thread_stats AS (
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
+       c.source_task_id, c.quick_action_id,
        ts.reply_count AS reply_count,
        ts.last_activity_at AS last_activity_at
 FROM selected_roots sr
@@ -974,6 +980,8 @@ type ListRootCommentsForIssueRow struct {
 	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
 	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
 	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
+	QuickActionID  pgtype.UUID        `json:"quick_action_id"`
 	ReplyCount     int32              `json:"reply_count"`
 	LastActivityAt pgtype.Timestamptz `json:"last_activity_at"`
 }
@@ -985,14 +993,11 @@ type ListRootCommentsForIssueRow struct {
 // discussion but also triage which thread to drill into (biggest / most
 // recently active) before fetching any specific reply thread.
 //
-// `selected_roots` picks the roots we will actually return first (the chrono
-// page of size @row_limit), so the recursive `membership` walk only expands
-// those threads' subtrees instead of every thread in the issue. membership
-// labels each comment with its thread root by walking down from the selected
-// roots, so the counts stay correct at any reply depth. Depth > 2 is genuinely
-// reachable: the general write path stores the exact comment being replied to
-// (see CreateComment), and only the agent path collapses to the thread root.
-// Mirrors ListRecentThreadCommentsForIssue's stats CTE.
+// `selected_roots` takes the newest @row_limit roots. The final SELECT restores
+// chronological order, so the defensive cap drops the oldest roots without
+// changing the wire order. The recursive `membership` walk only expands those
+// selected threads rather than every thread in the issue, and labels every
+// descendant with its root so the stats stay correct at any reply depth.
 func (q *Queries) ListRootCommentsForIssue(ctx context.Context, arg ListRootCommentsForIssueParams) ([]ListRootCommentsForIssueRow, error) {
 	rows, err := q.db.Query(ctx, listRootCommentsForIssue, arg.IssueID, arg.WorkspaceID, arg.RowLimit)
 	if err != nil {
@@ -1016,6 +1021,8 @@ func (q *Queries) ListRootCommentsForIssue(ctx context.Context, arg ListRootComm
 			&i.ResolvedAt,
 			&i.ResolvedByType,
 			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
 			&i.ReplyCount,
 			&i.LastActivityAt,
 		); err != nil {
@@ -1060,6 +1067,7 @@ thread_stats AS (
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
+       c.source_task_id, c.quick_action_id,
        ts.reply_count AS reply_count,
        ts.last_activity_at AS last_activity_at
 FROM selected_roots sr
@@ -1089,6 +1097,8 @@ type ListRootCommentsSinceForIssueRow struct {
 	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
 	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
 	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
+	QuickActionID  pgtype.UUID        `json:"quick_action_id"`
 	ReplyCount     int32              `json:"reply_count"`
 	LastActivityAt pgtype.Timestamptz `json:"last_activity_at"`
 }
@@ -1128,113 +1138,10 @@ func (q *Queries) ListRootCommentsSinceForIssue(ctx context.Context, arg ListRoo
 			&i.ResolvedAt,
 			&i.ResolvedByType,
 			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
 			&i.ReplyCount,
 			&i.LastActivityAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listThreadCommentsForIssue = `-- name: ListThreadCommentsForIssue :many
-WITH RECURSIVE root_of AS (
-    -- Walk up from the anchor until parent_id IS NULL.
-    SELECT c.id, c.parent_id
-    FROM comment c
-    WHERE c.id = $2 AND c.issue_id = $3 AND c.workspace_id = $4
-    UNION ALL
-    SELECT p.id, p.parent_id
-    FROM comment p
-    JOIN root_of r ON p.id = r.parent_id
-),
-thread_root AS (
-    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
-),
-descendants AS (
-    -- Start from the root, then keep adding any comment whose parent is
-    -- already in the set. Cycle-safe under PK constraint (a comment cannot
-    -- be its own ancestor).
-    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
-           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
-           c.resolved_at, c.resolved_by_type, c.resolved_by_id
-    FROM comment c
-    JOIN thread_root tr ON c.id = tr.id
-    UNION
-    SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
-           c.created_at, c.updated_at, c.parent_id, c.workspace_id,
-           c.resolved_at, c.resolved_by_type, c.resolved_by_id
-    FROM comment c
-    JOIN descendants d ON c.parent_id = d.id
-    WHERE c.issue_id = $3 AND c.workspace_id = $4
-)
-SELECT id, issue_id, author_type, author_id, content, type,
-       created_at, updated_at, parent_id, workspace_id,
-       resolved_at, resolved_by_type, resolved_by_id
-FROM descendants
-ORDER BY created_at ASC, id ASC
-LIMIT $1
-`
-
-type ListThreadCommentsForIssueParams struct {
-	RowLimit    int32       `json:"row_limit"`
-	AnchorID    pgtype.UUID `json:"anchor_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-type ListThreadCommentsForIssueRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	AuthorType     string             `json:"author_type"`
-	AuthorID       pgtype.UUID        `json:"author_id"`
-	Content        string             `json:"content"`
-	Type           string             `json:"type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	ParentID       pgtype.UUID        `json:"parent_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
-	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
-	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
-}
-
-// Returns the root of the thread containing @anchor_id plus every descendant
-// (recursive — supports real reply-to-reply nesting). @anchor_id may itself be
-// a root or any reply in the thread. Output is chronological so it can be fed
-// straight to the agent.
-func (q *Queries) ListThreadCommentsForIssue(ctx context.Context, arg ListThreadCommentsForIssueParams) ([]ListThreadCommentsForIssueRow, error) {
-	rows, err := q.db.Query(ctx, listThreadCommentsForIssue,
-		arg.RowLimit,
-		arg.AnchorID,
-		arg.IssueID,
-		arg.WorkspaceID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListThreadCommentsForIssueRow{}
-	for rows.Next() {
-		var i ListThreadCommentsForIssueRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.IssueID,
-			&i.AuthorType,
-			&i.AuthorID,
-			&i.Content,
-			&i.Type,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ParentID,
-			&i.WorkspaceID,
-			&i.ResolvedAt,
-			&i.ResolvedByType,
-			&i.ResolvedByID,
 		); err != nil {
 			return nil, err
 		}
@@ -1255,6 +1162,7 @@ WITH RECURSIVE root_of AS (
     SELECT p.id, p.parent_id
     FROM comment p
     JOIN root_of r ON p.id = r.parent_id
+    WHERE p.issue_id = $2 AND p.workspace_id = $3
 ),
 thread_root AS (
     SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
@@ -1262,13 +1170,15 @@ thread_root AS (
 descendants AS (
     SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
            c.created_at, c.updated_at, c.parent_id, c.workspace_id,
-           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id,
+           c.source_task_id, c.quick_action_id
     FROM comment c
     JOIN thread_root tr ON c.id = tr.id
     UNION
     SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
            c.created_at, c.updated_at, c.parent_id, c.workspace_id,
-           c.resolved_at, c.resolved_by_type, c.resolved_by_id
+           c.resolved_at, c.resolved_by_type, c.resolved_by_id,
+           c.source_task_id, c.quick_action_id
     FROM comment c
     JOIN descendants d ON c.parent_id = d.id
     WHERE c.issue_id = $2 AND c.workspace_id = $3
@@ -1276,7 +1186,8 @@ descendants AS (
 reply_page AS (
     SELECT d.id, d.issue_id, d.author_type, d.author_id, d.content, d.type,
            d.created_at, d.updated_at, d.parent_id, d.workspace_id,
-           d.resolved_at, d.resolved_by_type, d.resolved_by_id
+           d.resolved_at, d.resolved_by_type, d.resolved_by_id,
+           d.source_task_id, d.quick_action_id
     FROM descendants d
     WHERE d.id NOT IN (SELECT id FROM thread_root)
       AND (
@@ -1288,17 +1199,20 @@ reply_page AS (
 )
 SELECT id, issue_id, author_type, author_id, content, type,
        created_at, updated_at, parent_id, workspace_id,
-       resolved_at, resolved_by_type, resolved_by_id
+       resolved_at, resolved_by_type, resolved_by_id,
+       source_task_id, quick_action_id
 FROM (
     SELECT d.id, d.issue_id, d.author_type, d.author_id, d.content, d.type,
            d.created_at, d.updated_at, d.parent_id, d.workspace_id,
-           d.resolved_at, d.resolved_by_type, d.resolved_by_id
+           d.resolved_at, d.resolved_by_type, d.resolved_by_id,
+           d.source_task_id, d.quick_action_id
     FROM descendants d
     JOIN thread_root tr ON d.id = tr.id
     UNION ALL
     SELECT id, issue_id, author_type, author_id, content, type,
            created_at, updated_at, parent_id, workspace_id,
-           resolved_at, resolved_by_type, resolved_by_id
+           resolved_at, resolved_by_type, resolved_by_id,
+           source_task_id, quick_action_id
     FROM reply_page
 ) combined
 ORDER BY created_at ASC, id ASC
@@ -1328,10 +1242,12 @@ type ListThreadCommentsForIssuePagedRow struct {
 	ResolvedAt     pgtype.Timestamptz `json:"resolved_at"`
 	ResolvedByType pgtype.Text        `json:"resolved_by_type"`
 	ResolvedByID   pgtype.UUID        `json:"resolved_by_id"`
+	SourceTaskID   pgtype.UUID        `json:"source_task_id"`
+	QuickActionID  pgtype.UUID        `json:"quick_action_id"`
 }
 
-// Same root-walk + descendants expansion as ListThreadCommentsForIssue, but
-// returns root + only the @reply_limit most recent replies (per the
+// Resolves @anchor_id to its thread root, recursively expands every descendant,
+// and returns the root + only the @reply_limit most recent replies (per the
 // (created_at, id) composite key). When @has_cursor=TRUE only replies with
 // (created_at, id) < (@before_at, @before_id) are eligible — that is the
 // cursor for scrolling *within* a thread.
@@ -1376,6 +1292,8 @@ func (q *Queries) ListThreadCommentsForIssuePaged(ctx context.Context, arg ListT
 			&i.ResolvedAt,
 			&i.ResolvedByType,
 			&i.ResolvedByID,
+			&i.SourceTaskID,
+			&i.QuickActionID,
 		); err != nil {
 			return nil, err
 		}

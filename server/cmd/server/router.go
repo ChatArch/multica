@@ -78,6 +78,7 @@ var corsAllowedHeaders = []string{
 // Referencing the handler constant rather than re-typing the string keeps a
 // rename from quietly switching the signal off (MUL-5492).
 var corsExposedHeaders = []string{
+	handler.HeaderCommentsTruncated,
 	handler.HeaderTimelineTruncated,
 }
 

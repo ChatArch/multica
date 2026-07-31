@@ -18,9 +18,9 @@ import (
 //     the window.
 //
 // completeCommentThreads now handles both: it restores a whole affected thread
-// within explicit budgets or drops that thread as one unit. The comment-list
-// endpoint still suppresses its optional fold on every truncated read so the
-// agent-facing projection keeps its conservative, explicit contract.
+// within explicit budgets or drops that thread as one unit. A completed default
+// window is therefore safe to fold even though the endpoint still advertises
+// that unrelated older comments were truncated.
 
 // seedCommentRow inserts one comment at an exact timestamp and returns its id.
 // resolvedAt marks it as the thread's resolution when non-nil.
@@ -73,9 +73,12 @@ func TestListComments_ExactlyAtCapStillFolds(t *testing.T) {
 	// Fill to exactly the cap.
 	bulkSeedComments(t, issueID, base.Add(time.Minute), commentHardCap-3)
 
-	_, rows := listComments(t, issueID, "fold=true")
+	w, rows := listComments(t, issueID, "fold=true")
 	if rows == nil {
 		t.Fatal("ListComments returned no rows")
+	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "" {
+		t.Errorf("%s = %q, want unset at exact cap", HeaderCommentsTruncated, got)
 	}
 	var root *CommentResponse
 	for i := range rows {
@@ -91,18 +94,13 @@ func TestListComments_ExactlyAtCapStillFolds(t *testing.T) {
 	}
 }
 
-// TestListComments_TruncatedReadDoesNotFold covers the review finding. The
+// TestListComments_TruncatedCompleteThreadStillFolds covers the review finding. The
 // resolution reply is inside the window while older ordinary replies on the same
-// thread are outside it. Folding this set runs on a partial thread: it drops
-// retained replies as "settled" and reports a folded_count that cannot account
-// for the replies it never saw.
-//
-// The scenario is chosen so the assertions discriminate. Putting the resolution
-// OUTSIDE the window instead would make the thread merely look unresolved, and a
-// fold that declines to fold is indistinguishable from a fold that never ran —
-// the test would pass whether or not the gate exists.
-func TestListComments_TruncatedReadDoesNotFold(t *testing.T) {
-	issueID := createIssueForTimeline(t, "truncated read does not fold")
+// thread are outside it. completeCommentThreads restores those replies before
+// folding, so folded_count reflects the complete thread rather than a partial
+// window.
+func TestListComments_TruncatedCompleteThreadStillFolds(t *testing.T) {
+	issueID := createIssueForTimeline(t, "truncated complete thread still folds")
 
 	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
 	rootID := seedCommentRow(t, issueID, base, "root question", nil, nil)
@@ -121,9 +119,12 @@ func TestListComments_TruncatedReadDoesNotFold(t *testing.T) {
 	resolvedAt := now.Add(time.Second)
 	conclusionID := seedCommentRow(t, issueID, resolvedAt, "the conclusion", &rootID, &resolvedAt)
 
-	_, rows := listComments(t, issueID, "fold=true")
+	w, rows := listComments(t, issueID, "fold=true")
 	if rows == nil {
 		t.Fatal("ListComments returned no rows")
+	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "true" {
+		t.Errorf("%s = %q, want true", HeaderCommentsTruncated, got)
 	}
 
 	byID := make(map[string]CommentResponse, len(rows))
@@ -131,7 +132,7 @@ func TestListComments_TruncatedReadDoesNotFold(t *testing.T) {
 		byID[c.ID] = c
 	}
 
-	// Parent-chain closure still applies, so the replies are renderable.
+	// Thread completion restores the root and every old reply before folding.
 	root, ok := byID[rootID]
 	if !ok {
 		t.Fatal("the old thread root was not backfilled")
@@ -139,24 +140,23 @@ func TestListComments_TruncatedReadDoesNotFold(t *testing.T) {
 	if _, ok := byID[conclusionID]; !ok {
 		t.Error("the resolution reply is missing")
 	}
-	// The fold would have dropped this as settled discussion, using a resolution
-	// derived from a thread it can only partly see.
-	if _, ok := byID[keptReplyID]; !ok {
-		t.Error("a retained reply was folded away on a partial thread")
+	if _, ok := byID[keptReplyID]; ok {
+		t.Error("fresh ordinary reply was not folded from a completed resolved thread")
 	}
-	if root.ThreadResolved != nil {
-		t.Errorf("thread_resolved = %v on a truncated read: the thread is partial, so resolution state cannot be derived", *root.ThreadResolved)
+	if root.ThreadResolved == nil || !*root.ThreadResolved {
+		t.Error("thread_resolved missing after the truncated window was completed")
 	}
-	if root.FoldedCount != nil {
-		t.Errorf("folded_count = %d on a truncated read: it cannot account for the 3 replies outside the window", *root.FoldedCount)
+	if root.FoldedCount == nil {
+		t.Error("folded_count missing, want 4 complete ordinary replies")
+	} else if *root.FoldedCount != 4 {
+		t.Errorf("folded_count = %d, want 4 complete ordinary replies", *root.FoldedCount)
 	}
 	assertNoOrphanCommentRows(t, rows)
 }
 
-// TestListComments_RootResolvedTruncatedNoFalseFoldedCount is the root-resolved
-// variant: the thread root itself is resolved and its older replies are outside
-// the window, so a fold would report a folded_count derived from a partial set.
-func TestListComments_RootResolvedTruncatedNoFalseFoldedCount(t *testing.T) {
+// TestListComments_RootResolvedTruncatedUsesCompleteFoldedCount is the
+// root-resolved variant: completion restores all six replies before folding.
+func TestListComments_RootResolvedTruncatedUsesCompleteFoldedCount(t *testing.T) {
 	issueID := createIssueForTimeline(t, "root resolved truncated")
 
 	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
@@ -169,22 +169,139 @@ func TestListComments_RootResolvedTruncatedNoFalseFoldedCount(t *testing.T) {
 	bulkSeedComments(t, issueID, base.Add(time.Minute), commentHardCap+50)
 	seedCommentRow(t, issueID, time.Now().UTC().Truncate(time.Second), "fresh reply", &rootID, nil)
 
-	_, rows := listComments(t, issueID, "fold=true")
+	w, rows := listComments(t, issueID, "fold=true")
 	if rows == nil {
 		t.Fatal("ListComments returned no rows")
 	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "true" {
+		t.Errorf("%s = %q, want true", HeaderCommentsTruncated, got)
+	}
+	foundRoot := false
 	for _, c := range rows {
 		if c.ID != rootID {
 			continue
 		}
-		if c.FoldedCount != nil {
-			t.Errorf("folded_count = %d: the 5 old replies are outside the window, so any count is a fiction", *c.FoldedCount)
+		foundRoot = true
+		if c.FoldedCount == nil {
+			t.Error("folded_count missing, want all 6 replies")
+		} else if *c.FoldedCount != 6 {
+			t.Errorf("folded_count = %d, want all 6 replies", *c.FoldedCount)
 		}
-		if c.ThreadResolved != nil {
-			t.Error("thread_resolved set on a truncated read")
+		if c.ThreadResolved == nil || !*c.ThreadResolved {
+			t.Error("thread_resolved missing after completion")
 		}
 	}
+	if !foundRoot {
+		t.Fatal("resolved root missing")
+	}
 	assertNoOrphanCommentRows(t, rows)
+}
+
+// TestListComments_RootsOnlyHardCapKeepsNewestRoots pins the roots-only window:
+// the API must not retain the oldest 2000 roots and silently lose new discussion.
+func TestListComments_RootsOnlyHardCapKeepsNewestRoots(t *testing.T) {
+	issueID := createIssueForTimeline(t, "roots only keeps newest")
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	oldestID := seedCommentRow(t, issueID, base, "oldest root", nil, nil)
+	bulkSeedComments(t, issueID, base.Add(time.Second), commentHardCap+20)
+	newestID := seedCommentRow(t, issueID, base.Add(2*time.Hour), "newest root", nil, nil)
+
+	w, rows := listComments(t, issueID, "roots_only=true")
+	if rows == nil {
+		t.Fatal("ListComments returned no rows")
+	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "true" {
+		t.Errorf("%s = %q, want true", HeaderCommentsTruncated, got)
+	}
+	if len(rows) != commentHardCap {
+		t.Fatalf("root count = %d, want %d", len(rows), commentHardCap)
+	}
+	present := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		present[row.ID] = struct{}{}
+	}
+	if _, ok := present[oldestID]; ok {
+		t.Error("oldest root survived the newest-root cap")
+	}
+	if _, ok := present[newestID]; !ok {
+		t.Error("newest root was dropped by the roots-only cap")
+	}
+}
+
+func TestListComments_RootsOnlyExactCapIsNotTruncated(t *testing.T) {
+	issueID := createIssueForTimeline(t, "roots only exact cap")
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	bulkSeedComments(t, issueID, base, commentHardCap)
+
+	w, rows := listComments(t, issueID, "roots_only=true")
+	if len(rows) != commentHardCap {
+		t.Fatalf("root count = %d, want %d", len(rows), commentHardCap)
+	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "" {
+		t.Errorf("%s = %q, want unset at exact cap", HeaderCommentsTruncated, got)
+	}
+}
+
+// TestListComments_UntailedThreadHardCapKeepsNewestReplies proves that a plain
+// --thread read cannot lose the newest resolution reply. The returned thread is
+// partial, so fold must remain suppressed even though the resolution is visible.
+func TestListComments_UntailedThreadHardCapKeepsNewestReplies(t *testing.T) {
+	issueID := createIssueForTimeline(t, "thread keeps newest replies")
+
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	rootID := seedCommentRow(t, issueID, base, "thread root", nil, nil)
+	oldestReplyID := seedCommentRow(t, issueID, base.Add(time.Second), "oldest reply", &rootID, nil)
+	bulkSeedReplies(t, issueID, rootID, base.Add(2*time.Second), commentHardCap)
+	resolvedAt := base.Add(2 * time.Hour)
+	newestReplyID := seedCommentRow(t, issueID, resolvedAt, "newest resolution", &rootID, &resolvedAt)
+
+	w, rows := listComments(t, issueID, "thread="+rootID+"&fold=true")
+	if rows == nil {
+		t.Fatal("ListComments returned no rows")
+	}
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "true" {
+		t.Errorf("%s = %q, want true", HeaderCommentsTruncated, got)
+	}
+	if len(rows) != commentHardCap {
+		t.Fatalf("thread row count = %d, want %d", len(rows), commentHardCap)
+	}
+	present := make(map[string]CommentResponse, len(rows))
+	for _, row := range rows {
+		present[row.ID] = row
+	}
+	if _, ok := present[rootID]; !ok {
+		t.Error("thread root missing")
+	}
+	if _, ok := present[oldestReplyID]; ok {
+		t.Error("oldest reply survived the newest-reply cap")
+	}
+	if _, ok := present[newestReplyID]; !ok {
+		t.Error("newest resolution reply was dropped")
+	}
+	if root := present[rootID]; root.ThreadResolved != nil || root.FoldedCount != nil {
+		t.Error("partial oversized thread was folded")
+	}
+}
+
+func TestListComments_UntailedThreadExactCapStillFolds(t *testing.T) {
+	issueID := createIssueForTimeline(t, "thread exact cap still folds")
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	resolvedAt := base
+	rootID := seedCommentRow(t, issueID, base, "resolved root", nil, &resolvedAt)
+	bulkSeedReplies(t, issueID, rootID, base.Add(time.Second), commentHardCap-1)
+
+	w, rows := listComments(t, issueID, "thread="+rootID+"&fold=true")
+	if got := w.Header().Get(HeaderCommentsTruncated); got != "" {
+		t.Errorf("%s = %q, want unset at exact cap", HeaderCommentsTruncated, got)
+	}
+	if len(rows) != 1 || rows[0].ID != rootID {
+		t.Fatalf("exact-cap resolved thread did not fold to its root: ids=%v", ids(rows))
+	}
+	if rows[0].FoldedCount == nil || *rows[0].FoldedCount != commentHardCap-1 {
+		t.Fatalf("folded_count = %v, want %d", rows[0].FoldedCount, commentHardCap-1)
+	}
 }
 
 // TestListComments_DeepChainBeyondBudgetIsPrunedNotOrphaned exercises the depth
