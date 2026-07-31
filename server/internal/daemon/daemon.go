@@ -5197,18 +5197,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.CodexHome != "" {
 		agentEnv["CODEX_HOME"] = env.CodexHome
 	}
-	// Redirect HOME/XDG/npm_config_cache to the per-task writable home under the
-	// Linux codex workspace-write sandbox, where the real home is read-only. This
-	// lets tools that write to `~` (npm, Prisma, …) succeed without per-tool env
-	// tweaks. Set before custom_env below so a user override still wins for the
-	// non-blocklisted XDG keys; HOME itself stays blocklisted. Empty TaskHome
-	// (macOS/Windows, non-sandboxed providers) leaves the real HOME untouched
-	// (MUL-4856).
-	if env.TaskHome != "" {
-		for k, v := range execenv.TaskHomeEnv(env.TaskHome) {
-			agentEnv[k] = v
-		}
-	}
+	// HOME and the XDG base dirs are deliberately not touched here: tasks run
+	// with the daemon user's real home on every platform, so host CLI config
+	// and credentials resolve inside a task exactly as they do in the daemon
+	// user's shell (MUL-5578).
 	// (Hermes HERMES_HOME is applied after custom_env below so the per-task
 	// overlay can win over a user-set HERMES_HOME; see
 	// layerCustomEnvAndHermesHome.)
