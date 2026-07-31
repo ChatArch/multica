@@ -57,8 +57,8 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 	// First also means every holder acquires it in the same order, so these
 	// paths cannot deadlock against each other (MUL-5483 review round 7).
 	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
-		WorkspaceID: uuidToString(workspaceID),
-		UserID:      uuidToString(userID),
+		WorkspaceID: workspaceID,
+		UserID:      userID,
 	}); err != nil {
 		return empty, err
 	}

@@ -209,8 +209,8 @@ func subscribeDelegatedHuman(bus *events.Bus, pool *pgxpool.Pool, queries *db.Qu
 	qtx := queries.WithTx(tx)
 
 	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
-		WorkspaceID: workspaceID,
-		UserID:      util.UUIDToString(human),
+		WorkspaceID: parseUUID(workspaceID),
+		UserID:      human,
 	}); err != nil {
 		slog.Error("delegated subscribe: lock failed", "issue_id", issueID, "error", err)
 		return

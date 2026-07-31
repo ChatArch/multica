@@ -3,9 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -164,6 +166,13 @@ func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
+	// Canonicalize before the target reaches either the advisory lock or a
+	// broadcast. The lock keys on the UUID value, and clients dedupe on the
+	// user_id string, so an uppercase request must not spell either one
+	// differently from the delegated rule's canonical form
+	// (MUL-5483 review round 8).
+	targetUserID = uuidToString(parseUUID(targetUserID))
+
 	// Every issue this call actually left. The subtree variant reports the whole
 	// set so each one gets its own broadcast: a client with a CHILD issue open
 	// never sees the root's event, and would otherwise keep showing a
@@ -177,6 +186,10 @@ func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, s
 		// it a child created between the tombstone write and the rule's read
 		// comes back as an active watcher (MUL-5483 review round 7).
 		ids, err := h.unsubscribeSubtreeSerialized(r.Context(), workspaceID, issue.ID, targetUserType, targetUserID)
+		if errors.Is(err, errTargetNoLongerMember) {
+			writeError(w, http.StatusForbidden, "target user is not a member of this workspace")
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to unsubscribe")
 			return
@@ -205,6 +218,11 @@ func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
 }
 
+// errTargetNoLongerMember reports that the target left the workspace between
+// the handler's pre-check and the serialized write, so the caller can answer
+// 403 exactly as the pre-check would have.
+var errTargetNoLongerMember = errors.New("target user is no longer a workspace member")
+
 // unsubscribeSubtreeSerialized tombstones the tree inside the same
 // (workspace, user) serialization boundary the delegated auto-subscribe rule
 // uses, and returns every issue it actually retired.
@@ -219,10 +237,33 @@ func (h *Handler) unsubscribeSubtreeSerialized(
 	qtx := h.Queries.WithTx(tx)
 
 	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
-		WorkspaceID: workspaceID,
-		UserID:      userID,
+		WorkspaceID: parseUUID(workspaceID),
+		UserID:      parseUUID(userID),
 	}); err != nil {
 		return nil, err
+	}
+
+	// The membership pre-check in the caller ran against its own snapshot,
+	// before this transaction existed — it describes the past. A revoke that
+	// commits in between clears this user's subscriptions and deletes their
+	// member row, and writing a tombstone behind it would leave an opt-out that
+	// outlives the membership and is inherited on re-invite. Re-assert it here,
+	// holding the row, now that the lock guarantees no revoke can interleave
+	// (MUL-5483 review round 8).
+	//
+	// Members only: an agent target has no member row, and revoke's subscription
+	// cleanup is member-scoped, so the outlives-membership problem does not
+	// arise for agents.
+	if userType == "member" {
+		if _, err := qtx.LockActiveMember(ctx, db.LockActiveMemberParams{
+			UserID:      parseUUID(userID),
+			WorkspaceID: parseUUID(workspaceID),
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, errTargetNoLongerMember
+			}
+			return nil, err
+		}
 	}
 
 	ids, err := qtx.UnsubscribeFromIssueSubtree(ctx, db.UnsubscribeFromIssueSubtreeParams{

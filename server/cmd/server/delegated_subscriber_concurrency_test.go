@@ -52,8 +52,8 @@ func blockedTx(t *testing.T, userID string, write func(*db.Queries) error) (rele
 
 	qtx := db.New(testPool).WithTx(tx)
 	if err := qtx.LockSubscriberWrites(ctx, db.LockSubscriberWritesParams{
-		WorkspaceID: testWorkspaceID,
-		UserID:      userID,
+		WorkspaceID: util.MustParseUUID(testWorkspaceID),
+		UserID:      util.MustParseUUID(userID),
 	}); err != nil {
 		t.Fatalf("competing tx lock: %v", err)
 	}

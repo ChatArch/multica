@@ -21,6 +21,21 @@ import { ApiError } from "@multica/core/api/client";
 import { toast } from "sonner";
 import { useT } from "../../i18n";
 
+/**
+ * True only for the deploy-skew 404: a backend that predates
+ * /unsubscribe/subtree, where chi answers an unknown ROUTE with plain text.
+ *
+ * Not every 404 means that. The same endpoint on a current backend returns a
+ * structured JSON 404 when the issue is deleted or not visible, and telling
+ * that user to "wait for the next update" is wrong advice. ApiError.body is the
+ * discriminator: parseErrorBody leaves it undefined when the response was not
+ * JSON, and populated when the server sent a real error document
+ * (MUL-5483 review round 8).
+ */
+function isMissingRouteError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404 && err.body === undefined;
+}
+
 export function useIssueSubscribers(issueId: string, userId?: string) {
   const qc = useQueryClient();
   const { t } = useT("issues");
@@ -135,12 +150,6 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
   // Subscription state is server-owned and the row simply does not change on
   // failure, so nothing on screen moves. Without an explicit message the user
   // reads a failed unsubscribe as a no-op button and tries again forever.
-  //
-  // The 404 branch is the deploy-skew case: web/desktop staging ships on merge
-  // while the backend is deployed by hand, so this build can reach a server
-  // that has no /unsubscribe/subtree route. That is a "come back later", not a
-  // bug the user can act on, and it deserves different words from a generic
-  // failure (MUL-5483 review round 7).
   const unsubscribeFromSubtree = useCallback(() => {
     if (!userId) return;
     subtreeMutation.mutate(
@@ -148,7 +157,7 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
       {
         onError: (err) =>
           toast.error(
-            err instanceof ApiError && err.status === 404
+            isMissingRouteError(err)
               ? t(($) => $.detail.unsubscribe_subtree_unsupported)
               : t(($) => $.detail.unsubscribe_subtree_failed),
           ),

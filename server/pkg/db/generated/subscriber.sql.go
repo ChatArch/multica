@@ -256,16 +256,44 @@ func (q *Queries) ListIssueSubscribers(ctx context.Context, issueID pgtype.UUID)
 	return items, nil
 }
 
+const lockActiveMember = `-- name: LockActiveMember :one
+SELECT id FROM member
+WHERE user_id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockActiveMemberParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Re-assert workspace membership INSIDE a serialized transaction, holding the
+// row so a concurrent revoke cannot complete underneath the caller
+// (MUL-5483 review round 8).
+//
+// The subtree-unsubscribe handler validates membership from its own MVCC
+// snapshot before it opens a transaction, which is only a statement about the
+// past. A revoke that commits in between clears the user's subscriptions and
+// deletes the member row, and the handler would then write a fresh tombstone
+// behind it — leaving an opt-out that outlives the membership and is inherited
+// if the person is ever re-invited.
+func (q *Queries) LockActiveMember(ctx context.Context, arg LockActiveMemberParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockActiveMember, arg.UserID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockSubscriberWrites = `-- name: LockSubscriberWrites :exec
 SELECT pg_advisory_xact_lock(
-    hashtext($1::text),
-    hashtext($2::text)
+    hashtext(($1::uuid)::text),
+    hashtext(($2::uuid)::text)
 )
 `
 
 type LockSubscriberWritesParams struct {
-	WorkspaceID string `json:"workspace_id"`
-	UserID      string `json:"user_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
 }
 
 // Transaction-scoped serialization boundary for (workspace, user) subscriber
@@ -288,6 +316,15 @@ type LockSubscriberWritesParams struct {
 //
 // Keyed on (workspace, user) rather than the issue: an opt-out is about a
 // person and a tree, and the tree's membership is exactly what is changing.
+//
+// The key is derived from the UUID VALUE, not from however the caller happened
+// to spell it. ::uuid parses the input and the outer ::text renders PostgreSQL's
+// canonical lowercase form, so 'AB…' and 'ab…' — the same UUID everywhere else
+// in this file, and to every membership query — also produce the same lock.
+// Hashing the raw string instead let an uppercase request take a DIFFERENT lock
+// from the canonical holder, which silently reopened the very race this lock
+// exists to close. Casting at the DB boundary keeps that guarantee even if a
+// future caller forgets to canonicalize.
 func (q *Queries) LockSubscriberWrites(ctx context.Context, arg LockSubscriberWritesParams) error {
 	_, err := q.db.Exec(ctx, lockSubscriberWrites, arg.WorkspaceID, arg.UserID)
 	return err

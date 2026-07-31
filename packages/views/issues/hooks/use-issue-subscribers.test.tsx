@@ -74,6 +74,8 @@ describe("useIssueSubscribers subtree unsubscribe failures", () => {
     setApiInstance({
       listIssueSubscribers: async () => [],
       unsubscribeFromIssueSubtree: async () => {
+        // chi answers an unknown route with plain text, so parseErrorBody
+        // leaves body undefined. That is the deploy-skew signature.
         throw new ApiError("not found", 404, "Not Found");
       },
     } as unknown as ApiClient);
@@ -85,6 +87,25 @@ describe("useIssueSubscribers subtree unsubscribe failures", () => {
     expect(toastError).toHaveBeenCalledWith(
       "detail.unsubscribe_subtree_unsupported",
     );
+  });
+
+  it("does not blame deploy skew for a structured 404 from a current backend", async () => {
+    setApiInstance({
+      listIssueSubscribers: async () => [],
+      unsubscribeFromIssueSubtree: async () => {
+        // The route exists; the ISSUE is gone or not visible. Telling this user
+        // to wait for the next deploy would be wrong advice.
+        throw new ApiError("issue not found", 404, "Not Found", {
+          error: "issue not found",
+        });
+      },
+    } as unknown as ApiClient);
+
+    const { result } = renderSubscribers();
+    result.current.unsubscribeFromSubtree();
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+    expect(toastError).toHaveBeenCalledWith("detail.unsubscribe_subtree_failed");
   });
 
   it("falls back to a generic failure for any other error", async () => {
