@@ -2,22 +2,27 @@ import { describe, expect, it } from "vitest";
 import { InboxListSchema } from "./schemas";
 
 /**
- * Wire-contract tests for GET /api/inbox.
+ * Tests for mobile's CLIENT-SIDE parsing of GET /api/inbox.
  *
- * These exist because a compile-only check is not enough. During MUL-5483 a new
- * inbox type was added and the mobile label map was updated so `tsc` passed —
- * but the server wrote a NUMBER into `details.child_count`, and `details` is
- * `z.record(z.string(), z.string())`. Since the endpoint parses an ARRAY, one bad
- * row fails the whole parse and `listInbox` falls back to `EMPTY_INBOX_LIST`:
- * the entire mobile inbox renders empty, not just that row. Typechecking the
- * label map could never have caught it.
+ * Scope, stated precisely because the name of this file used to overclaim:
+ * these are hand-written fixtures run against `InboxListSchema`. They pin how
+ * this client REACTS to a given payload. They cannot fail when the Go server
+ * starts sending something new — nothing here executes server code.
  *
- * The rule this pins is general and outlives that feature: every value the Go
- * notification path puts in `details` is a string
- * (server/cmd/server/notification_listeners.go).
+ * The matching server-side guarantee is structural rather than a test: every
+ * `details` map in server/cmd/server/notification_listeners.go is typed
+ * `map[string]string`, so a non-string value is a compile error there.
+ *
+ * Why both halves exist: during MUL-5483 a new inbox type was added and the
+ * mobile label map was updated so `tsc` passed — but a NUMBER went into
+ * `details.child_count`, and `details` is `z.record(z.string(), z.string())`.
+ * Because the endpoint parses an ARRAY, one bad row fails the whole parse and
+ * `listInbox` falls back to `EMPTY_INBOX_LIST`: the entire mobile inbox
+ * renders empty, not just that row. The blast radius is what these tests
+ * document; the compile-time type is what prevents it.
  */
-describe("inbox wire contract", () => {
-  it("parses a row with the details the server actually sends", () => {
+describe("inbox list schema", () => {
+  it("parses a row shaped like the documented server payload", () => {
     const serverRow = {
       id: "inbox-1",
       workspace_id: "ws-1",
@@ -43,7 +48,7 @@ describe("inbox wire contract", () => {
     expect(parsed.success && parsed.data[0]?.details?.to).toBe("in_review");
   });
 
-  it("rejects a numeric details value, so a regression fails here and not in the UI", () => {
+  it("rejects a numeric details value", () => {
     const badRow = {
       id: "inbox-2",
       recipient_type: "member",

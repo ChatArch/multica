@@ -1148,7 +1148,7 @@ export function useUnsubscribeFromIssueSubtree(issueId: string) {
       userId: string;
       userType: "member" | "agent";
     }) => {
-      await api.unsubscribeFromIssue(issueId, userId, userType, true);
+      await api.unsubscribeFromIssueSubtree(issueId, userId, userType);
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });

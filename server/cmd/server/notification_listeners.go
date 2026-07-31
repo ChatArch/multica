@@ -673,8 +673,16 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 		prevDescription, _ := payload["prev_description"].(*string)
 
 		if assigneeChanged {
-			// Build structured details for assignee change
-			detailsMap := map[string]any{}
+			// Build structured details for assignee change.
+			//
+			// map[string]string, not map[string]any: every client parses inbox
+			// `details` as a string->string map, and because the inbox endpoint
+			// returns an ARRAY, one non-string value fails the whole parse and
+			// blanks the entire list rather than one row. `any` let that be a
+			// convention a reviewer had to notice; the concrete type makes it a
+			// compile error. This is the only details map in this file that was
+			// not already string-typed.
+			detailsMap := map[string]string{}
 			if prevAssigneeType != nil {
 				detailsMap["prev_assignee_type"] = *prevAssigneeType
 			}

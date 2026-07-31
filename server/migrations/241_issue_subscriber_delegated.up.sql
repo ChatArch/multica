@@ -18,8 +18,19 @@
 --    unsubscribe would not stick. Auto-subscribe uses ON CONFLICT DO NOTHING,
 --    so a tombstoned row is never resurrected by a rule; only an explicit user
 --    subscribe clears it.
-ALTER TABLE issue_subscriber DROP CONSTRAINT issue_subscriber_reason_check;
+-- The CHECK is only WIDENED (one new allowed value), so every existing row
+-- already satisfies it. A plain ADD CONSTRAINT would still hold ACCESS
+-- EXCLUSIVE on issue_subscriber for a full scan, blocking subscriber reads and
+-- writes on a hot table for the duration. Use the two-step NOT VALID +
+-- VALIDATE CONSTRAINT pattern from migration 060: the add takes the strong
+-- lock only briefly (no scan), and VALIDATE does the scan under SHARE UPDATE
+-- EXCLUSIVE, which does not block concurrent reads or writes. The constraint
+-- still ends up fully validated, so no un-trusted constraint is left behind.
+ALTER TABLE issue_subscriber DROP CONSTRAINT IF EXISTS issue_subscriber_reason_check;
 ALTER TABLE issue_subscriber ADD CONSTRAINT issue_subscriber_reason_check
-    CHECK (reason IN ('creator', 'assignee', 'commenter', 'mentioned', 'manual', 'autopilot', 'delegated'));
+    CHECK (reason IN ('creator', 'assignee', 'commenter', 'mentioned', 'manual', 'autopilot', 'delegated')) NOT VALID;
+ALTER TABLE issue_subscriber VALIDATE CONSTRAINT issue_subscriber_reason_check;
 
+-- Nullable, no default, so this is a catalog-only change in PostgreSQL 11+
+-- and does not rewrite the table.
 ALTER TABLE issue_subscriber ADD COLUMN unsubscribed_at TIMESTAMPTZ;

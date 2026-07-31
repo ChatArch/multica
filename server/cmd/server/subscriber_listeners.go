@@ -178,6 +178,22 @@ func subscribeDelegatedHuman(bus *events.Bus, queries *db.Queries, workspaceID, 
 		return
 	}
 
+	// originator_user_id is a HISTORICAL fact stamped when the task was queued;
+	// GetAgentTaskInWorkspace only proves the task's AGENT still belongs here,
+	// not that the human does. A member who has since been revoked leaves
+	// long-lived tasks running on a shared runtime, and every child they file
+	// would otherwise write a ghost subscriber for a non-member — accumulating
+	// inbox rows and restoring history on re-join. Membership is re-checked at
+	// write time, which is the only moment it is actually true.
+	if _, err := queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID:      human,
+		WorkspaceID: parseUUID(workspaceID),
+	}); err != nil {
+		slog.Debug("delegated subscribe: originator is no longer a workspace member",
+			"issue_id", issueID, "user_id", util.UUIDToString(human))
+		return
+	}
+
 	// Respect an opt-out anywhere up the tree. Without this, "stop watching
 	// this sub-tree" would be undone by the next child the agent files under
 	// it — the rule fires per issue, and a tree keeps growing after the user

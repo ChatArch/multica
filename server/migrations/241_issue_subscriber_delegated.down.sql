@@ -9,6 +9,11 @@ ALTER TABLE issue_subscriber DROP COLUMN unsubscribed_at;
 -- retires its own added reason.
 UPDATE issue_subscriber SET reason = 'manual' WHERE reason = 'delegated';
 
-ALTER TABLE issue_subscriber DROP CONSTRAINT issue_subscriber_reason_check;
+-- Same two-step as the up migration: the UPDATE above already retired every
+-- 'delegated' row, so the narrowed CHECK holds for all existing data. A
+-- rollback runs under production load by definition, which is exactly when a
+-- full-table ACCESS EXCLUSIVE scan is least affordable.
+ALTER TABLE issue_subscriber DROP CONSTRAINT IF EXISTS issue_subscriber_reason_check;
 ALTER TABLE issue_subscriber ADD CONSTRAINT issue_subscriber_reason_check
-    CHECK (reason IN ('creator', 'assignee', 'commenter', 'mentioned', 'manual', 'autopilot'));
+    CHECK (reason IN ('creator', 'assignee', 'commenter', 'mentioned', 'manual', 'autopilot')) NOT VALID;
+ALTER TABLE issue_subscriber VALIDATE CONSTRAINT issue_subscriber_reason_check;

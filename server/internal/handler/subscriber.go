@@ -111,6 +111,26 @@ func (h *Handler) SubscribeToIssue(w http.ResponseWriter, r *http.Request) {
 // UnsubscribeFromIssue removes a user's subscription from an issue.
 // If request body contains user_id, unsubscribes that user; otherwise unsubscribes the caller.
 func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
+	h.unsubscribeFromIssue(w, r, false)
+}
+
+// UnsubscribeFromIssueSubtree leaves this issue AND every descendant, and —
+// via the ancestor opt-out check the delegated rule runs — keeps future
+// children of this tree from re-subscribing the user (MUL-5483).
+//
+// This is a SEPARATE ROUTE rather than a flag on /unsubscribe on purpose.
+// Frontend staging deploys automatically on merge while backend staging is
+// deployed by hand, so a new client routinely talks to an older server. A
+// server that predates this feature decodes an unknown "subtree": true into
+// nothing, unsubscribes the root only, and answers 200 — the user is told the
+// whole tree is muted while every existing and future child keeps notifying.
+// An unknown ROUTE 404s instead, so the client fails loudly and the user can
+// retry rather than trusting a silent no-op.
+func (h *Handler) UnsubscribeFromIssueSubtree(w http.ResponseWriter, r *http.Request) {
+	h.unsubscribeFromIssue(w, r, true)
+}
+
+func (h *Handler) unsubscribeFromIssue(w http.ResponseWriter, r *http.Request, subtree bool) {
 	issueID := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, issueID)
 	if !ok {
@@ -126,10 +146,6 @@ func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserID   *string `json:"user_id"`
 		UserType *string `json:"user_type"`
-		// Subtree leaves this issue AND every descendant in one action, and —
-		// via the ancestor opt-out check the delegated rule runs — keeps future
-		// children of this tree from re-subscribing the user (MUL-5483).
-		Subtree bool `json:"subtree"`
 	}
 	if r.Body != nil {
 		json.NewDecoder(r.Body).Decode(&req)
@@ -151,7 +167,7 @@ func (h *Handler) UnsubscribeFromIssue(w http.ResponseWriter, r *http.Request) {
 	// never sees the root's event, and would otherwise keep showing a
 	// subscription the server has already retired.
 	removed := []string{issueID}
-	if req.Subtree {
+	if subtree {
 		ids, err := h.Queries.UnsubscribeFromIssueSubtree(r.Context(), db.UnsubscribeFromIssueSubtreeParams{
 			ID:       issue.ID,
 			UserType: targetUserType,
