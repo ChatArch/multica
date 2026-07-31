@@ -185,9 +185,11 @@ Resource Labels has completed its schema-first rollout and is now always
 available. Current clients always render agent- and skill-scoped labels, and
 the backend no longer gates their catalog or assignment endpoints.
 `/api/config` still reports `settings_resource_labels: true` so installed
-v0.4.0 desktop clients that still gate the UI on this config decision also
-receive the permanently enabled behavior; this is a client-compatibility
-decision, not an operator-controlled flag.
+desktop clients from v0.4.0 through at least v0.4.15 (every release before this
+change) receive the permanently enabled behavior. Every client in that range
+fails closed to `false` when the key is absent, so this compatibility decision
+must remain until those clients are no longer supported; it is not an
+operator-controlled flag.
 
 The rollback prerequisite that originally justified the flag is implemented by
 the down-migration chain: `174_legacy_label_index_rollback_prep.down.sql`
