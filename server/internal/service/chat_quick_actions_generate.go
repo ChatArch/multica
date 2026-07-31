@@ -29,7 +29,7 @@ const (
 	// 500-rune prompt) fit comfortably; the headroom exists so a verbose model
 	// is truncated by sanitizeChatQuickActions rather than by the upstream
 	// mid-JSON, which would fail the parse outright.
-	chatQuickActionsMaxTokens = 800
+	chatQuickActionsMaxCompletionTokens = 800
 )
 
 // Context window for the pass. Suggestions are about where the conversation
@@ -86,7 +86,7 @@ const (
 // already degrades.
 type ChatQuickActionsLLM interface {
 	Enabled() bool
-	GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxTokens int64) (string, error)
+	GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error)
 }
 
 // chatQuickActionsSystemPrompt is the entire instruction set for the pass. It
@@ -185,7 +185,7 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 		chatQuickActionsSystemPrompt,
 		prompt,
 		chatQuickActionsTemperature,
-		chatQuickActionsMaxTokens,
+		chatQuickActionsMaxCompletionTokens,
 	)
 	if err != nil {
 		// Resolve the placeholder either way; only an explicit refresh reports

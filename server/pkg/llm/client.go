@@ -29,6 +29,7 @@ import (
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/shared"
 )
@@ -201,9 +202,9 @@ func (c *Client) GenerateText(ctx context.Context, model, systemPrompt, userProm
 // word "JSON" has to appear somewhere in the prompt, or OpenAI-compatible
 // endpoints reject the request outright.
 //
-// temperature and maxTokens apply only when positive; zero leaves the upstream
-// default in place. Model empty -> the configured default.
-func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxTokens int64) (string, error) {
+// temperature and maxCompletionTokens apply only when positive; zero leaves
+// the upstream default in place. Model empty -> the configured default.
+func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error) {
 	if !c.Enabled() {
 		return "", ErrNotConfigured
 	}
@@ -224,11 +225,29 @@ func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userProm
 	if temperature > 0 {
 		params.Temperature = openai.Float(temperature)
 	}
-	if maxTokens > 0 {
-		params.MaxTokens = openai.Int(maxTokens)
+	if maxCompletionTokens > 0 {
+		// max_tokens is deprecated and rejected by current reasoning models,
+		// including the GPT-5.6 family. Prefer the replacement field for every
+		// upstream; a narrow compatibility retry below covers older gateways
+		// that have not implemented it yet.
+		params.MaxCompletionTokens = openai.Int(maxCompletionTokens)
 	}
 
+	// The preferred request and its optional compatibility retry share one
+	// deadline, so a legacy gateway cannot double the caller's time budget.
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+
 	completion, err := c.Chat(ctx, params)
+	if err != nil && maxCompletionTokens > 0 && isBadRequestForParameter(err, "max_completion_tokens") {
+		// Some older OpenAI-compatible gateways only recognize max_tokens.
+		// A parameter-validation 400 happens before generation, so one bounded
+		// retry is safe and preserves compatibility without duplicating model
+		// work. Never retry other errors or retry more than once.
+		params.MaxCompletionTokens = param.Opt[int64]{}
+		params.MaxTokens = openai.Int(maxCompletionTokens)
+		completion, err = c.Chat(ctx, params)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -236,6 +255,13 @@ func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userProm
 		return "", errors.New("llm: upstream returned no choices")
 	}
 	return completion.Choices[0].Message.Content, nil
+}
+
+func isBadRequestForParameter(err error, parameter string) bool {
+	var apiErr *openai.Error
+	return errors.As(err, &apiErr) &&
+		apiErr.StatusCode == http.StatusBadRequest &&
+		apiErr.Param == parameter
 }
 
 // withDefaultTimeout returns ctx unchanged (with a no-op cancel) when it already

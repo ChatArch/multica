@@ -132,6 +132,64 @@ func TestGenerateText(t *testing.T) {
 	}
 }
 
+func TestGenerateJSONUsesMaxCompletionTokens(t *testing.T) {
+	var gotBody map[string]any
+	srv := stubUpstream(t, func(w http.ResponseWriter, body map[string]any) {
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"cmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"actions\":[]}"},"finish_reason":"stop"}]}`)
+	})
+
+	c := New(Config{APIKey: "k", BaseURL: srv.URL})
+	out, err := c.GenerateJSON(context.Background(), "gpt-5.6-luna", "Return JSON.", "Generate actions.", 0.3, 800)
+	if err != nil {
+		t.Fatalf("GenerateJSON failed: %v", err)
+	}
+	if out != `{"actions":[]}` {
+		t.Fatalf("unexpected output %q", out)
+	}
+	if gotBody["max_completion_tokens"] != float64(800) {
+		t.Fatalf("expected max_completion_tokens=800, got %#v", gotBody["max_completion_tokens"])
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Fatalf("deprecated max_tokens must be omitted, got body %#v", gotBody)
+	}
+}
+
+func TestGenerateJSONFallsBackToLegacyMaxTokens(t *testing.T) {
+	var bodies []map[string]any
+	srv := stubUpstream(t, func(w http.ResponseWriter, body map[string]any) {
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"Unsupported parameter: max_completion_tokens","type":"invalid_request_error","param":"max_completion_tokens","code":"unsupported_parameter"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"cmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"{\"actions\":[]}"},"finish_reason":"stop"}]}`)
+	})
+
+	c := New(Config{APIKey: "k", BaseURL: srv.URL, MaxRetries: -1})
+	if _, err := c.GenerateJSON(context.Background(), "legacy-model", "Return JSON.", "Generate actions.", 0.3, 800); err != nil {
+		t.Fatalf("GenerateJSON failed: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected one compatibility retry, got %d requests", len(bodies))
+	}
+	if bodies[0]["max_completion_tokens"] != float64(800) {
+		t.Fatalf("first request must use max_completion_tokens, got %#v", bodies[0])
+	}
+	if _, ok := bodies[0]["max_tokens"]; ok {
+		t.Fatalf("first request must omit max_tokens, got %#v", bodies[0])
+	}
+	if bodies[1]["max_tokens"] != float64(800) {
+		t.Fatalf("fallback request must use max_tokens, got %#v", bodies[1])
+	}
+	if _, ok := bodies[1]["max_completion_tokens"]; ok {
+		t.Fatalf("fallback request must omit max_completion_tokens, got %#v", bodies[1])
+	}
+}
+
 func TestChatStream(t *testing.T) {
 	srv := stubUpstream(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
