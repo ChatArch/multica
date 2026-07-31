@@ -649,16 +649,16 @@ export function createMentionSuggestion(
       .filter(
         (s) =>
           !s.archived_at &&
-          activeAgentRuntimeBinding.has(s.leader_id) &&
           (s.name.toLowerCase().includes(q) || matchesPinyin(s.name, q)),
       )
       .map((s) => ({
         id: s.id,
         label: s.name,
         type: "squad" as const,
-        disabledReason: activeAgentRuntimeBinding.get(s.leader_id)
-          ? undefined
-          : ("agent_runtime_required" as const),
+        disabledReason:
+          activeAgentRuntimeBinding.get(s.leader_id) === false
+            ? ("agent_runtime_required" as const)
+            : undefined,
       }));
 
     // Members and agents share a single ranked list — recently mentioned

@@ -1,4 +1,4 @@
--- Reverts 241_agent_runtime_unbind.up.sql.
+-- Reverts 242_agent_runtime_unbind.up.sql.
 --
 -- Restoring NOT NULL requires that no unbound row exists. This down migration
 -- deliberately does NOT delete unbound agents to make itself succeed: deleting
