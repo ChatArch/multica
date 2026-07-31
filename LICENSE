@@ -1,8 +1,16 @@
 # Multica License
 
 Multica is provided under the terms of the Apache License, Version 2.0 —
-the complete, unmodified text of which is reproduced at the end of this
-file — subject to the following additional conditions:
+the complete, unmodified text of which is reproduced in Part II of this
+file — subject to the additional conditions in Part I.
+
+Part I and Part II together constitute the "Multica License". Neither part
+grants any rights on its own. Condition 3 states how the two parts fit
+together and what must be delivered when you redistribute.
+
+------------------------------------------------------------------------
+
+                       Part I — Additional Conditions
 
 1. Multica may be utilized commercially, including as a backend service for
    other applications or as a task management platform for enterprises,
@@ -60,19 +68,46 @@ file — subject to the following additional conditions:
       or from the producer's silence, review, or acceptance of your
       contributions.
 
-2. As a contributor, you should agree that:
+2. Contributions: By submitting a contribution to Multica, you agree that:
 
-   a. The producer can adjust the open-source agreement to be more strict
-      or relaxed as deemed necessary.
+   a. The producer can adjust this Multica License to be more strict or
+      relaxed as deemed necessary.
 
    b. Your contributed code may be used for commercial purposes, including
       but not limited to its cloud business operations.
 
-Apart from the specific conditions mentioned above, all other rights and
-restrictions follow the Apache License, Version 2.0, as reproduced in full
-below. It is also available at http://www.apache.org/licenses/LICENSE-2.0.
+   c. Your contribution is submitted under this Multica License as a whole,
+      as described in condition 3, and not under Part II alone.
 
-© 2025 Multica, Inc.
+3. Composition, precedence, and redistribution:
+
+   a. This entire file is the Multica License. Part I (these additional
+      conditions) and Part II (the incorporated Apache License, Version
+      2.0) together form a single set of terms. Apart from the conditions
+      stated in Part I, all other rights and restrictions follow Part II.
+
+   b. Wherever Part II refers to "this License", that reference means the
+      Multica License as a whole — Part I and Part II together — and not
+      Part II in isolation. This includes the copy of the License that
+      section 4(a) of Part II requires you to give to recipients, and the
+      terms under which section 5 of Part II treats a contribution as
+      submitted.
+
+   c. If Part I and Part II conflict, Part I controls.
+
+   d. If you redistribute Multica or a derivative work of it, you must
+      deliver this complete file. Delivering Part II alone does not
+      satisfy the Multica License or section 4(a) of Part II.
+
+© 2025-2026 Multica, Inc.
+
+------------------------------------------------------------------------
+
+               Part II — Incorporated Apache License 2.0 Text
+
+The text below is reproduced verbatim and unmodified from
+https://www.apache.org/licenses/LICENSE-2.0.txt. It is incorporated into
+the Multica License as described in condition 3 above.
 
 ------------------------------------------------------------------------
 
