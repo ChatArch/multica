@@ -37,6 +37,13 @@ type qoderBackend struct {
 	defaultExecutable string
 }
 
+func qoderDefaultBinary(providerType string) string {
+	if providerType == "qoderclicn" {
+		return "qoderclicn"
+	}
+	return "qodercli"
+}
+
 var qoderReaderDrainGrace = 2 * time.Second
 
 type qoderMessageStream struct {
@@ -72,12 +79,9 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	execPath := b.cfg.ExecutablePath
 	if execPath == "" {
 		execPath = b.defaultExecutable
-		if execPath == "" {
-			execPath = "qodercli"
-		}
 	}
 	if _, err := exec.LookPath(execPath); err != nil {
-		return nil, fmt.Errorf("qoder executable not found at %q: %w", execPath, err)
+		return nil, fmt.Errorf("%s executable not found at %q: %w", b.defaultExecutable, execPath, err)
 	}
 
 	// Translate the agent's mcp_config (Claude-style object of objects) into

@@ -5783,7 +5783,7 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 	// why this needs its own branch rather than a phrase added to the
 	// rejection list.
 	//
-	// It applies to all 17 backends, not the ResumeRejectionUndetectable
+	// It applies to all 18 backends, not the ResumeRejectionUndetectable
 	// subset below, and that is deliberate: this is the one failure class
 	// where dropping the session is provably the fix without the backend
 	// having to detect anything. The evidence is in the provider's own error

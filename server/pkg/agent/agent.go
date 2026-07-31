@@ -326,10 +326,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &kiroBackend{cfg: cfg}, nil
 	case "antigravity":
 		return &antigravityBackend{cfg: cfg}, nil
-	case "qoder":
-		return &qoderBackend{cfg: cfg, defaultExecutable: "qodercli"}, nil
-	case "qoderclicn":
-		return &qoderBackend{cfg: cfg, defaultExecutable: "qoderclicn"}, nil
+	case "qoder", "qoderclicn":
+		return &qoderBackend{cfg: cfg, defaultExecutable: qoderDefaultBinary(agentType)}, nil
 	case "traecli":
 		return &traecliBackend{cfg: cfg}, nil
 	case "grok":

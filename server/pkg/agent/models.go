@@ -174,12 +174,8 @@ func ListModels(ctx context.Context, providerType, executablePath string) (Catal
 			return discovered(discoverKiroModels(ctx, executablePath))
 		})
 	case "qoder", "qoderclicn":
-		defaultBin := "qodercli"
-		if providerType == "qoderclicn" {
-			defaultBin = "qoderclicn"
-		}
 		return cachedDiscovery(providerType, func() (Catalog, error) {
-			return discovered(discoverQoderModels(ctx, executablePath, defaultBin))
+			return discovered(discoverQoderModels(ctx, executablePath, qoderDefaultBinary(providerType)))
 		})
 	case "opencode":
 		return cachedDiscovery(discoveryCacheKey(providerType, executablePath), func() (Catalog, error) {
