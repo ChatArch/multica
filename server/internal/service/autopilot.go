@@ -1267,6 +1267,12 @@ func agentReadinessReasonCode(agent db.Agent) dispatch.ReasonCode {
 	if agent.ArchivedAt.Valid {
 		return dispatch.ReasonTargetUnavailable
 	}
+	// No runtime bound at all is a different user story from a runtime that is
+	// merely offline: nothing will ever pick the work up, and the fix is to bind
+	// the agent to a runtime (MUL-5559).
+	if !agent.RuntimeID.Valid {
+		return dispatch.ReasonAgentRuntimeRequired
+	}
 	return dispatch.ReasonRuntimeOffline
 }
 

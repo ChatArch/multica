@@ -49,13 +49,17 @@ func insertProfileRuntimeFixture(t *testing.T, ctx context.Context, profileID, n
 	return runtimeID
 }
 
-// TestDeleteRuntimeProfile_ArchivedAgentCascade is the regression guard for the
-// FK-RESTRICT 500: a profile whose only remaining agent is ARCHIVED must still
-// delete cleanly. agent.runtime_id is ON DELETE RESTRICT, so without the
-// per-runtime archived-agent teardown the DELETE on agent_runtime would raise a
-// raw FK error and the handler would 500. The cascade must hard-delete the
-// archived agent, the runtime row, and the profile.
-func TestDeleteRuntimeProfile_ArchivedAgentCascade(t *testing.T) {
+// TestDeleteRuntimeProfile_ArchivedAgentUnbindCascade is the regression guard for
+// the FK-RESTRICT 500: a profile whose only remaining agent is ARCHIVED must
+// still delete cleanly. agent.runtime_id is ON DELETE RESTRICT, so without the
+// per-runtime teardown the DELETE on agent_runtime would raise a raw FK error and
+// the handler would 500.
+//
+// Since MUL-5559 the teardown unbinds that agent instead of hard-deleting it, so
+// this test also pins what must NOT happen: the agent survives with its channel
+// installation intact. Sweeping the installation of a surviving agent would take
+// a working bot away from it — the mirror of the #4810 orphan problem.
+func TestDeleteRuntimeProfile_ArchivedAgentUnbindCascade(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -66,16 +70,15 @@ func TestDeleteRuntimeProfile_ArchivedAgentCascade(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Cascade Profile Archived Agent")
 
 	// Archive the agent — the active-agent guard passes, but the FK still pins
-	// the runtime row until the archived cascade clears it.
+	// the runtime row until the teardown unbinds it.
 	if _, err := testPool.Exec(ctx, `UPDATE agent SET archived_at = now() WHERE id = $1`, agentID); err != nil {
 		t.Fatalf("archive agent: %v", err)
 	}
 
 	// Give the archived agent a channel installation (+ a dependent binding).
-	// channel_* has no FK to agent (MUL-3515 §4), so this DeleteRuntimeProfile
-	// teardown entry point must sweep it explicitly — otherwise the bot's app_id
-	// slot stays occupied after the agent is hard-deleted, and the bot can never
-	// rebind anywhere (#4810). This pins that sweep on the profile-delete path.
+	// The agent is no longer hard-deleted here, so the installation must be left
+	// alone: it belongs to an agent that still exists and whose bot must keep
+	// working once it is bound to a new runtime.
 	const rpApp = "cli_rp_cascade"
 	const rpChat = "cc000000-0000-4000-8000-0000000000f7"
 	_, _ = testPool.Exec(ctx, `DELETE FROM channel_installation WHERE config->>'app_id' = $1`, rpApp)
@@ -122,22 +125,30 @@ VALUES ($1, $2, 'feishu', 'oc_rp', 'p2p')`, rpChat, rpInstallID); err != nil {
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent WHERE id = $1`, agentID).Scan(&agentRows); err != nil {
 		t.Fatalf("count agent rows: %v", err)
 	}
-	if agentRows != 0 {
-		t.Fatalf("expected archived agent hard-deleted by cascade, found %d", agentRows)
+	if agentRows != 1 {
+		t.Fatalf("expected the archived agent to survive as an unbound agent, found %d rows", agentRows)
+	}
+	var stillBound bool
+	if err := testPool.QueryRow(ctx,
+		`SELECT runtime_id IS NOT NULL FROM agent WHERE id = $1`, agentID).Scan(&stillBound); err != nil {
+		t.Fatalf("read agent binding: %v", err)
+	}
+	if stillBound {
+		t.Fatalf("surviving agent must be unbound (runtime_id IS NULL)")
 	}
 
 	var instRows, bindingRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM channel_installation WHERE id = $1`, rpInstallID).Scan(&instRows); err != nil {
 		t.Fatalf("count channel installation: %v", err)
 	}
-	if instRows != 0 {
-		t.Fatalf("archived agent's channel installation not swept on runtime-profile delete: %d rows (its bot's app_id slot stays occupied, #4810)", instRows)
+	if instRows != 1 {
+		t.Fatalf("surviving agent's channel installation was swept: %d rows (its bot would stop working)", instRows)
 	}
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM channel_chat_session_binding WHERE installation_id = $1`, rpInstallID).Scan(&bindingRows); err != nil {
 		t.Fatalf("count channel chat-session binding: %v", err)
 	}
-	if bindingRows != 0 {
-		t.Fatalf("channel chat-session binding not swept: %d dangling rows", bindingRows)
+	if bindingRows != 1 {
+		t.Fatalf("surviving installation's chat-session binding was swept: %d rows", bindingRows)
 	}
 }
 

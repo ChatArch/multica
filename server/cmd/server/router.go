@@ -1378,13 +1378,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
 					r.Delete("/", h.DeleteAgentRuntime)
-					// Cascade variant of DELETE: archive every active agent
-					// bound to this runtime, cancel their tasks, then delete
-					// the runtime — all in one transaction. Used by the
-					// DeleteRuntimeDialog when the strict DELETE refused with
-					// `runtime_has_active_agents` and the user confirmed the
-					// cascade plan.
-					r.Post("/archive-agents-and-delete", h.ArchiveAgentsAndDeleteRuntime)
+					// Confirmed variant of DELETE: unbind every agent bound to
+					// this runtime (they keep their configuration and chats and
+					// need a new runtime to run again), cancel their tasks,
+					// detach their task history, then delete the runtime — all
+					// in one transaction. Used by the DeleteRuntimeDialog when
+					// the strict DELETE refused with
+					// `runtime_has_active_agents` and the user confirmed.
+					r.Post("/unbind-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					// Legacy path for installed clients built against the
+					// archive-and-delete contract (MUL-5559 renamed the
+					// behaviour, not just the route). Same handler.
+					r.Post("/archive-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
 				})
 			})
 

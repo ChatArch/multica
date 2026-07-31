@@ -15,7 +15,7 @@ const cancelAgentTasksByRuntimeOrAgent = `-- name: CancelAgentTasksByRuntimeOrAg
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now()
 WHERE (runtime_id = ANY($1::uuid[]) OR agent_id = ANY($2::uuid[]))
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for
 `
 
@@ -38,6 +38,14 @@ type CancelAgentTasksByRuntimeOrAgentParams struct {
 // poller (watchTaskCancellation) interrupts the running agent gracefully.
 // Returns the affected rows so the caller can broadcast task:cancelled and
 // reconcile per-agent status.
+//
+// The status list must cover EVERY non-terminal status, not just the ones the
+// daemon is actively working: 'deferred' (migration 128, comment-routing
+// escalation) was missing here and only went unnoticed because the runtime
+// delete used to cascade those rows away. Since MUL-5559 the runtime delete
+// unbinds history rows instead, and agent_task_queue_active_requires_runtime
+// rejects an active row without a runtime — so a missed status now surfaces as
+// a failed delete (runtime_delete_not_drained) instead of silent data loss.
 func (q *Queries) CancelAgentTasksByRuntimeOrAgent(ctx context.Context, arg CancelAgentTasksByRuntimeOrAgentParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByRuntimeOrAgent, arg.RuntimeIds, arg.AgentIds)
 	if err != nil {
@@ -121,17 +129,19 @@ func (q *Queries) CountActiveAgentsByRuntime(ctx context.Context, runtimeID pgty
 	return count, err
 }
 
-const countActiveSquadsWithArchivedLeadersByRuntime = `-- name: CountActiveSquadsWithArchivedLeadersByRuntime :one
-SELECT count(*)
-FROM squad
-WHERE archived_at IS NULL
-  AND leader_id IN (
-    SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
-  )
+const countUndrainedTasksByRuntime = `-- name: CountUndrainedTasksByRuntime :one
+SELECT count(*) FROM agent_task_queue
+WHERE runtime_id = $1 AND completed_at IS NULL
 `
 
-func (q *Queries) CountActiveSquadsWithArchivedLeadersByRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countActiveSquadsWithArchivedLeadersByRuntime, runtimeID)
+// Belt-and-braces gate for the runtime-delete transaction: after cancelling,
+// every task on this runtime must be terminal (completed_at IS NOT NULL) before
+// the unbind UPDATE runs. Non-zero means some non-terminal status escaped
+// CancelAgentTasksByRuntimeOrAgent — the handler aborts with 409
+// runtime_delete_not_drained rather than letting the CHECK constraint turn it
+// into an opaque 500, and rather than deleting the rows to make it go away.
+func (q *Queries) CountUndrainedTasksByRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countUndrainedTasksByRuntime, runtimeID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -143,33 +153,6 @@ DELETE FROM agent_runtime WHERE id = $1
 
 func (q *Queries) DeleteAgentRuntime(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteAgentRuntime, id)
-	return err
-}
-
-const deleteArchivedAgentsByRuntime = `-- name: DeleteArchivedAgentsByRuntime :exec
-DELETE FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
-`
-
-func (q *Queries) DeleteArchivedAgentsByRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteArchivedAgentsByRuntime, runtimeID)
-	return err
-}
-
-const deleteSquadsByArchivedAgentsOnRuntime = `-- name: DeleteSquadsByArchivedAgentsOnRuntime :exec
-DELETE FROM squad
-WHERE leader_id IN (
-    SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
-)
-  AND archived_at IS NOT NULL
-`
-
-// Removes archived squads whose leader_id references an archived agent on the
-// given runtime. Must run before DeleteArchivedAgentsByRuntime so the RESTRICT
-// FK on squad.leader_id does not block the agent deletion. Active squads are
-// handled separately by CountActiveSquadsWithArchivedLeadersByRuntime, which
-// returns a 409 until the caller archives them or assigns a new leader.
-func (q *Queries) DeleteSquadsByArchivedAgentsOnRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteSquadsByArchivedAgentsOnRuntime, runtimeID)
 	return err
 }
 
@@ -627,33 +610,6 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 	return items, nil
 }
 
-const listArchivedAgentIDsByRuntime = `-- name: ListArchivedAgentIDsByRuntime :many
-SELECT id FROM agent WHERE runtime_id = $1 AND archived_at IS NOT NULL
-`
-
-// Companion to DeleteArchivedAgentsByRuntime: enumerates the archived agents
-// about to be hard-deleted so the runtime teardown can pause autopilots that
-// still point at them. Returns ids only — the caller only needs the set.
-func (q *Queries) ListArchivedAgentIDsByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listArchivedAgentIDsByRuntime, runtimeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listDaemonCustomNames = `-- name: ListDaemonCustomNames :many
 SELECT custom_name FROM agent_runtime
 WHERE workspace_id = $1
@@ -833,25 +789,6 @@ func (q *Queries) MarkRuntimesOfflineByIDs(ctx context.Context, arg MarkRuntimes
 	return items, nil
 }
 
-const pauseAutopilotsByAgentAssignees = `-- name: PauseAutopilotsByAgentAssignees :exec
-UPDATE autopilot
-SET status = 'paused', updated_at = now()
-WHERE status = 'active'
-  AND assignee_type = 'agent'
-  AND assignee_id = ANY($1::uuid[])
-`
-
-// Pauses every active autopilot whose agent assignee is in the supplied list.
-// Called before hard-deleting archived agents on runtime teardown so the rows
-// do not become dangling (autopilot.assignee_id no longer has an agent FK
-// since migration 096). Status='paused' makes the breakage visible in the UI
-// — operators can re-point the autopilot at a live agent or delete it —
-// rather than silently piling skipped runs.
-func (q *Queries) PauseAutopilotsByAgentAssignees(ctx context.Context, assigneeIds []pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, pauseAutopilotsByAgentAssignees, assigneeIds)
-	return err
-}
-
 const reassignAgentsToRuntime = `-- name: ReassignAgentsToRuntime :execrows
 UPDATE agent
 SET runtime_id = $1
@@ -1016,6 +953,93 @@ func (q *Queries) TouchAgentRuntimesLastSeenBatch(ctx context.Context, ids []pgt
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const unbindTasksFromRuntime = `-- name: UnbindTasksFromRuntime :execrows
+UPDATE agent_task_queue
+SET runtime_id = NULL
+WHERE runtime_id = $1 AND completed_at IS NOT NULL
+`
+
+// Detaches this runtime's task history so deleting the runtime row cannot
+// cascade it away (agent_task_queue.runtime_id is ON DELETE CASCADE, and
+// task_message / task_usage / task_token cascade from the task in turn).
+// Restricted to terminal rows: an active task must keep its runtime, per
+// agent_task_queue_active_requires_runtime. The caller runs
+// CancelAgentTasksByRuntimeOrAgent + CountUndrainedTasksByRuntime first, so at
+// this point "terminal" is every row on the runtime.
+func (q *Queries) UnbindTasksFromRuntime(ctx context.Context, runtimeID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, unbindTasksFromRuntime, runtimeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const unbindUserAgentsFromRuntime = `-- name: UnbindUserAgentsFromRuntime :many
+UPDATE agent
+SET runtime_id = NULL, updated_at = now()
+WHERE runtime_id = $1 AND kind = 'user'
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+// MUL-5559: the runtime-delete replacement for archive-then-hard-delete. Every
+// user agent bound to this runtime becomes unbound (runtime_id IS NULL) and
+// keeps its row, chats, labels, channel installations and autopilot config.
+//
+// Deliberately NOT filtered on archived_at: an agent archived earlier is just
+// as much the user's data as an active one, and hard-deleting it was the same
+// bug. Deliberately restricted to kind = 'user': system agents are invisible
+// execution infrastructure with no UI to rebind them (see
+// DeleteSystemAgentsByRuntime), so leaving them unbound would strand rows no
+// one can repair.
+func (q *Queries) UnbindUserAgentsFromRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, unbindUserAgentsFromRuntime, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateAgentRuntimeCustomName = `-- name: UpdateAgentRuntimeCustomName :one

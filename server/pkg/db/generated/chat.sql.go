@@ -478,25 +478,6 @@ func (q *Queries) DeleteChatDraftRestore(ctx context.Context, arg DeleteChatDraf
 	return result.RowsAffected(), nil
 }
 
-const deleteChatDraftRestoresByArchivedRuntimeAgents = `-- name: DeleteChatDraftRestoresByArchivedRuntimeAgents :exec
-DELETE FROM chat_draft_restore
-WHERE chat_session_id IN (
-    SELECT cs.id FROM chat_session cs
-    JOIN agent a ON a.id = cs.agent_id
-    WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-)
-`
-
-// chat_session cascades from agent, so hard-deleting a runtime's archived agents
-// silently drops their sessions — and, without an FK, would strand the pending
-// restores (which still hold the user's prompt text) forever. Prune them in the
-// same tx, BEFORE the agent rows go: the join below needs them. Mirrors
-// DeleteChannelInstallationsByArchivedRuntimeAgents.
-func (q *Queries) DeleteChatDraftRestoresByArchivedRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteChatDraftRestoresByArchivedRuntimeAgents, runtimeID)
-	return err
-}
-
 const deleteChatDraftRestoresBySession = `-- name: DeleteChatDraftRestoresBySession :exec
 DELETE FROM chat_draft_restore
 WHERE chat_session_id = $1
@@ -518,10 +499,14 @@ WHERE chat_session_id IN (
 )
 `
 
-// Same cascade, for the system agents a runtime teardown also hard-deletes
-// (DeleteSystemAgentsByRuntime). Split from the archived-agent prune because the
-// runtime-profile teardown deletes only archived agents: pruning system-agent
-// sessions there would destroy restores whose session survives.
+// chat_session cascades from agent, so hard-deleting a runtime's system agents
+// silently drops their sessions — and, without an FK, would strand the pending
+// restores (which still hold the user's prompt text) forever. Prune them in the
+// same tx, BEFORE the agent rows go: the join below needs them. Mirrors
+// DeleteChannelInstallationsBySystemRuntimeAgents.
+//
+// Only system agents are hard-deleted on runtime teardown since MUL-5559; user
+// agents (archived or not) are unbound and keep their sessions and restores.
 func (q *Queries) DeleteChatDraftRestoresBySystemRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteChatDraftRestoresBySystemRuntimeAgents, runtimeID)
 	return err
@@ -1510,34 +1495,6 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
-}
-
-const lockChatSessionsByArchivedRuntimeAgents = `-- name: LockChatSessionsByArchivedRuntimeAgents :many
-SELECT cs.id FROM chat_session cs
-JOIN agent a ON a.id = cs.agent_id
-WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-ORDER BY cs.id
-FOR UPDATE OF cs
-`
-
-func (q *Queries) LockChatSessionsByArchivedRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockChatSessionsByArchivedRuntimeAgents, runtimeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const lockChatSessionsBySystemRuntimeAgents = `-- name: LockChatSessionsBySystemRuntimeAgents :many

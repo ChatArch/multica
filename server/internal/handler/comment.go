@@ -2587,7 +2587,9 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				continue
 			}
 			if !agent.RuntimeID.Valid {
-				blockTarget("squad", m.ID, ReasonRuntimeOffline)
+				// Unbound, not offline: the leader survived its runtime's
+				// deletion and needs a new one (MUL-5559).
+				blockTarget("squad", m.ID, ReasonAgentRuntimeRequired)
 				continue
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
@@ -2640,7 +2642,9 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			continue
 		}
 		if !agent.RuntimeID.Valid {
-			blockTarget("agent", m.ID, ReasonRuntimeOffline)
+			// Unbound, not offline: there is no machine to bring back, so the
+			// user needs "bind a runtime", not "reconnect it" (MUL-5559).
+			blockTarget("agent", m.ID, ReasonAgentRuntimeRequired)
 			continue
 		}
 		hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, agentUUID, opts)

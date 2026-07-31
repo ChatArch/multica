@@ -634,13 +634,6 @@ WHERE workspace_id = $1
 ORDER BY id
 FOR UPDATE;
 
--- name: LockChatSessionsByArchivedRuntimeAgents :many
-SELECT cs.id FROM chat_session cs
-JOIN agent a ON a.id = cs.agent_id
-WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-ORDER BY cs.id
-FOR UPDATE OF cs;
-
 -- name: LockChatSessionsBySystemRuntimeAgents :many
 SELECT cs.id FROM chat_session cs
 JOIN agent a ON a.id = cs.agent_id
@@ -648,24 +641,15 @@ WHERE a.runtime_id = $1 AND a.kind = 'system'
 ORDER BY cs.id
 FOR UPDATE OF cs;
 
--- name: DeleteChatDraftRestoresByArchivedRuntimeAgents :exec
--- chat_session cascades from agent, so hard-deleting a runtime's archived agents
+-- name: DeleteChatDraftRestoresBySystemRuntimeAgents :exec
+-- chat_session cascades from agent, so hard-deleting a runtime's system agents
 -- silently drops their sessions — and, without an FK, would strand the pending
 -- restores (which still hold the user's prompt text) forever. Prune them in the
 -- same tx, BEFORE the agent rows go: the join below needs them. Mirrors
--- DeleteChannelInstallationsByArchivedRuntimeAgents.
-DELETE FROM chat_draft_restore
-WHERE chat_session_id IN (
-    SELECT cs.id FROM chat_session cs
-    JOIN agent a ON a.id = cs.agent_id
-    WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-);
-
--- name: DeleteChatDraftRestoresBySystemRuntimeAgents :exec
--- Same cascade, for the system agents a runtime teardown also hard-deletes
--- (DeleteSystemAgentsByRuntime). Split from the archived-agent prune because the
--- runtime-profile teardown deletes only archived agents: pruning system-agent
--- sessions there would destroy restores whose session survives.
+-- DeleteChannelInstallationsBySystemRuntimeAgents.
+--
+-- Only system agents are hard-deleted on runtime teardown since MUL-5559; user
+-- agents (archived or not) are unbound and keep their sessions and restores.
 DELETE FROM chat_draft_restore
 WHERE chat_session_id IN (
     SELECT cs.id FROM chat_session cs
