@@ -129,6 +129,24 @@ done
 `
 }
 
+func TestQoderCNBackendMissingExecutableNamesQoderCNBinary(t *testing.T) {
+	t.Parallel()
+
+	missingPath := missingAgentExecutable(t, "qoderclicn")
+	backend, err := New("qoderclicn", Config{ExecutablePath: missingPath})
+	if err != nil {
+		t.Fatalf("new Qoder CN backend: %v", err)
+	}
+
+	_, err = backend.Execute(context.Background(), "hello", ExecOptions{})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing executable error")
+	}
+	if !strings.Contains(err.Error(), "qoderclicn executable not found") {
+		t.Fatalf("Execute() error = %q, want qoderclicn executable label", err)
+	}
+}
+
 func fakeQoderACPScriptWithLeakedStdout() string {
 	return `#!/bin/sh
 # Fake qodercli that returns session/prompt but leaves stdout open via a child

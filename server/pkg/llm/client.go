@@ -191,6 +191,53 @@ func (c *Client) GenerateText(ctx context.Context, model, systemPrompt, userProm
 	return completion.Choices[0].Message.Content, nil
 }
 
+// GenerateJSON is GenerateText's structured sibling, for internal callers whose
+// reply has to be machine-readable (quick-action suggestions, ...). It requests
+// response_format=json_object and returns the assistant's raw text unparsed.
+//
+// JSON-object mode only guarantees the reply is syntactically valid JSON, never
+// that its shape matches what the prompt asked for, so the caller still owns
+// parsing and validation. One upstream constraint the caller must honor: the
+// word "JSON" has to appear somewhere in the prompt, or OpenAI-compatible
+// endpoints reject the request outright.
+//
+// temperature and maxTokens apply only when positive; zero leaves the upstream
+// default in place. Model empty -> the configured default.
+func (c *Client) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxTokens int64) (string, error) {
+	if !c.Enabled() {
+		return "", ErrNotConfigured
+	}
+
+	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
+	if strings.TrimSpace(systemPrompt) != "" {
+		messages = append(messages, openai.SystemMessage(systemPrompt))
+	}
+	messages = append(messages, openai.UserMessage(userPrompt))
+
+	params := openai.ChatCompletionNewParams{
+		Messages: messages,
+		Model:    shared.ChatModel(strings.TrimSpace(model)),
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
+		},
+	}
+	if temperature > 0 {
+		params.Temperature = openai.Float(temperature)
+	}
+	if maxTokens > 0 {
+		params.MaxTokens = openai.Int(maxTokens)
+	}
+
+	completion, err := c.Chat(ctx, params)
+	if err != nil {
+		return "", err
+	}
+	if len(completion.Choices) == 0 {
+		return "", errors.New("llm: upstream returned no choices")
+	}
+	return completion.Choices[0].Message.Content, nil
+}
+
 // withDefaultTimeout returns ctx unchanged (with a no-op cancel) when it already
 // has a deadline, otherwise a child context bounded by defaultRequestTimeout.
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
