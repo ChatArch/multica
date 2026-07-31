@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { workspaceKeys } from "@multica/core/workspace/queries";
@@ -10,9 +10,16 @@ import enCommon from "../../locales/en/common.json";
 import enAuth from "../../locales/en/auth.json";
 import enSettings from "../../locales/en/settings.json";
 import enEditor from "../../locales/en/editor.json";
+import enIssues from "../../locales/en/issues.json";
 
 const TEST_RESOURCES = {
-  en: { common: enCommon, auth: enAuth, settings: enSettings, editor: enEditor },
+  en: {
+    common: enCommon,
+    auth: enAuth,
+    settings: enSettings,
+    editor: enEditor,
+    issues: enIssues,
+  },
 };
 
 function I18nWrapper({ children }: { children: ReactNode }) {
@@ -47,6 +54,12 @@ vi.mock("@multica/core/api", () => ({
 const authState = { user: { id: "u1" } as { id: string } | null };
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: { getState: () => authState },
+}));
+
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: ({ actorId }: { actorId: string }) => (
+    <span data-testid={`actor-${actorId}`} />
+  ),
 }));
 
 import {
@@ -186,8 +199,9 @@ describe("createMentionSuggestion", () => {
     expect(items.some((i) => i.type === "agent" && i.label === "Aegis")).toBe(true);
   });
 
-  it("does not offer an unbound agent as a mention target", () => {
+  it("keeps an unbound agent discoverable but marks it as unselectable", () => {
     const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [
         {
           id: "a1",
@@ -204,9 +218,47 @@ describe("createMentionSuggestion", () => {
     const config = createMentionSuggestion(qc);
     const items = config.items!(itemArgs("a")) as MentionItem[];
 
-    expect(items.some((item) => item.type === "agent" && item.id === "a1")).toBe(
-      false,
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        type: "agent",
+        id: "a1",
+        disabledReason: "agent_runtime_required",
+      }),
     );
+  });
+
+  it("does not select a runtime-required mention row by click or keyboard", () => {
+    const command = vi.fn<(item: MentionItem) => void>();
+    const ref = createRef<MentionListRef>();
+    render(
+      <I18nWrapper>
+        <MentionList
+          ref={ref}
+          items={[
+            {
+              id: "a1",
+              label: "Aegis",
+              type: "agent",
+              disabledReason: "agent_runtime_required",
+            },
+          ]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const row = screen.getByRole("button", {
+      name: "Aegis: This target has no runtime — bind one to run it",
+    });
+    expect(row).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(row);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "Enter" }),
+      }),
+    ).toBe(true);
+    expect(command).not.toHaveBeenCalled();
   });
 
   it("loads server issue matches into the popup when the list cache misses", async () => {
@@ -683,7 +735,7 @@ describe("createMentionSuggestion", () => {
     expect(items.some((i) => i.type === "squad" && i.label === "Archived Squad")).toBe(false);
   });
 
-  it("does not offer a squad whose leader is unbound", () => {
+  it("keeps a squad with an unbound leader discoverable but unselectable", () => {
     const qc = fakeQc({
       agents: [
         {
@@ -709,8 +761,12 @@ describe("createMentionSuggestion", () => {
     const config = createMentionSuggestion(qc);
     const items = config.items!(itemArgs("")) as MentionItem[];
 
-    expect(items.some((item) => item.type === "squad" && item.id === "s1")).toBe(
-      false,
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        type: "squad",
+        id: "s1",
+        disabledReason: "agent_runtime_required",
+      }),
     );
   });
 

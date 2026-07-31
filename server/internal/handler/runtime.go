@@ -943,7 +943,7 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	// KEY SHARE lock through their runtime FK, so no active agent can appear
 	// after this check and then be silently unbound by the teardown.
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
-		writeError(w, http.StatusNotFound, "runtime not found")
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
 	}
 	if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), rt.ID); err != nil {
@@ -1170,12 +1170,6 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusConflict, body)
 		return
 	}
-
-	// Build the agent ID list once — it is the explicit allowlist the
-	// confirmed-set check is about. Nothing below keys off it: the teardown
-	// unbinds by runtime_id, and the locks above guarantee the set cannot grow
-	// between the check and the unbind.
-	_ = currentActive
 
 	// Single teardown, shared with the light DELETE path: unbind every user
 	// agent (active and archived) plus their task history, cancel what was

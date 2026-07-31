@@ -410,19 +410,15 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		// Stabilize runtime_id/archived_at through commit. Runtime teardown
-		// takes FOR UPDATE on this row and follows the same Agent→Autopilot lock
-		// order, so whichever operation starts first produces a complete result.
+		// Stabilize runtime_id through commit. Runtime teardown takes FOR UPDATE
+		// on this row and follows the same Agent→Autopilot lock order, so
+		// whichever operation starts first produces a complete result.
 		newLeader, err := qtx.LockAgentForAutopilotAssignment(r.Context(), db.LockAgentForAutopilotAssignmentParams{
 			ID:          lid,
 			WorkspaceID: wsUUID,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "leader must be a valid agent in this workspace")
-			return
-		}
-		if newLeader.ArchivedAt.Valid {
-			writeError(w, http.StatusUnprocessableEntity, "leader agent is archived; restore it or pick a different leader")
 			return
 		}
 		// A non-admin creator may only promote an agent they can @-trigger.
