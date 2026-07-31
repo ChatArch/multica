@@ -667,10 +667,6 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 type SendChatMessageRequest struct {
 	Content       string   `json:"content"`
 	AttachmentIDs []string `json:"attachment_ids"`
-	// QuickActionsEnabled lets the sender opt this turn out of follow-up
-	// suggestion generation (Settings → Chat toggle). Pointer so an absent
-	// field (older clients) means enabled — only an explicit false disables.
-	QuickActionsEnabled *bool `json:"quick_actions_enabled"`
 }
 
 type SendChatMessageResponse struct {
@@ -792,8 +788,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator — surfaced to the agent
 	// under `## Task Initiator`. actorType/actorID were resolved above for the
 	// invoke gate.
-	quickActionsDisabled := req.QuickActionsEnabled != nil && !*req.QuickActionsEnabled
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), quickActionsDisabled)
+	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to send chat message: "+err.Error())
 		return

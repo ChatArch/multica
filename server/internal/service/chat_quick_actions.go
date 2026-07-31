@@ -203,8 +203,7 @@ func (s *TaskService) chatQuickActionsEligible(ctx context.Context, task db.Agen
 	if s.QuickActions == nil || !s.QuickActions.Enabled() {
 		return false
 	}
-	// The sender opted this turn out (per-device Chat setting).
-	if !task.ChatSessionID.Valid || task.QuickActionsDisabled {
+	if !task.ChatSessionID.Valid {
 		return false
 	}
 	// Only an ordinary reply can seed suggestions: a no_response outcome has
