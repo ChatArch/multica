@@ -480,6 +480,10 @@ ws_issues AS MATERIALIZED (
     SELECT id FROM issue WHERE issue.workspace_id = $1
 ),
 ws_tasks AS MATERIALIZED (
+    -- Keep all three ownership paths until the application enforces that a
+    -- task's agent/runtime/issue always belong to the same workspace. The OR
+    -- can scan globally, but simplifying it before that invariant exists
+    -- would turn a performance optimization into a tenant-cleanup bug.
     SELECT id
     FROM agent_task_queue
     WHERE agent_id IN (SELECT id FROM ws_agents)
@@ -491,20 +495,24 @@ detached_tasks AS (
     SET parent_task_id = NULL,
         autopilot_run_id = NULL
     WHERE id IN (SELECT id FROM ws_tasks)
+      AND (parent_task_id IS NOT NULL OR autopilot_run_id IS NOT NULL)
 ),
 detached_comments AS (
     UPDATE comment
     SET parent_id = NULL
     WHERE comment.workspace_id = $1
+      AND parent_id IS NOT NULL
 ),
 detached_issues AS (
     UPDATE issue
     SET parent_issue_id = NULL
     WHERE issue.workspace_id = $1
+      AND parent_issue_id IS NOT NULL
 )
 UPDATE webhook_delivery
 SET replayed_from_delivery_id = NULL
 WHERE webhook_delivery.workspace_id = $1
+  AND replayed_from_delivery_id IS NOT NULL
 `
 
 // Break self-references and the task/run cycle explicitly before deleting
@@ -523,7 +531,7 @@ SELECT set_config('multica.workspace_teardown', 'on', true)
 // Workspace deletion is application-owned. These statements form a fixed,
 // bottom-up deletion plan; the legacy foreign keys remain only as a
 // compatibility safety net during the expand phase.
-// The setting is transaction-local. Migration 241 makes only the three DELETE
+// The setting is transaction-local. Migration 242 makes only the three DELETE
 // dirty triggers skip their per-row work while this flag is on.
 func (q *Queries) SetWorkspaceTeardownMode(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, setWorkspaceTeardownMode)

@@ -803,10 +803,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		run  func() error
 	}{
 		{
-			name: "lock task usage rollup",
-			run:  func() error { return qtx.LockTaskUsageRollupForWorkspaceDelete(ctx) },
-		},
-		{
 			name: "set teardown mode",
 			run:  func() error { return qtx.SetWorkspaceTeardownMode(ctx) },
 		},
@@ -817,6 +813,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			// This is the first stage that touches usage rollups. Keep the
+			// global rollup lock out of relationship preparation so unrelated
+			// workspaces skip the shortest possible rollup window.
+			name: "lock task usage rollup",
+			run:  func() error { return qtx.LockTaskUsageRollupForWorkspaceDelete(ctx) },
 		},
 		{
 			name: "delete leaf data",
