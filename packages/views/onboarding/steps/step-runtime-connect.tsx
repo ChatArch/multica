@@ -18,6 +18,7 @@ import {
 } from "@multica/core/runtimes";
 import type { AgentRuntime } from "@multica/core/types";
 import { DragStrip } from "@multica/views/platform";
+import { MikaIntro } from "../components/mika-intro";
 import {
   STEP_BLOCK_PADDING,
   STEP_FRAME,
@@ -261,6 +262,8 @@ function FancyView({
           key={phase}
           className={cn("animate-onboarding-enter", STEP_FRAME, STEP_BLOCK_PADDING)}
         >
+          <MikaIntro />
+
           {phase === "scanning" && <ScanningView />}
           {phase === "found" && (
             <FoundView
@@ -335,9 +338,9 @@ function ScanningView() {
   const { t } = useT("onboarding");
   return (
     <div>
-      <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+      <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
         {t(($) => $.step_runtime.scanning_headline)}
-      </h1>
+      </h2>
       <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.scanning_lede_prefix)}
         <span className="font-medium text-foreground">{"Claude Code"}</span>
@@ -384,9 +387,9 @@ function FoundView({
 
   return (
     <div>
-      <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+      <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
         {t(($) => $.step_runtime.found_headline)}
-      </h1>
+      </h2>
       <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.found_lede)}
       </p>
@@ -442,9 +445,9 @@ function EmptyView({
   return (
     <div>
       <div className="flex items-start justify-between gap-4">
-        <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+        <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
           {t(($) => $.step_runtime.empty_headline)}
-        </h1>
+        </h2>
         <RefreshButton
           onClick={onRefresh}
           refreshing={refreshing}

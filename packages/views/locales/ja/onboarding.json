@@ -185,8 +185,8 @@
     "scanning_headline": "このコンピュータを接続中…",
     "scanning_lede_prefix": "エージェントは、あなたがすでに持っている AI コーディングツールを通じて作業します — たとえば ",
     "scanning_lede_suffix": " など。このコンピュータにインストール済みのものを確認しています。",
-    "found_headline": "エージェントランタイムを選んでください。",
-    "found_lede": "このワークスペースの参謀長である Mika は、選んだランタイムで動きます。あとで切り替えたり追加したりできます。",
+    "found_headline": "Mika はどこで動かしますか？",
+    "found_lede": "このコンピュータで見つかったエージェントランタイムです。あとで切り替えたり追加したりできます。",
     "remote_computer_later_note": "ローカルにランタイムがない、またはリモートのコンピュータを使いたい場合は、このステップを飛ばしてあとで接続できます。",
     "runtime_count_other": "エージェントランタイム {{count}} 個",
     "status_all_online": "すべてオンライン",
@@ -248,5 +248,11 @@
   "errors": {
     "skip_failed": "オンボーディングを完了できませんでした",
     "mika_setup_failed": "Mika ワークスペースを開始できませんでした"
+  },
+  "mika_intro": {
+    "headline": "参謀長の Mika を紹介します。",
+    "name": "Mika",
+    "role": "参謀長",
+    "blurb": "やりたいことを伝えると、issue に変えて、適したエージェントを呼んでくれます。"
   }
 }
