@@ -187,7 +187,6 @@
     "scanning_lede_suffix": " 等。我们正在检测这台电脑上装了哪些。",
     "found_headline": "Mika 跑在哪台上？",
     "found_lede": "以下是在这台电脑上找到的 agent 运行时。之后可以随时切换或再加。",
-    "remote_computer_later_note": "没有本地运行时，或者想用远程电脑？可以跳过这一步，之后再连。",
     "runtime_count_other": "{{count}} 个 agent 运行时",
     "status_all_online": "全部在线",
     "status_none_online": "全部离线",

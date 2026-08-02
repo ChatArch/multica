@@ -16,6 +16,8 @@ export interface BootstrapMikaInput {
    */
   workspaceSlug: string;
   runtimeId: string;
+  /** Runtime model for Mika. Empty falls back to the runtime's own default. */
+  model?: string;
   /** Localized title for the opening conversation. */
   title: string;
   language: MikaOnboardingLanguage;
@@ -49,6 +51,7 @@ export async function bootstrapMika(
     {
       runtime_id: input.runtimeId,
       language: input.language,
+      model: input.model,
     },
     input.workspaceSlug,
   );

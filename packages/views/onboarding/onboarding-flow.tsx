@@ -251,7 +251,7 @@ function OnboardingStepFlow({
   );
 
   const handleRuntimeNext = useCallback(
-    async (rt: AgentRuntime | null) => {
+    async (rt: AgentRuntime | null, model?: string) => {
       if (!workspace) return;
       // A connected runtime provisions only Mika and immediately opens the
       // real interactive onboarding conversation. Specialists are created
@@ -266,6 +266,7 @@ function OnboardingStepFlow({
           const result = await bootstrapMika.mutateAsync({
             workspaceSlug: workspace.slug,
             runtimeId: rt.id,
+            model,
             returning: isNewWorkspace,
             ...getMikaOnboarding(contentLang),
           });

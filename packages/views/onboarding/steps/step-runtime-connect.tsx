@@ -5,7 +5,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Loader2,
-  MonitorUp,
   RefreshCw,
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
@@ -14,19 +13,20 @@ import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { runtimeKeys } from "@multica/core/runtimes/queries";
 import {
   runtimeDisplayLabel,
-  runtimeDisplayName,
 } from "@multica/core/runtimes";
 import type { AgentRuntime } from "@multica/core/types";
 import { DragStrip } from "@multica/views/platform";
+import { RuntimePicker } from "../../agents/components/runtime-picker";
+import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
 import {
   STEP_BLOCK_PADDING,
   STEP_FRAME,
+  STEP_MEASURE,
   STEP_GUTTER,
   StepShellHeader,
 } from "../components/step-shell";
 import { useRuntimePicker } from "../components/use-runtime-picker";
-import { ProviderLogo } from "../../runtimes/components/provider-logo";
 import { useT } from "../../i18n";
 
 /**
@@ -52,17 +52,20 @@ export function StepRuntimeConnect({
   headerTrailing,
   onRefresh,
   runtimesPending,
+  currentUserId,
 }: {
   wsId: string;
   /** Slug of the target workspace. Sent explicitly so the runtime list reads
    *  the workspace being set up rather than whichever one the app is currently
    *  showing. */
   wsSlug?: string;
-  onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
+  onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
   onBack?: () => void;
   /** Log out escape hatch, injected by the flow so this step does not depend
    *  on the auth layer. */
   headerTrailing?: ReactNode;
+  /** Runtime picker labels rows by owner; injected for the same reason. */
+  currentUserId?: string | null;
   /** Platform-level rescan hook. Desktop wires this to restart the
    *  bundled daemon so a freshly-installed CLI shows up — otherwise the
    *  daemon's PATH probe runs once at boot and never re-probes. */
@@ -88,6 +91,7 @@ export function StepRuntimeConnect({
       onNext={onNext}
       onBack={onBack}
       headerTrailing={headerTrailing}
+      currentUserId={currentUserId}
       onRefresh={onRefresh}
       runtimesPending={runtimesPending}
     />
@@ -120,17 +124,21 @@ function FancyView({
   headerTrailing,
   onRefresh,
   runtimesPending,
+  currentUserId,
 }: {
   wsId: string;
   runtimes: AgentRuntime[];
   selected: AgentRuntime | null;
   selectedId: string | null;
   setSelectedId: (id: string) => void;
-  onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
+  onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
   onBack?: () => void;
   headerTrailing?: ReactNode;
   onRefresh?: () => void | Promise<void>;
   runtimesPending?: boolean;
+  /** Runtime picker labels rows by owner; injected so this step does not read
+   *  the auth store (six tests render it without one). */
+  currentUserId?: string | null;
 }) {
   const { t } = useT("onboarding");
   const qc = useQueryClient();
@@ -180,6 +188,7 @@ function FancyView({
   const onlineCount = runtimes.filter((r) => r.status === "online").length;
 
   const [submitting, setSubmitting] = useState(false);
+  const [model, setModel] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   // Refresh triggers a re-scan: restart the daemon (if the platform
@@ -217,7 +226,7 @@ function FancyView({
     if (!canContinue || submitting) return;
     setSubmitting(true);
     try {
-      await onNext(selected);
+      await onNext(selected, model);
     } finally {
       setSubmitting(false);
     }
@@ -273,6 +282,9 @@ function FancyView({
               onlineCount={onlineCount}
               onRefresh={handleRefresh}
               refreshing={refreshing}
+              model={model}
+              onModelChange={setModel}
+              currentUserId={currentUserId ?? null}
             />
           )}
           {phase === "empty" && (
@@ -350,7 +362,6 @@ function ScanningView() {
         <span className="font-medium text-foreground">{"Cursor"}</span>
         {t(($) => $.step_runtime.scanning_lede_suffix)}
       </p>
-      <RemoteComputerNote />
       <div className="mt-10 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         <SkeletonRuntimeCard />
         <SkeletonRuntimeCard />
@@ -366,6 +377,9 @@ function FoundView({
   onlineCount,
   onRefresh,
   refreshing,
+  model,
+  onModelChange,
+  currentUserId,
 }: {
   runtimes: AgentRuntime[];
   selectedId: string | null;
@@ -373,6 +387,9 @@ function FoundView({
   onlineCount: number;
   onRefresh: () => void;
   refreshing: boolean;
+  model: string;
+  onModelChange: (value: string) => void;
+  currentUserId: string | null;
 }) {
   const { t } = useT("onboarding");
   const total = runtimes.length;
@@ -393,7 +410,6 @@ function FoundView({
       <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
         {t(($) => $.step_runtime.found_lede)}
       </p>
-      <RemoteComputerNote />
 
       <div className="mt-8 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-4 py-2.5 text-caption">
         <span className="font-semibold text-foreground">
@@ -417,15 +433,28 @@ function FoundView({
         />
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-        {runtimes.map((rt) => (
-          <RuntimeCard
-            key={rt.id}
-            runtime={rt}
-            selected={rt.id === selectedId}
-            onSelect={() => onSelect(rt.id)}
-          />
-        ))}
+      <div className={cn("mt-6 flex flex-col gap-4", STEP_MEASURE)}>
+        <RuntimePicker
+          runtimes={runtimes as unknown as Parameters<typeof RuntimePicker>[0]["runtimes"]}
+          members={[]}
+          currentUserId={currentUserId}
+          selectedRuntimeId={selectedId ?? ""}
+          onSelect={(id) => {
+            // Models are per-runtime, so a value picked for the previous one
+            // may not exist here.
+            if (id !== selectedId) onModelChange("");
+            onSelect(id);
+          }}
+        />
+        <ModelDropdown
+          runtimeId={selectedId}
+          runtimeOnline={
+            runtimes.find((rt) => rt.id === selectedId)?.status === "online"
+          }
+          value={model}
+          onChange={onModelChange}
+          disabled={!selectedId}
+        />
       </div>
     </div>
   );
@@ -463,7 +492,6 @@ function EmptyView({
         <span className="font-medium text-foreground">{"Cursor"}</span>
         {t(($) => $.step_runtime.empty_lede_suffix)}
       </p>
-      <RemoteComputerNote />
 
       <div className="mt-10 flex flex-col gap-3.5">
         <EmptyCard
@@ -479,22 +507,6 @@ function EmptyView({
           badgeLabel={t(($) => $.step_runtime.empty_waitlist_action)}
         />
       </div>
-    </div>
-  );
-}
-
-function RemoteComputerNote() {
-  const { t } = useT("onboarding");
-
-  return (
-    <div className="mt-5 flex max-w-[620px] items-start gap-3 rounded-lg border bg-muted/30 px-4 py-3">
-      <MonitorUp
-        aria-hidden
-        className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-      />
-      <p className="text-[13px] leading-[1.55] text-muted-foreground">
-        {t(($) => $.step_runtime.remote_computer_later_note)}
-      </p>
     </div>
   );
 }
@@ -608,54 +620,6 @@ function EmptyCard({
 // Card components
 // ------------------------------------------------------------
 
-function RuntimeCard({
-  runtime,
-  selected,
-  onSelect,
-}: {
-  runtime: AgentRuntime;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const { t } = useT("onboarding");
-  const online = runtime.status === "online";
-
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onSelect}
-      className={cn(
-        "flex items-center gap-3 rounded-lg border bg-card p-4 text-left transition-colors",
-        selected
-          ? "border-foreground shadow-[inset_0_0_0_1px_var(--color-foreground)]"
-          : "hover:border-foreground/20",
-      )}
-    >
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent/30">
-        <ProviderLogo provider={runtime.provider} className="h-4 w-4" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-body font-medium text-foreground">
-          {runtimeDisplayName(runtime)}
-        </div>
-        <div className="mt-0.5 flex items-center gap-1.5 font-mono text-micro text-muted-foreground">
-          <span
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              online ? "bg-success" : "bg-muted-foreground/40",
-            )}
-            aria-hidden
-          />
-          {online ? t(($) => $.step_runtime.online_label) : t(($) => $.step_runtime.offline_label)}
-        </div>
-      </div>
-      <RadioMark selected={selected} />
-    </button>
-  );
-}
-
 function SkeletonRuntimeCard() {
   return (
     <div
@@ -669,21 +633,5 @@ function SkeletonRuntimeCard() {
       </div>
       <div className="h-4 w-4 shrink-0 rounded-full border-[1.5px] border-muted" />
     </div>
-  );
-}
-
-function RadioMark({ selected }: { selected: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-block h-4 w-4 shrink-0 rounded-full border-[1.5px] transition-colors",
-        selected ? "border-foreground" : "border-border",
-      )}
-    >
-      {selected && (
-        <span className="absolute inset-[3px] rounded-full bg-foreground" />
-      )}
-    </span>
   );
 }

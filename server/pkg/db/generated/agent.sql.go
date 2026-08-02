@@ -2093,12 +2093,12 @@ func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams
 const createSystemUserAgent = `-- name: CreateSystemUserAgent :one
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
-    runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
-    instructions, custom_env, custom_args, kind, system_key
+    runtime_id, model, visibility, permission_mode, max_concurrent_tasks,
+    owner_id, instructions, custom_env, custom_args, kind, system_key
 ) VALUES (
     $1, $2, $3, $4, $5, '{}'::jsonb,
     $6, $7, $8, $9, $10,
-    '', '{}'::jsonb, '[]'::jsonb, 'user', $11
+    $11, '', '{}'::jsonb, '[]'::jsonb, 'user', $12
 )
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
 `
@@ -2110,6 +2110,7 @@ type CreateSystemUserAgentParams struct {
 	AvatarUrl          pgtype.Text `json:"avatar_url"`
 	RuntimeMode        string      `json:"runtime_mode"`
 	RuntimeID          pgtype.UUID `json:"runtime_id"`
+	Model              pgtype.Text `json:"model"`
 	Visibility         string      `json:"visibility"`
 	PermissionMode     string      `json:"permission_mode"`
 	MaxConcurrentTasks int32       `json:"max_concurrent_tasks"`
@@ -2123,6 +2124,12 @@ type CreateSystemUserAgentParams struct {
 // Every product-owned field is a server constant; instructions stays empty
 // because the system half ships with the binary and is layered in at claim
 // time, leaving this column free for the workspace's own notes.
+//
+// CONTRACT: call only while holding the per-workspace mika advisory lock. The
+// one-per-workspace invariant rests on a check inside that lock, not on a
+// unique index — migration 172's index keys on (workspace_id, owner_id,
+// runtime_id, system_key), so two different owners or runtimes are distinct
+// tuples and would both insert.
 func (q *Queries) CreateSystemUserAgent(ctx context.Context, arg CreateSystemUserAgentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, createSystemUserAgent,
 		arg.WorkspaceID,
@@ -2131,6 +2138,7 @@ func (q *Queries) CreateSystemUserAgent(ctx context.Context, arg CreateSystemUse
 		arg.AvatarUrl,
 		arg.RuntimeMode,
 		arg.RuntimeID,
+		arg.Model,
 		arg.Visibility,
 		arg.PermissionMode,
 		arg.MaxConcurrentTasks,

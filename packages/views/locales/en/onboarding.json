@@ -187,7 +187,6 @@
     "scanning_lede_suffix": ", and others. We're checking this computer for ones you've installed.",
     "found_headline": "Where should Mika run?",
     "found_lede": "These are the agent runtimes we found on this computer. You can switch it or add more later.",
-    "remote_computer_later_note": "No local runtime, or prefer a remote computer? Skip this step and connect one later.",
     "runtime_count_one": "{{count}} agent runtime",
     "runtime_count_other": "{{count}} agent runtimes",
     "status_all_online": "all online",

@@ -187,7 +187,6 @@
     "scanning_lede_suffix": " など。このコンピュータにインストール済みのものを確認しています。",
     "found_headline": "Mika はどこで動かしますか？",
     "found_lede": "このコンピュータで見つかったエージェントランタイムです。あとで切り替えたり追加したりできます。",
-    "remote_computer_later_note": "ローカルにランタイムがない、またはリモートのコンピュータを使いたい場合は、このステップを飛ばしてあとで接続できます。",
     "runtime_count_other": "エージェントランタイム {{count}} 個",
     "status_all_online": "すべてオンライン",
     "status_none_online": "オンラインなし",

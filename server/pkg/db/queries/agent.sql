@@ -1623,11 +1623,11 @@ LIMIT 1;
 -- tuples and would both insert.
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode, runtime_config,
-    runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
-    instructions, custom_env, custom_args, kind, system_key
+    runtime_id, model, visibility, permission_mode, max_concurrent_tasks,
+    owner_id, instructions, custom_env, custom_args, kind, system_key
 ) VALUES (
     @workspace_id, @name, @description, @avatar_url, @runtime_mode, '{}'::jsonb,
-    @runtime_id, @visibility, @permission_mode, @max_concurrent_tasks, @owner_id,
-    '', '{}'::jsonb, '[]'::jsonb, 'user', @system_key
+    @runtime_id, @model, @visibility, @permission_mode, @max_concurrent_tasks,
+    @owner_id, '', '{}'::jsonb, '[]'::jsonb, 'user', @system_key
 )
 RETURNING *;

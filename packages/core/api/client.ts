@@ -1162,6 +1162,8 @@ export class ApiClient {
     data: {
       runtime_id: string;
       language: "en" | "zh" | "ko" | "ja";
+      /** Empty means "whatever the runtime defaults to". */
+      model?: string;
     },
     workspaceSlug?: string,
   ): Promise<Agent> {

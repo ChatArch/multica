@@ -1,17 +1,18 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
-	"log/slog"
-	"net/http"
+	"strings"
 
+	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"log/slog"
+	"net/http"
 )
 
 // Mika's product-defined identity. These are server constants on purpose: the
@@ -39,6 +40,10 @@ var mikaAgentDescriptions = map[string]string{
 type createMikaAgentRequest struct {
 	RuntimeID string `json:"runtime_id"`
 	Language  string `json:"language"`
+	// Model is the runtime model Mika should run on. Optional: empty means
+	// "whatever the runtime defaults to", which is what every deployment
+	// without per-agent model support gets anyway.
+	Model string `json:"model"`
 }
 
 // CreateMikaAgent provisions the workspace's built-in Chief of Staff on the
@@ -140,6 +145,7 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		AvatarUrl:          pgtype.Text{String: mikaAgentAvatarURL, Valid: true},
 		RuntimeMode:        runtime.RuntimeMode,
 		RuntimeID:          runtime.ID,
+		Model:              pgtype.Text{String: strings.TrimSpace(req.Model), Valid: strings.TrimSpace(req.Model) != ""},
 		Visibility:         mikaAgentVisibility,
 		PermissionMode:     mikaAgentPermissionMode,
 		MaxConcurrentTasks: mikaAgentMaxConcurrency,
