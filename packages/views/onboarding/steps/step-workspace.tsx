@@ -71,10 +71,14 @@ export function StepWorkspace({
   existing,
   onCreated,
   onBack,
+  headerTrailing,
 }: {
   existing?: Workspace | null;
   onCreated: (workspace: Workspace) => void | Promise<void>;
   onBack?: () => void;
+  /** Log out escape hatch, injected by the flow so this step does not depend
+   *  on the auth layer. */
+  headerTrailing?: ReactNode;
 }) {
   const { t, i18n } = useT("onboarding");
   const locale = matchLocale([i18n.resolvedLanguage ?? i18n.language]);
@@ -221,7 +225,7 @@ export function StepWorkspace({
   }
 
   const createFields = (
-    <div className="flex flex-col gap-5">
+    <div className={cn("flex flex-col gap-5", STEP_MEASURE)}>
       <div className="flex flex-col gap-1.5">
         <Label
           htmlFor="ws-name"
@@ -303,6 +307,7 @@ export function StepWorkspace({
         currentStep="workspace"
         onBack={onBack}
         backDisabled={isCreating}
+        trailing={headerTrailing}
       />
 
       <main
@@ -339,7 +344,7 @@ export function StepWorkspace({
                 : t(($) => $.step_workspace.creation_disabled_lede)}
           </p>
 
-          <div className={cn("mt-10", STEP_MEASURE)}>
+          <div className="mt-10">
             {reusing ? (
               <div className="flex flex-col gap-3">
                 <ExistingWorkspaceCard

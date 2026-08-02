@@ -125,12 +125,7 @@ interface OnboardingFlowProps {
 }
 
 export function OnboardingFlow(props: OnboardingFlowProps) {
-  return (
-    <>
-      <OnboardingLogoutButton />
-      <OnboardingStepFlow {...props} />
-    </>
-  );
+  return <OnboardingStepFlow {...props} />;
 }
 
 function OnboardingStepFlow({
@@ -333,6 +328,11 @@ function OnboardingStepFlow({
   // guidance. The remaining exits both end somewhere coherent: Skip runs the
   // runtime-skipped path (guide issue + land in the new workspace), and
   // continuing provisions Mika.
+  // Log out lives in the step header row, on the frame, rather than pinned to
+  // the window corner: pinned put it outside the measure and above Back /
+  // Step N of N, which read as a second header row.
+  const headerTrailing = <OnboardingLogoutButton inline />;
+
   const runtimeStepBack = isNewWorkspace
     ? undefined
     : () => handleBack("runtime");
@@ -340,18 +340,23 @@ function OnboardingStepFlow({
   // Every step owns its full-bleed shell; this component only switches
   // between the active screen.
   if (step === "welcome") {
+    // Welcome has no step header, so the escape hatch stays pinned here.
     return (
-      <StepWelcome
-        onNext={handleWelcomeNext}
-        onSkip={canSkipWelcome ? handleWelcomeSkip : undefined}
-        isWeb={isWeb}
-      />
+      <>
+        <OnboardingLogoutButton />
+          <StepWelcome
+          onNext={handleWelcomeNext}
+          onSkip={canSkipWelcome ? handleWelcomeSkip : undefined}
+          isWeb={isWeb}
+        />
+      </>
     );
   }
 
   if (step === "about_you") {
     return (
       <StepAboutYou
+        headerTrailing={headerTrailing}
         answers={answers}
         onChange={applyAnswers}
         onAdvance={() => advanceFrom("about_you")}
@@ -364,6 +369,7 @@ function OnboardingStepFlow({
   if (step === "workspace") {
     return (
       <StepWorkspace
+        headerTrailing={headerTrailing}
         existing={existingWorkspace}
         onCreated={handleWorkspaceCreated}
         onBack={() => handleBack("workspace")}
@@ -381,6 +387,7 @@ function OnboardingStepFlow({
     if (!runtimeInstructions) {
       return (
         <StepRuntimeConnect
+        headerTrailing={headerTrailing}
           wsId={workspace.id}
           wsSlug={workspace.slug}
           onNext={handleRuntimeNext}
@@ -392,6 +399,7 @@ function OnboardingStepFlow({
     }
     return (
       <StepPlatformFork
+        headerTrailing={headerTrailing}
         wsId={workspace.id}
         wsSlug={workspace.slug}
         onNext={handleRuntimeNext}

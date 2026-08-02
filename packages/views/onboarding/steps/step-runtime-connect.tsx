@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState , type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -48,6 +48,7 @@ export function StepRuntimeConnect({
   wsSlug,
   onNext,
   onBack,
+  headerTrailing,
   onRefresh,
   runtimesPending,
 }: {
@@ -58,6 +59,9 @@ export function StepRuntimeConnect({
   wsSlug?: string;
   onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
   onBack?: () => void;
+  /** Log out escape hatch, injected by the flow so this step does not depend
+   *  on the auth layer. */
+  headerTrailing?: ReactNode;
   /** Platform-level rescan hook. Desktop wires this to restart the
    *  bundled daemon so a freshly-installed CLI shows up — otherwise the
    *  daemon's PATH probe runs once at boot and never re-probes. */
@@ -82,6 +86,7 @@ export function StepRuntimeConnect({
       setSelectedId={setSelectedId}
       onNext={onNext}
       onBack={onBack}
+      headerTrailing={headerTrailing}
       onRefresh={onRefresh}
       runtimesPending={runtimesPending}
     />
@@ -111,6 +116,7 @@ function FancyView({
   setSelectedId,
   onNext,
   onBack,
+  headerTrailing,
   onRefresh,
   runtimesPending,
 }: {
@@ -121,6 +127,7 @@ function FancyView({
   setSelectedId: (id: string) => void;
   onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
   onBack?: () => void;
+  headerTrailing?: ReactNode;
   onRefresh?: () => void | Promise<void>;
   runtimesPending?: boolean;
 }) {
@@ -231,7 +238,7 @@ function FancyView({
       <DragStrip />
 
       {/* Header — Back + horizontal step indicator */}
-      <StepShellHeader currentStep="runtime" onBack={onBack} />
+      <StepShellHeader currentStep="runtime" onBack={onBack} trailing={headerTrailing} />
 
       {/* Scrollable middle — content changes by phase but always wraps
           at STEP_FRAME — the same measure as the header — so nine

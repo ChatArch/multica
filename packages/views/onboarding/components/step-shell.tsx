@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
@@ -52,11 +53,16 @@ export function StepShellHeader({
   currentStep,
   onBack,
   backDisabled,
+  trailing,
 }: {
   currentStep: OnboardingStep;
   onBack?: () => void;
   /** Workspace step disables Back while its create request is in flight. */
   backDisabled?: boolean;
+  /** Injected by the flow — the Log out escape hatch. A slot rather than a
+   *  direct render so this header stays presentational: rendering the logout
+   *  mutation inline forced a QueryClient into five step test files. */
+  trailing?: ReactNode;
 }) {
   const { t } = useT("onboarding");
   return (
@@ -78,6 +84,7 @@ export function StepShellHeader({
         <div className="flex-1">
           <StepHeader currentStep={currentStep} />
         </div>
+        {trailing}
       </div>
     </header>
   );

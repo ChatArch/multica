@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef , type ReactNode } from "react";
 import {
   ArrowRight,
   Brain,
@@ -64,12 +64,16 @@ export function StepAboutYou({
   onAdvance,
   onSkip,
   onBack,
+  headerTrailing,
 }: {
   answers: QuestionnaireAnswers;
   onChange: (patch: Partial<QuestionnaireAnswers>) => void;
   onAdvance: () => void;
   onSkip: () => void;
   onBack?: () => void;
+  /** Log out escape hatch, injected by the flow so this step does not depend
+   *  on the auth layer. */
+  headerTrailing?: ReactNode;
 }) {
   const { t } = useT("onboarding");
   const mainRef = useRef<HTMLElement>(null);
@@ -185,7 +189,7 @@ export function StepAboutYou({
   return (
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
-      <StepShellHeader currentStep="about_you" onBack={onBack} />
+      <StepShellHeader currentStep="about_you" onBack={onBack} trailing={headerTrailing} />
 
       <main
         ref={mainRef}

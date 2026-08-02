@@ -60,6 +60,7 @@ export function StepPlatformFork({
   wsSlug,
   onNext,
   onBack,
+  headerTrailing,
   cliInstructions,
 }: {
   wsId: string;
@@ -69,6 +70,9 @@ export function StepPlatformFork({
   wsSlug?: string;
   onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
   onBack?: () => void;
+  /** Log out escape hatch, injected by the flow so this step does not depend
+   *  on the auth layer. */
+  headerTrailing?: ReactNode;
   /** Platform-specific CLI install card, rendered inside the CLI dialog. */
   cliInstructions?: ReactNode;
 }) {
@@ -113,7 +117,7 @@ export function StepPlatformFork({
     <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
       <DragStrip />
 
-      <StepShellHeader currentStep="runtime" onBack={onBack} />
+      <StepShellHeader currentStep="runtime" onBack={onBack} trailing={headerTrailing} />
 
       <main
         ref={mainRef}
