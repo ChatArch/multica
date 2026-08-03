@@ -205,7 +205,7 @@ func (s *HookService) runAction(ctx context.Context, exec db.HookExecution, leas
 	effectKey := effectKeyFor(exec.ID, index)
 
 	var post *IssueTransition
-	err := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	err := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, exec.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		// Teardown protocol first: this transaction writes hook_action_effect (and,
 		// through the shared command, the issue + its domain event). Before any other
 		// lock, so the order matches DeleteWorkspace's.

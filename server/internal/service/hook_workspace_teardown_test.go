@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/automation"
@@ -45,6 +46,10 @@ type teardownFixture struct {
 	userID   string
 	issueID  string
 	neighbor string
+	// Child rows have no workspace_id; their ids are tracked so the residue check
+	// still finds them once their parent is deleted.
+	trackedRevisions map[string][]string
+	trackedEffects   map[string][]string
 }
 
 func newTeardownFixture(t *testing.T) teardownFixture {
@@ -73,6 +78,8 @@ func newTeardownFixture(t *testing.T) teardownFixture {
 	return teardownFixture{
 		pool: pool, svc: NewHookService(db.New(pool), pool, nil),
 		ws: ws, userID: userID, issueID: issueID, neighbor: neighbor,
+		trackedRevisions: map[string][]string{},
+		trackedEffects:   map[string][]string{},
 	}
 }
 
@@ -101,6 +108,7 @@ func (f teardownFixture) seedAllSixTables(t *testing.T, workspaceID string) {
 		revID, hookID, f.userID); err != nil {
 		t.Fatalf("seed hook_revision: %v", err)
 	}
+	f.trackRevision(workspaceID, revID)
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO hook_execution (id, workspace_id, hook_id, hook_revision_id, event_id, correlation_id, status)
 		VALUES ($1, $2, $3, $4, $5, gen_random_uuid(), 'queued')`,
@@ -113,6 +121,7 @@ func (f teardownFixture) seedAllSixTables(t *testing.T, workspaceID string) {
 		"teardown:"+execID, execID); err != nil {
 		t.Fatalf("seed hook_action_effect: %v", err)
 	}
+	f.trackEffect(workspaceID, "teardown:"+execID)
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO automation_state (workspace_id, state_kind, state_key, state)
 		VALUES ($1, 'hook_edge', $2, '{"satisfied":true}'::jsonb)`,
@@ -122,16 +131,25 @@ func (f teardownFixture) seedAllSixTables(t *testing.T, workspaceID string) {
 }
 
 // automationRowCounts returns the row count of each of the six tables for a
-// workspace. hook_revision / hook_action_effect are reached through their parent.
+// workspace.
+//
+// hook_revision and hook_action_effect carry no workspace_id, so they must NOT be
+// counted only through a surviving parent: once the parent hook/execution is gone an
+// orphaned child is unreachable that way and silently counts as 0 — precisely the
+// residue these tests exist to catch (review: "零残留断言须能识别孤儿子行"). They are
+// therefore counted by the child ids recorded when the fixture created them, which
+// stays correct after the parent disappears.
 func (f teardownFixture) automationRowCounts(t *testing.T, workspaceID string) map[string]int {
 	t.Helper()
 	ctx := context.Background()
 	out := map[string]int{}
 	queries := map[string]string{
-		"domain_event":       `SELECT count(*) FROM domain_event WHERE workspace_id = $1`,
-		"hook":               `SELECT count(*) FROM hook WHERE workspace_id = $1`,
-		"hook_execution":     `SELECT count(*) FROM hook_execution WHERE workspace_id = $1`,
-		"automation_state":   `SELECT count(*) FROM automation_state WHERE workspace_id = $1`,
+		"domain_event":     `SELECT count(*) FROM domain_event WHERE workspace_id = $1`,
+		"hook":             `SELECT count(*) FROM hook WHERE workspace_id = $1`,
+		"hook_execution":   `SELECT count(*) FROM hook_execution WHERE workspace_id = $1`,
+		"automation_state": `SELECT count(*) FROM automation_state WHERE workspace_id = $1`,
+		// Reachable-through-parent counts, kept as a floor. The orphan-safe counts
+		// below are the authoritative ones.
 		"hook_revision":      `SELECT count(*) FROM hook_revision WHERE hook_id IN (SELECT id FROM hook WHERE workspace_id = $1)`,
 		"hook_action_effect": `SELECT count(*) FROM hook_action_effect WHERE execution_id IN (SELECT id FROM hook_execution WHERE workspace_id = $1)`,
 	}
@@ -142,7 +160,76 @@ func (f teardownFixture) automationRowCounts(t *testing.T, workspaceID string) m
 		}
 		out[name] = n
 	}
+
+	// Orphan-safe: count the child rows this workspace ever created, by id.
+	if ids := f.trackedRevisions[workspaceID]; len(ids) > 0 {
+		var n int
+		if err := f.pool.QueryRow(ctx,
+			`SELECT count(*) FROM hook_revision WHERE id = ANY($1::uuid[])`, ids).Scan(&n); err != nil {
+			t.Fatalf("count tracked hook_revision: %v", err)
+		}
+		if n > out["hook_revision"] {
+			out["hook_revision"] = n
+		}
+	}
+	if keys := f.trackedEffects[workspaceID]; len(keys) > 0 {
+		var n int
+		if err := f.pool.QueryRow(ctx,
+			`SELECT count(*) FROM hook_action_effect WHERE effect_key = ANY($1::text[])`, keys).Scan(&n); err != nil {
+			t.Fatalf("count tracked hook_action_effect: %v", err)
+		}
+		if n > out["hook_action_effect"] {
+			out["hook_action_effect"] = n
+		}
+	}
 	return out
+}
+
+// trackRevision / trackEffect record child ids so the residue check can find them
+// after their parent row is gone.
+func (f teardownFixture) trackRevision(workspaceID, revisionID string) {
+	f.trackedRevisions[workspaceID] = append(f.trackedRevisions[workspaceID], revisionID)
+}
+
+func (f teardownFixture) trackEffect(workspaceID, effectKey string) {
+	f.trackedEffects[workspaceID] = append(f.trackedEffects[workspaceID], effectKey)
+}
+
+// trackHookRevisions records every revision a hook currently has, so revisions the
+// service created (rather than the fixture) are also orphan-checked.
+func (f teardownFixture) trackHookRevisions(t *testing.T, workspaceID string) {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(),
+		`SELECT r.id::text FROM hook_revision r JOIN hook h ON h.id = r.hook_id WHERE h.workspace_id = $1`, workspaceID)
+	if err != nil {
+		t.Fatalf("track hook revisions: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan revision id: %v", err)
+		}
+		f.trackRevision(workspaceID, id)
+	}
+}
+
+// isDeadlock reports whether err is PostgreSQL's serialization deadlock (40P01).
+// A deadlock is a production defect even though PostgreSQL resolves it by killing
+// one side: whichever transaction loses fails a real request. These tests therefore
+// assert deadlock-freedom, not merely that no residue survives — a reverse lock
+// order that deadlocks also leaves no residue, so residue alone cannot detect it.
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+func assertNoDeadlock(t *testing.T, err error, side string) {
+	t.Helper()
+	if isDeadlock(err) {
+		t.Fatalf("%s deadlocked (40P01): the automation writer and DeleteWorkspace take "+
+			"their locks in opposite orders; the workspace lock must come first: %v", side, err)
+	}
 }
 
 func (f teardownFixture) assertNoResidue(t *testing.T, workspaceID, label string) {
@@ -291,6 +378,7 @@ func TestHookUpdateRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed hook: %v", err)
 	}
+	f.trackHookRevisions(t, f.ws)
 
 	deleteTx, err := f.pool.Begin(ctx)
 	if err != nil {
@@ -368,11 +456,26 @@ func TestDomainEventWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 
 	written := make(chan error, 1)
 	go func() {
-		written <- domainevent.WriteInTx(ctx, f.pool, db.New(f.pool), func(qtx *db.Queries) ([]domainevent.Event, error) {
+		// A REAL fact + event: the callback locks the issue row and updates it, exactly
+		// as the production issue-update path does. That row lock is what made the old
+		// writer's order fact -> workspace (the reverse of the delete's) and deadlock;
+		// a callback that only returned an event would not exercise it at all.
+		written <- domainevent.WriteInTx(ctx, f.pool, db.New(f.pool), wsID, func(qtx *db.Queries) ([]domainevent.Event, error) {
+			locked, err := qtx.LockIssueRowForUpdate(ctx, db.LockIssueRowForUpdateParams{
+				ID: util.MustParseUUID(f.issueID), WorkspaceID: wsID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+				ID: util.MustParseUUID(f.issueID), WorkspaceID: wsID, Status: "done",
+			})
+			if err != nil {
+				return nil, err
+			}
 			return []domainevent.Event{
-				domainevent.IssueStatusChanged(wsID, util.MustParseUUID(f.issueID),
-					domainevent.SystemActor(),
-					domainevent.IssueStatusChangedPayload{From: "todo", To: "done"}),
+				domainevent.IssueStatusChanged(wsID, updated.ID, domainevent.SystemActor(),
+					domainevent.IssueStatusChangedPayload{From: locked.Status, To: updated.Status}),
 			}, nil
 		})
 	}()
@@ -389,7 +492,9 @@ func TestDomainEventWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 		`DELETE FROM issue WHERE workspace_id = $1`,
 		`DELETE FROM workspace WHERE id = $1`,
 	} {
-		if _, err := deleteTx.Exec(ctx, stmt, f.ws); err != nil {
+		_, err := deleteTx.Exec(ctx, stmt, f.ws)
+		assertNoDeadlock(t, err, "the delete transaction")
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -398,6 +503,9 @@ func TestDomainEventWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 	}
 	select {
 	case err := <-written:
+		// The write must fail because the workspace is gone — NOT because the two
+		// transactions deadlocked on opposite lock orders.
+		assertNoDeadlock(t, err, "the outbox write")
 		if err == nil {
 			t.Error("the outbox write succeeded against a deleted workspace")
 		}
@@ -408,25 +516,40 @@ func TestDomainEventWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 	f.assertNoResidue(t, f.ws, "domain event race")
 }
 
-// The matcher's decision transaction writes hook_execution / automation_state; it
-// must join the same protocol.
+// The matcher's decision transaction writes hook_execution / automation_state and
+// claims a domain_event row; it must take the workspace lock BEFORE that claim.
 //
-// Same caveat as the update case: the matcher locks each candidate hook row
-// (LockHookForDecision), which the sweep has already deleted uncommitted, so it also
-// blocks without the workspace lock. This pins the outcome; the explicit lock is what
-// makes the guarantee independent of that incidental row contention.
+// Interleaving matters here. The matcher must claim FIRST and only then reach for the
+// workspace: that is the order in which a reverse-ordered matcher deadlocks against a
+// teardown (matcher holds domain_event, wants workspace; delete holds workspace,
+// wants domain_event). A trigger holds the matcher inside its claim statement so the
+// delete reliably starts in that window. Driven through the PRODUCTION ClaimAndMatch
+// entry point — the old test used MatchEvent, which happens to lock the workspace
+// first and so never exercised the claim path at all.
 func TestMatcherWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 	f := newTeardownFixture(t)
 	ctx := context.Background()
 	wsID := util.MustParseUUID(f.ws)
 
-	// A hook and a pending event for it, so the matcher has real work to do.
+	// Drain other tests' events so this tick reaches ours.
+	for i := 0; i < 60; i++ {
+		n, err := f.svc.ClaimAndMatch(ctx, 500)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
 	if _, err := f.svc.CreateHook(ctx, wsID, f.hookSpec("matcher hook"), HookAuthor{
 		ActorType: "member", ActorID: util.MustParseUUID(f.userID),
 		PrincipalUserID: util.MustParseUUID(f.userID),
 	}); err != nil {
 		t.Fatalf("seed hook: %v", err)
 	}
+	f.trackHookRevisions(t, f.ws)
+
 	var eventID string
 	if err := f.pool.QueryRow(ctx, `
 		INSERT INTO domain_event (workspace_id, type, schema_version, subject_type, subject_id, actor_type, actor_id, payload, correlation_id, hop_count)
@@ -434,11 +557,19 @@ func TestMatcherWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 		RETURNING id`, f.ws, f.issueID, f.userID).Scan(&eventID); err != nil {
 		t.Fatalf("seed domain_event: %v", err)
 	}
-	event, err := f.svc.Queries.GetDomainEvent(ctx, util.MustParseUUID(eventID))
-	if err != nil {
-		t.Fatal(err)
-	}
 
+	// Hold the matcher inside its claim statement, so the delete below starts while
+	// the matcher owns the domain_event row.
+	f.sleepDuringEventClaim(t, eventID, 1.0)
+
+	matched := make(chan error, 1)
+	go func() {
+		_, err := f.svc.ClaimAndMatch(ctx, 5)
+		matched <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // let the matcher get into its claim
+
+	// Now run the teardown. A reverse-ordered matcher deadlocks with this.
 	deleteTx, err := f.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -446,41 +577,63 @@ func TestMatcherWriteRacingWorkspaceDeleteLeavesNoResidue(t *testing.T) {
 	defer deleteTx.Rollback(ctx)
 	dqtx := db.New(f.pool).WithTx(deleteTx)
 	if _, err := dqtx.LockWorkspaceForDelete(ctx, wsID); err != nil {
+		assertNoDeadlock(t, err, "the delete transaction")
 		t.Fatal(err)
 	}
 	if err := dqtx.DeleteWorkspaceAutomation(ctx, wsID); err != nil {
+		assertNoDeadlock(t, err, "the delete transaction")
 		t.Fatal(err)
 	}
-
-	matched := make(chan error, 1)
-	go func() { matched <- f.svc.MatchEvent(ctx, event) }()
-
-	select {
-	case err := <-matched:
-		t.Fatalf("the matcher decision completed (err=%v) while the delete held the workspace "+
-			"lock — it can write an orphaned hook_execution / automation_state", err)
-	case <-time.After(750 * time.Millisecond):
-	}
-
 	for _, stmt := range []string{
 		`DELETE FROM member WHERE workspace_id = $1`,
 		`DELETE FROM issue WHERE workspace_id = $1`,
 		`DELETE FROM workspace WHERE id = $1`,
 	} {
-		if _, err := deleteTx.Exec(ctx, stmt, f.ws); err != nil {
+		_, err := deleteTx.Exec(ctx, stmt, f.ws)
+		assertNoDeadlock(t, err, "the delete transaction")
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := deleteTx.Commit(ctx); err != nil {
+		assertNoDeadlock(t, err, "the delete commit")
 		t.Fatal(err)
 	}
+
 	select {
-	case <-matched:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the matcher never unblocked")
+	case err := <-matched:
+		assertNoDeadlock(t, err, "the matcher")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the matcher never returned")
 	}
 
 	f.assertNoResidue(t, f.ws, "matcher race")
+}
+
+// sleepDuringEventClaim makes the matcher's claim UPDATE on one event pause, so a
+// test can start a teardown while the matcher holds that event's row lock.
+func (f teardownFixture) sleepDuringEventClaim(t *testing.T, eventID string, seconds float64) {
+	t.Helper()
+	ctx := context.Background()
+	name := fmt.Sprintf("de_claim_sleep_%d", time.Now().UnixNano())
+	fn := name + "_fn"
+	if _, err := f.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(%f); RETURN NEW; END; $$;`, quoteIdent(fn), seconds)); err != nil {
+		t.Fatalf("create claim sleep function: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TRIGGER %s BEFORE UPDATE ON domain_event
+		FOR EACH ROW WHEN (NEW.id = %s::uuid AND NEW.dispatch_status = 'dispatching')
+		EXECUTE FUNCTION %s();`, quoteIdent(name), quoteLiteral(eventID), quoteIdent(fn))); err != nil {
+		t.Fatalf("create claim sleep trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		f.pool.Exec(bg, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON domain_event", quoteIdent(name)))
+		f.pool.Exec(bg, fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", quoteIdent(fn)))
+		f.pool.Exec(bg, `DELETE FROM domain_event WHERE id = $1`, eventID)
+	})
 }
 
 // Deleting one workspace must leave an adjacent workspace's automation data — all
@@ -512,3 +665,74 @@ func TestWorkspaceDeleteLeavesNeighborAutomationIntact(t *testing.T) {
 }
 
 var _ = pgx.ErrNoRows
+
+// The global matcher must make forward progress past an orphan: an event whose
+// workspace was already deleted sits at the head of the queue, and a healthy event
+// from a live workspace sits behind it. The orphan is finalized terminally and the
+// healthy event is still dispatched in the same tick (review: 全局队列前进性).
+func TestClaimAndMatchAdvancesPastOrphanedWorkspaceEvent(t *testing.T) {
+	f := newTeardownFixture(t)
+	ctx := context.Background()
+
+	// Drain anything left by other tests so ordering here is ours.
+	for i := 0; i < 60; i++ {
+		n, err := f.svc.ClaimAndMatch(ctx, 500)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	// 1. An event in a workspace that is then deleted outright — a true orphan.
+	doomed := f.neighbor
+	var orphanEventID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO domain_event (workspace_id, type, schema_version, subject_type, subject_id, actor_type, payload, correlation_id, hop_count)
+		VALUES ($1, 'issue.status_changed', 1, 'issue', gen_random_uuid(), 'system', '{"from":"todo","to":"done"}'::jsonb, gen_random_uuid(), 0)
+		RETURNING id`, doomed).Scan(&orphanEventID); err != nil {
+		t.Fatalf("seed orphan event: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, doomed); err != nil {
+		t.Fatalf("delete doomed workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		f.pool.Exec(context.Background(), `DELETE FROM domain_event WHERE id = $1`, orphanEventID)
+	})
+
+	// 2. A healthy event BEHIND it, in a live workspace.
+	var healthyEventID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO domain_event (workspace_id, type, schema_version, subject_type, subject_id, actor_type, actor_id, payload, correlation_id, hop_count)
+		VALUES ($1, 'issue.status_changed', 1, 'issue', $2, 'member', $3, '{"from":"todo","to":"done"}'::jsonb, gen_random_uuid(), 0)
+		RETURNING id`, f.ws, f.issueID, f.userID).Scan(&healthyEventID); err != nil {
+		t.Fatalf("seed healthy event: %v", err)
+	}
+	t.Cleanup(func() {
+		f.pool.Exec(context.Background(), `DELETE FROM domain_event WHERE id = $1`, healthyEventID)
+	})
+
+	var orphanSeq, healthySeq int64
+	f.pool.QueryRow(ctx, `SELECT seq FROM domain_event WHERE id = $1`, orphanEventID).Scan(&orphanSeq)
+	f.pool.QueryRow(ctx, `SELECT seq FROM domain_event WHERE id = $1`, healthyEventID).Scan(&healthySeq)
+	if orphanSeq >= healthySeq {
+		t.Fatalf("fixture wrong: orphan seq %d must precede healthy seq %d", orphanSeq, healthySeq)
+	}
+
+	if _, err := f.svc.ClaimAndMatch(ctx, 50); err != nil {
+		t.Fatalf("claim and match: %v", err)
+	}
+
+	var orphanStatus, healthyStatus string
+	f.pool.QueryRow(ctx, `SELECT dispatch_status FROM domain_event WHERE id = $1`, orphanEventID).Scan(&orphanStatus)
+	f.pool.QueryRow(ctx, `SELECT dispatch_status FROM domain_event WHERE id = $1`, healthyEventID).Scan(&healthyStatus)
+
+	if orphanStatus != "failed" {
+		t.Errorf("orphaned event dispatch_status = %q, want failed", orphanStatus)
+	}
+	if healthyStatus != "dispatched" {
+		t.Errorf("healthy event behind the orphan = %q, want dispatched — the orphan is "+
+			"blocking the head of the global queue", healthyStatus)
+	}
+}

@@ -173,7 +173,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 	t.Run("commit persists fact and event", func(t *testing.T) {
 		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
-		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
+		err := WriteInTx(ctx, pool, queries, ws, func(qtx *db.Queries) ([]Event, error) {
 			// Stand-in "domain write" inside the tx.
 			if _, err := Write(ctx, qtx, standInFactEvent(ws)); err != nil {
 				return nil, err
@@ -192,7 +192,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
 		boom := errors.New("domain write failed")
-		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
+		err := WriteInTx(ctx, pool, queries, ws, func(qtx *db.Queries) ([]Event, error) {
 			if _, err := Write(ctx, qtx, standInFactEvent(ws)); err != nil {
 				return nil, err
 			}
@@ -209,7 +209,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 	t.Run("invalid event rolls back the fact", func(t *testing.T) {
 		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
-		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
+		err := WriteInTx(ctx, pool, queries, ws, func(qtx *db.Queries) ([]Event, error) {
 			if _, err := Write(ctx, qtx, standInFactEvent(ws)); err != nil {
 				return nil, err
 			}

@@ -2916,7 +2916,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// every untouched nullable column is rebuilt from it (review point 1).
 	var issue db.Issue
 	var before db.Issue
-	err = domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	err = domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, prevIssue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		locked, err := qtx.LockIssueRowForUpdate(r.Context(), db.LockIssueRowForUpdateParams{
 			ID:          prevIssue.ID,
 			WorkspaceID: prevIssue.WorkspaceID,
@@ -3508,7 +3508,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// the true edge (review point 3).
 		var issue db.Issue
 		var before db.Issue
-		if writeErr := domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+		if writeErr := domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, prevIssue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 			locked, err := qtx.LockIssueRowForUpdate(r.Context(), db.LockIssueRowForUpdateParams{
 				ID:          prevIssue.ID,
 				WorkspaceID: prevIssue.WorkspaceID,

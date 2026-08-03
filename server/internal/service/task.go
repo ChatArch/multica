@@ -4059,7 +4059,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 						var didReset bool
 						// Transactional outbox (MUL-4332): the stuck-issue reset bypasses the
 						// HTTP UpdateIssue path, so emit issue.status_changed atomically here.
-						updateErr := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+						updateErr := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, issue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 							// Re-decide the reset UNDER the row lock (review point 4). The
 							// in_progress + no-active-task check that gated this branch was read
 							// outside the tx, so within the window a user could have moved the
@@ -4774,7 +4774,7 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// Transactional outbox (MUL-4332 review point 2): the agent runtime comment
 	// and its comment.created event commit in one transaction.
 	var comment db.Comment
-	if err := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	if err := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, issue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		created, cErr := qtx.CreateComment(ctx, db.CreateCommentParams{
 			IssueID:      issueID,
 			WorkspaceID:  issue.WorkspaceID,

@@ -92,6 +92,14 @@ var errLeaseLost = errors.New("hook matcher: event lease lost")
 // errNoClaimableEvent ends a tick: the queue has nothing available right now.
 var errNoClaimableEvent = errors.New("hook matcher: no claimable event")
 
+// errClaimRaceLost means another matcher claimed the peeked event first. Expected
+// under concurrency; the tick simply moves on.
+var errClaimRaceLost = errors.New("hook matcher: claim race lost")
+
+// errOrphanedEvent means the peeked event's workspace no longer exists. It aborts
+// the transaction so the caller can finalize the event terminally outside it.
+var errOrphanedEvent = errors.New("hook matcher: event workspace is gone")
+
 // pinnedCandidate is one (hook, revision) pair fixed at claim time, together with
 // the revision configuration the evaluator needs. The matcher decides against this
 // and never re-reads hook.active_revision_id, which is what keeps a revision edit
@@ -152,17 +160,45 @@ func (s *HookService) ClaimAndMatch(ctx context.Context, batchSize int32) (int, 
 // and whether it was finalized as dispatched.
 func (s *HookService) claimAndDecideOne(ctx context.Context) (claimed bool, dispatched bool, err error) {
 	lease := util.NewUUID()
-	var eventID pgtype.UUID
+	var eventID, orphanEventID pgtype.UUID
 	err = s.inTxWith(ctx, func(tx pgx.Tx, qtx *db.Queries) error {
+		// WORKSPACE FIRST. Peek at the next claimable event WITHOUT locking it, lock
+		// its workspace, and only then claim. Claiming first (the old single-shot
+		// query) took the domain_event row lock before the workspace lock, the exact
+		// reverse of DeleteWorkspace's order, and deadlocked against a real concurrent
+		// teardown (MUL-4332 review: production lock order).
+		next, err := qtx.PeekNextClaimableDomainEvent(ctx)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNoClaimableEvent
+			}
+			return err
+		}
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, next.WorkspaceID); err != nil {
+			if errors.Is(err, ErrWorkspaceGone) {
+				// The workspace is already gone, so this event is an orphan that can
+				// never produce a valid decision. Finalize it terminally — outside this
+				// transaction, since we return an error to roll it back — so the queue
+				// head advances instead of re-selecting it forever.
+				orphanEventID = next.ID
+				return errOrphanedEvent
+			}
+			return err
+		}
+
+		// Claim the peeked event. The id predicate is a CAS: another matcher may have
+		// taken it between the peek and here, in which case no rows come back.
 		rows, err := qtx.ClaimOneEventWithCandidates(ctx, db.ClaimOneEventWithCandidatesParams{
 			LeaseToken:      lease,
 			LeaseTtlSeconds: MatcherLeaseTTL.Seconds(),
+			EventID:         next.ID,
 		})
 		if err != nil {
 			return err
 		}
 		if len(rows) == 0 {
-			return errNoClaimableEvent
+			// Lost the race for this event; the tick continues with the next one.
+			return errClaimRaceLost
 		}
 		event := claimedEvent(rows[0])
 		claimed, eventID = true, event.ID
@@ -173,6 +209,20 @@ func (s *HookService) claimAndDecideOne(ctx context.Context) (claimed bool, disp
 	switch {
 	case errors.Is(err, errNoClaimableEvent):
 		return false, false, nil
+	case errors.Is(err, errClaimRaceLost):
+		// Another matcher claimed it first. Nothing of ours is pending; keep draining.
+		return true, false, nil
+	case errors.Is(err, errOrphanedEvent):
+		// Self-guarding: the query is a no-op if the workspace turns out to still
+		// exist, so this can never finalize a live event.
+		if _, derr := s.Queries.MarkOrphanedDomainEventFailed(ctx, orphanEventID); derr != nil {
+			slog.Warn("hook matcher: could not finalize an orphaned event",
+				"event_id", util.UUIDToString(orphanEventID), "error", derr)
+			return false, false, nil
+		}
+		slog.Warn("hook matcher: event workspace is gone, marked failed",
+			"event_id", util.UUIDToString(orphanEventID))
+		return true, false, nil
 	case errors.Is(err, errLeaseLost):
 		if !claimed {
 			// We never took the event, so it is not ours to back off.

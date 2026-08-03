@@ -51,6 +51,35 @@ WHERE subject_type = $1
 -- reclaiming still-executing audit sources the moment PR3 enables dispatching
 -- (review point 5). The query lands in PR3 with the full terminal predicate.
 
+-- name: PeekNextClaimableDomainEvent :one
+-- Choose the next event the matcher would claim, taking NO lock (MUL-4332 review:
+-- production lock order). The matcher locks that event's workspace FIRST and only
+-- then claims the event, so its order is workspace -> domain_event, matching
+-- DeleteWorkspace's. Claiming first — as the old single-shot claim did — inverted
+-- that order against the delete and deadlocked under a real concurrent teardown.
+--
+-- Being unlocked means the row may be taken by another matcher before the claim
+-- lands; the claim below is a CAS that simply returns no rows in that case.
+SELECT id, workspace_id FROM domain_event
+WHERE available_at <= now()
+  AND (dispatch_status = 'pending'
+       OR (dispatch_status = 'dispatching' AND lease_expires_at < now()))
+ORDER BY seq ASC
+LIMIT 1;
+
+-- name: MarkOrphanedDomainEventFailed :execrows
+-- Terminal state for an event whose workspace no longer exists. Self-guarding: the
+-- NOT EXISTS makes it a no-op if the workspace is in fact still there, so it can
+-- never finalize a live event. No lease is needed — with the workspace row gone the
+-- deleting transaction has committed, so nothing else is racing this row.
+UPDATE domain_event
+SET dispatch_status = 'failed',
+    dispatched_at = now(),
+    lease_token = NULL,
+    lease_expires_at = NULL
+WHERE domain_event.id = $1
+  AND NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = domain_event.workspace_id);
+
 -- name: ClaimOneEventWithCandidates :many
 -- The durable matcher's claim AND revision pin, in a SINGLE statement (MUL-4332 PR3
 -- review round: matcher point 1). It leases exactly one undispatched, now-available
@@ -65,12 +94,17 @@ WHERE subject_type = $1
 -- candidate set share one snapshot, so the pinned revisions are exactly those active
 -- at claim time (§5.1 "使用 matcher claim 时的当前 enabled revision").
 --
+-- The event is chosen by PeekNextClaimableDomainEvent and its workspace is locked
+-- BEFORE this runs, so the matcher's lock order is workspace -> domain_event, the
+-- same order DeleteWorkspace takes (MUL-4332 review: production lock order). The id
+-- predicate here is therefore a CAS: it re-checks claimability under this
+-- statement's snapshot and returns no rows if another matcher won the race or the
+-- event stopped being claimable. Reclaims events left 'dispatching' by a crashed
+-- matcher once their lease expires, so processing is at-least-once.
+--
 -- The LEFT JOIN LATERAL means an event with no candidates still returns exactly one
 -- row (hook_id NULL), so the caller can distinguish "claimed, nothing matched" from
--- "nothing to claim" (zero rows). Reclaims events left 'dispatching' by a crashed
--- matcher once their lease expires, so processing is at-least-once. FOR UPDATE SKIP
--- LOCKED lets multiple matchers share the queue and keeps the claimed row locked for
--- the rest of the transaction. Rides idx_domain_event_dispatch.
+-- "nothing to claim" (zero rows). Rides idx_domain_event_dispatch.
 --
 -- Issue scope is lifecycle ownership only and does NOT restrict the event subject —
 -- that is the job of `when` — so scope is not a filter here.
@@ -84,15 +118,10 @@ WITH claimed AS (
         -- outlives its intended TTL.
         lease_expires_at = clock_timestamp() + make_interval(secs => @lease_ttl_seconds::float8),
         attempts = attempts + 1
-    WHERE id = (
-        SELECT id FROM domain_event
-        WHERE available_at <= now()
-          AND (dispatch_status = 'pending'
-               OR (dispatch_status = 'dispatching' AND lease_expires_at < now()))
-        ORDER BY seq ASC
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-    )
+    WHERE domain_event.id = @event_id
+      AND domain_event.available_at <= now()
+      AND (domain_event.dispatch_status = 'pending'
+           OR (domain_event.dispatch_status = 'dispatching' AND domain_event.lease_expires_at < now()))
     RETURNING id, workspace_id, type, subject_id, actor_type, actor_id,
               payload, correlation_id, hop_count
 )

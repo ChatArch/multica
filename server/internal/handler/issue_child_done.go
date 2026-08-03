@@ -304,7 +304,7 @@ func (h *Handler) postChildDoneComment(ctx context.Context, parent, completed db
 	// Transactional outbox (MUL-4332 review point 2): the system child-done
 	// comment and its comment.created event commit in one transaction.
 	var comment db.Comment
-	if err := domainevent.WriteInTx(ctx, h.TxStarter, h.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	if err := domainevent.WriteInTx(ctx, h.TxStarter, h.Queries, parent.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		created, cErr := qtx.CreateComment(ctx, db.CreateCommentParams{
 			IssueID:     parent.ID,
 			WorkspaceID: parent.WorkspaceID,

@@ -65,10 +65,13 @@ func Write(ctx context.Context, q Creator, evt Event) (db.DomainEvent, error) {
 		return db.DomainEvent{}, err
 	}
 
-	// Join the workspace teardown protocol before inserting. Every outbox producer
-	// funnels through here, so this one lock covers them all: it blocks while a
-	// DeleteWorkspace holds FOR UPDATE, and a workspace already gone fails closed
-	// instead of leaving an event with no owner (MUL-4332 review: teardown race).
+	// Join the workspace teardown protocol before inserting. This covers DIRECT
+	// callers, which manage their own transaction; WriteInTx additionally takes the
+	// same lock before its callback so the workspace is that transaction's FIRST lock
+	// (re-taking FOR KEY SHARE inside one transaction is a no-op). A direct caller
+	// that locks its domain fact first must take LockWorkspaceForAutomationWrite
+	// itself, ahead of that lock — this guard alone does not fix lock ORDER, only
+	// mutual exclusion.
 	if _, err := q.LockWorkspaceForAutomationWrite(ctx, evt.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return db.DomainEvent{}, fmt.Errorf("%w: %s", ErrWorkspaceGone, evt.Type)
@@ -118,7 +121,7 @@ func Write(ctx context.Context, q Creator, evt Event) (db.DomainEvent, error) {
 // base is the pool-bound *db.Queries; WriteInTx rebinds it to the new tx. If fn
 // returns no events (e.g. the write turned out to be a no-op), the transaction
 // still commits the fn's own writes.
-func WriteInTx(ctx context.Context, tb txBeginner, base *db.Queries, fn func(qtx *db.Queries) ([]Event, error)) error {
+func WriteInTx(ctx context.Context, tb txBeginner, base *db.Queries, workspaceID pgtype.UUID, fn func(qtx *db.Queries) ([]Event, error)) error {
 	tx, err := tb.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("domainevent: begin tx: %w", err)
@@ -126,6 +129,21 @@ func WriteInTx(ctx context.Context, tb txBeginner, base *db.Queries, fn func(qtx
 	defer tx.Rollback(ctx)
 
 	qtx := base.WithTx(tx)
+
+	// WORKSPACE FIRST — before the callback, not after it. The callback locks the
+	// domain fact (e.g. LockIssueRowForUpdate), and DeleteWorkspace locks workspace
+	// then deletes that fact; taking the workspace lock only in Write (after the
+	// callback returned) left the real order as fact -> workspace, the reverse of the
+	// delete's, which deadlocks under a concurrent teardown (MUL-4332 review:
+	// production lock order). Locking here makes workspace the transaction's first
+	// lock for every producer that funnels through this helper.
+	if _, err := qtx.LockWorkspaceForAutomationWrite(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: %s", ErrWorkspaceGone, "write in tx")
+		}
+		return fmt.Errorf("domainevent: lock workspace: %w", err)
+	}
+
 	events, err := fn(qtx)
 	if err != nil {
 		return err

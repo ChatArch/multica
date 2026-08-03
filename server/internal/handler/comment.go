@@ -1868,7 +1868,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	commentActorUUID, _ := util.ParseUUID(authorID)
 	commentActor := domainevent.ActorFrom(authorType, commentActorUUID)
 	var comment db.Comment
-	if writeErr := domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	if writeErr := domainevent.WriteInTx(r.Context(), h.TxStarter, h.Queries, issue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		created, err := qtx.CreateComment(r.Context(), db.CreateCommentParams{
 			IssueID:      issue.ID,
 			WorkspaceID:  issue.WorkspaceID,

@@ -1723,7 +1723,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	// already-done issue produces no event).
 	var updated db.Issue
 	var before db.Issue
-	if err := domainevent.WriteInTx(ctx, h.TxStarter, h.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+	if err := domainevent.WriteInTx(ctx, h.TxStarter, h.Queries, issue.WorkspaceID, func(qtx *db.Queries) ([]domainevent.Event, error) {
 		// Lock + read the authoritative row so the event `from` is correct
 		// even if another writer moved the issue concurrently (review point 3).
 		locked, err := qtx.LockIssueRowForUpdate(ctx, db.LockIssueRowForUpdateParams{
