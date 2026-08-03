@@ -115,17 +115,6 @@ func newDaemonTokenRequest(method, path string, body any, workspaceID, daemonID 
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
-	// Every current daemon advertises authoritative-mcp-v1, and the claim path
-	// refuses a managed mcp_config without it (GitHub #6283). Default it on so
-	// unrelated claim tests exercise a current daemon rather than accidentally
-	// simulating a pre-#6283 one. Tests that specifically cover the outdated
-	// case build their own request without this header — see
-	// TestClaimTaskByRuntime_OutdatedDaemonRefusesManagedMcpConfig.
-	//
-	// Deliberately only this capability: skill-bundles / coalesced-comments /
-	// rpc are feature negotiations whose absence tests real legacy behaviour,
-	// so those stay opt-in per test.
-	req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityAuthoritativeMcpV1)
 	// No X-User-ID — daemon tokens don't set it.
 	ctx := middleware.WithDaemonContext(req.Context(), workspaceID, daemonID)
 	return req.WithContext(ctx)

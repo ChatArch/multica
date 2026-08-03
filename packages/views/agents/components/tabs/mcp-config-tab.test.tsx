@@ -224,9 +224,7 @@ describe("McpConfigTab", () => {
     });
   });
 
-  // Deleting the last managed server must leave a strict empty config, not
-  // clear it to null — null re-opens every host MCP server (GitHub #6283).
-  it("deletes the last managed server only after confirmation, keeping strict empty", async () => {
+  it("deletes the last managed server only after confirmation", async () => {
     const user = userEvent.setup();
     const { onSave } = renderTab({
       mcp_config: { mcpServers: { fetch: { command: "uvx" } } },
@@ -235,35 +233,10 @@ describe("McpConfigTab", () => {
     await user.click(
       screen.getByRole("button", { name: /delete mcp server fetch/i }),
     );
-    expect(
-      screen.getByText(/the runtime's own mcp servers stay excluded/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/runtime servers are not affected/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /delete server/i }));
 
-    expect(onSave).toHaveBeenCalledWith({ mcp_config: { mcpServers: {} } });
-  });
-
-  it("restores inheritance only through the separate clear action", async () => {
-    const user = userEvent.setup();
-    const { onSave } = renderTab({
-      mcp_config: { mcpServers: { fetch: { command: "uvx" } } },
-    });
-
-    await user.click(screen.getByRole("button", { name: /stop managing mcp/i }));
-    expect(screen.getByText(/that widens the tools it can reach/i)).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: /stop managing and inherit/i }),
-    );
-
     expect(onSave).toHaveBeenCalledWith({ mcp_config: null });
-  });
-
-  it("offers no clear action when Multica manages nothing", () => {
-    renderTab({ mcp_config: null });
-
-    expect(
-      screen.queryByRole("button", { name: /stop managing mcp/i }),
-    ).not.toBeInTheDocument();
   });
 
   it("blocks invalid single-server JSON", async () => {
@@ -295,87 +268,6 @@ describe("McpConfigTab", () => {
     renderTab({}, undefined, onlineRuntime);
 
     expect(await screen.findByText("linear")).toBeInTheDocument();
-  });
-
-  // A managed mcp_config is an authoritative allowlist on the daemon side
-  // (GitHub #6283). The tab previously told every operator that managed servers
-  // are "merged with runtime servers", which is how an explicitly empty config
-  // came to look like a tightened tool scope while exposing the whole host.
-  it("marks runtime servers as not exposed when Multica manages a config", async () => {
-    mockRuntimeCapabilities.mockResolvedValue({
-      skills: [],
-      supported: true,
-      mcpServers: [
-        { name: "linear", transport: "http", source: "User config", enabled: true },
-      ],
-      mcpSupported: true,
-      authoritativeMcp: true,
-    });
-
-    renderTab({ mcp_config: { mcpServers: {} } }, undefined, onlineRuntime);
-
-    expect(await screen.findByText("linear")).toBeInTheDocument();
-    expect(screen.getByText("Not exposed")).toBeInTheDocument();
-    // The hint interpolates the runtime label, so match the part of the copy
-    // that carries the security-relevant claim.
-    expect(
-      screen.getByText(/so these servers are not exposed to it/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(enAgents.tab_body.mcp_config.managed_hint_authoritative),
-    ).toBeInTheDocument();
-  });
-
-  // The strict semantics are enforced by the daemon, so a UI that claims
-  // "Not exposed" against an old daemon repeats the exact false security
-  // guarantee this issue is about (GitHub #6283).
-  it("warns instead of claiming exclusion when the daemon predates the fix", async () => {
-    mockRuntimeCapabilities.mockResolvedValue({
-      skills: [],
-      supported: true,
-      mcpServers: [
-        { name: "linear", transport: "http", source: "User config", enabled: true },
-      ],
-      mcpSupported: true,
-      authoritativeMcp: false,
-    });
-
-    renderTab({ mcp_config: { mcpServers: {} } }, undefined, onlineRuntime);
-
-    expect(await screen.findByText("linear")).toBeInTheDocument();
-    expect(screen.queryByText("Not exposed")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(enAgents.tab_body.mcp_config.daemon_upgrade_required),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/upgrade it to exclude them/i),
-    ).toBeInTheDocument();
-  });
-
-  it("still describes runtime servers as merged when the agent opts back in", async () => {
-    mockRuntimeCapabilities.mockResolvedValue({
-      skills: [],
-      supported: true,
-      mcpServers: [
-        { name: "linear", transport: "http", source: "User config", enabled: true },
-      ],
-      mcpSupported: true,
-    });
-
-    renderTab(
-      {
-        mcp_config: { mcpServers: {} },
-        runtime_config: { mcp: { inherit_runtime: true } },
-      },
-      undefined,
-      onlineRuntime,
-    );
-
-    expect(await screen.findByText("linear")).toBeInTheDocument();
-    expect(screen.queryByText("Not exposed")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(enAgents.tab_body.mcp_config.managed_hint),
-    ).toBeInTheDocument();
   });
 
   it("shows a permission notice when capability discovery is forbidden", async () => {

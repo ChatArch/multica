@@ -1,6 +1,6 @@
 // Display grouping for `agent_task_queue.failure_reason`.
 //
-// The backend taxonomy (server/pkg/taskfailure) has 23 reasons, which is far
+// The backend taxonomy (server/pkg/taskfailure) has 22 reasons, which is far
 // too many series for a stacked chart or a scannable breakdown list. These
 // seven classes are the granularity an operator actually acts on: an auth
 // spike means "go re-auth", a rate-limit spike means "back off or raise the
@@ -23,7 +23,7 @@ export const FAILURE_CLASSES = [
 
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
-// Reason → class. Keys are the wire values written by the backend: the 23
+// Reason → class. Keys are the wire values written by the backend: the 22
 // canonical `taskfailure.Reason` strings, the `"unclassified"` sentinel the
 // failure rollups substitute for a failed row with an empty column, and the
 // pre-MUL-1949 coarse values that still sit in historical rows.
@@ -65,11 +65,6 @@ const REASON_CLASS: Record<string, FailureClass> = {
   // operator response is "check the daemon's link to Multica", the same as a
   // daemon that went offline — the model provider is not involved.
   skill_bundle_unavailable: "runtime",
-  // The claiming daemon predates authoritative mcp_config enforcement, so the
-  // run was refused rather than given the host's MCP servers (GitHub #6283).
-  // Runtime class for the same reason as the line above: the operator response
-  // is "upgrade the daemon", and the model provider is not involved.
-  mcp_config_daemon_outdated: "runtime",
 
   // The agent process itself produced the failure.
   "agent_error.process_failure": "agent",

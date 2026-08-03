@@ -510,7 +510,7 @@ func (h *Handler) GetDashboardRunTimeDaily(w http.ResponseWriter, r *http.Reques
 // expired in the queue never started.
 //
 // FailureReason values are the canonical taxonomy from server/pkg/taskfailure
-// (23 reasons), plus "unclassified" for failed rows with a NULL / empty
+// (21 reasons), plus "unclassified" for failed rows with a NULL / empty
 // column. The client folds them into a handful of display classes; the raw
 // reason stays on the wire so that mapping can change without a backend
 // deploy.

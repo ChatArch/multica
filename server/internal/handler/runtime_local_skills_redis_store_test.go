@@ -78,13 +78,7 @@ func TestRedisLocalSkillListStore_CreateGetComplete(t *testing.T) {
 	mcpServers := []RuntimeLocalMcpServerSummary{
 		{Name: "fetch", Transport: "stdio", Source: "User config", Enabled: true},
 	}
-	if err := store.Complete(ctx, req.ID, RuntimeLocalSkillListResult{
-		Skills:           skills,
-		Supported:        true,
-		McpServers:       mcpServers,
-		McpSupported:     true,
-		AuthoritativeMcp: true,
-	}); err != nil {
+	if err := store.Complete(ctx, req.ID, skills, true, mcpServers, true); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 

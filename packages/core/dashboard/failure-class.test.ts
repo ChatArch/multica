@@ -18,10 +18,6 @@ describe("failureClassOf", () => {
     // MUL-5370: the run never reached the model provider, so this belongs
     // with the substrate failures an operator fixes by checking the daemon.
     expect(failureClassOf("skill_bundle_unavailable")).toBe("runtime");
-    // GitHub #6283: the claim was refused because the runtime's daemon is too
-    // old to enforce the agent's MCP allowlist — an operator fixes it by
-    // upgrading that daemon, so it counts as substrate, not agent behaviour.
-    expect(failureClassOf("mcp_config_daemon_outdated")).toBe("runtime");
     expect(failureClassOf("agent_error.process_failure")).toBe("agent");
   });
 

@@ -25,8 +25,6 @@ import {
   ListIssuesResponseSchema,
   ListPropertiesResponseSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
-  RuntimeLocalSkillListRequestSchema,
-  MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
   SearchProjectsResponseSchema,
   RuntimeHourlyActivityListSchema,
@@ -1107,111 +1105,5 @@ describe("RuntimeModelListRequestSchema", () => {
     expect((parsed as unknown as { future_field?: string }).future_field).toBe(
       "keep me",
     );
-  });
-});
-
-// Runtime capability discovery. `authoritative_mcp` gates whether the agent MCP
-// tab may tell an operator that the host's MCP servers are excluded from an
-// agent, so every drift path must resolve to the fail-closed value rather than
-// an unchecked assertion (GitHub #6283).
-describe("RuntimeLocalSkillListRequestSchema", () => {
-  const completed = {
-    id: "req-1",
-    runtime_id: "rt-1",
-    status: "completed",
-    supported: true,
-    skills: [
-      {
-        key: "review",
-        name: "Review",
-        source_path: "/home/u/.claude/skills/review",
-        provider: "claude",
-        file_count: 3,
-      },
-    ],
-    mcp_servers: [
-      { name: "linear", transport: "http", source: "User config", enabled: true },
-    ],
-    mcp_supported: true,
-    authoritative_mcp: true,
-    created_at: "2026-08-03T00:00:00Z",
-    updated_at: "2026-08-03T00:00:01Z",
-  };
-
-  it("parses a live completed discovery, keeping the fields the UI branches on", () => {
-    const parsed = parseWithFallback(
-      completed,
-      RuntimeLocalSkillListRequestSchema,
-      MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-      { endpoint: "test" },
-    );
-    expect(parsed.status).toBe("completed");
-    expect(parsed.mcp_supported).toBe(true);
-    expect(parsed.authoritative_mcp).toBe(true);
-    expect(parsed.mcp_servers?.[0]?.name).toBe("linear");
-    expect(parsed.skills?.[0]?.key).toBe("review");
-  });
-
-  // A daemon that predates the authoritative-MCP guarantee omits the flag. It
-  // must read as false — claiming enforcement off a missing field is exactly the
-  // false security guarantee this issue is about.
-  it("defaults authoritative_mcp to false when an older daemon omits it", () => {
-    const { authoritative_mcp: _omitted, ...withoutFlag } = completed;
-    const parsed = parseWithFallback(
-      withoutFlag,
-      RuntimeLocalSkillListRequestSchema,
-      MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-      { endpoint: "test" },
-    );
-    expect(parsed.status).toBe("completed");
-    expect(parsed.authoritative_mcp).toBe(false);
-  });
-
-  it("defaults authoritative_mcp to false when it arrives as a non-boolean", () => {
-    for (const bad of ["true", 1, null, {}]) {
-      const parsed = parseWithFallback(
-        { ...completed, authoritative_mcp: bad },
-        RuntimeLocalSkillListRequestSchema,
-        MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-        { endpoint: "test" },
-      );
-      expect(parsed.authoritative_mcp).toBe(false);
-    }
-  });
-
-  it("defaults mcp_supported to false when omitted", () => {
-    const { mcp_supported: _omitted, ...withoutFlag } = completed;
-    const parsed = parseWithFallback(
-      withoutFlag,
-      RuntimeLocalSkillListRequestSchema,
-      MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-      { endpoint: "test" },
-    );
-    expect(parsed.mcp_supported).toBe(false);
-  });
-
-  it("degrades a malformed body to an explicit failure with no MCP guarantee", () => {
-    for (const bad of ["not-an-object", 7, null, { status: 7 }]) {
-      const parsed = parseWithFallback(
-        bad,
-        RuntimeLocalSkillListRequestSchema,
-        MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-        { endpoint: "test" },
-      );
-      expect(parsed.status).toBe("failed");
-      expect(parsed.authoritative_mcp).toBe(false);
-      expect(parsed.error).toBe("invalid runtime capability response");
-    }
-  });
-
-  it("keeps unknown additive fields instead of failing the response", () => {
-    const parsed = parseWithFallback(
-      { ...completed, some_future_field: "x" },
-      RuntimeLocalSkillListRequestSchema,
-      MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST,
-      { endpoint: "test" },
-    );
-    expect(parsed.status).toBe("completed");
-    expect(parsed.authoritative_mcp).toBe(true);
   });
 });

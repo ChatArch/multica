@@ -88,25 +88,8 @@ type LocalSkillListStore interface {
 	// never start a claim they might have to abort.
 	HasPending(ctx context.Context, runtimeID string) (bool, error)
 	PopPending(ctx context.Context, runtimeID string) (*RuntimeLocalSkillListRequest, error)
-	Complete(ctx context.Context, id string, result RuntimeLocalSkillListResult) error
+	Complete(ctx context.Context, id string, skills []RuntimeLocalSkillSummary, supported bool, mcpServers []RuntimeLocalMcpServerSummary, mcpSupported bool) error
 	Fail(ctx context.Context, id string, errMsg string) error
-}
-
-// RuntimeLocalSkillListResult is the completed payload a daemon reports for a
-// runtime capability listing. Grouped into a struct rather than positional
-// arguments so adding a capability flag cannot silently swap two adjacent
-// bools at a call site.
-type RuntimeLocalSkillListResult struct {
-	Skills       []RuntimeLocalSkillSummary
-	Supported    bool
-	McpServers   []RuntimeLocalMcpServerSummary
-	McpSupported bool
-	// AuthoritativeMcp reports whether the daemon enforces a managed
-	// mcp_config as an authoritative allowlist. False for any daemon
-	// predating that behaviour, which still merges the host's own MCP servers
-	// underneath the managed set (GitHub #6283) — the UI must say "needs
-	// upgrade" rather than claiming those servers are excluded.
-	AuthoritativeMcp bool
 }
 
 // LocalSkillImportRequestInput carries the fields needed to enqueue a
@@ -224,13 +207,10 @@ type RuntimeLocalSkillListRequest struct {
 	Supported    bool                           `json:"supported"`
 	McpServers   []RuntimeLocalMcpServerSummary `json:"mcp_servers,omitempty"`
 	McpSupported bool                           `json:"mcp_supported"`
-	// AuthoritativeMcp is false for daemons predating GitHub #6283's fix, which
-	// still merge the host's MCP servers into a managed mcp_config.
-	AuthoritativeMcp bool       `json:"authoritative_mcp"`
-	Error            string     `json:"error,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	RunStartedAt     *time.Time `json:"-"`
+	Error        string                         `json:"error,omitempty"`
+	CreatedAt    time.Time                      `json:"created_at"`
+	UpdatedAt    time.Time                      `json:"updated_at"`
+	RunStartedAt *time.Time                     `json:"-"`
 }
 
 type RuntimeLocalSkillImportRequest struct {
@@ -339,17 +319,16 @@ func (s *InMemoryLocalSkillListStore) PopPending(_ context.Context, runtimeID st
 	return oldest, nil
 }
 
-func (s *InMemoryLocalSkillListStore) Complete(_ context.Context, id string, result RuntimeLocalSkillListResult) error {
+func (s *InMemoryLocalSkillListStore) Complete(_ context.Context, id string, skills []RuntimeLocalSkillSummary, supported bool, mcpServers []RuntimeLocalMcpServerSummary, mcpSupported bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if req, ok := s.requests[id]; ok {
 		req.Status = RuntimeLocalSkillCompleted
-		req.Skills = result.Skills
-		req.Supported = result.Supported
-		req.McpServers = result.McpServers
-		req.McpSupported = result.McpSupported
-		req.AuthoritativeMcp = result.AuthoritativeMcp
+		req.Skills = skills
+		req.Supported = supported
+		req.McpServers = mcpServers
+		req.McpSupported = mcpSupported
 		req.UpdatedAt = time.Now()
 	}
 	return nil
@@ -775,10 +754,7 @@ func (h *Handler) ReportLocalSkillListResult(w http.ResponseWriter, r *http.Requ
 		Supported    *bool                          `json:"supported"`
 		McpServers   []RuntimeLocalMcpServerSummary `json:"mcp_servers"`
 		McpSupported *bool                          `json:"mcp_supported"`
-		// Absent from every daemon that predates GitHub #6283's fix, which is
-		// exactly the population that must NOT be reported as authoritative.
-		AuthoritativeMcp *bool  `json:"authoritative_mcp"`
-		Error            string `json:"error"`
+		Error        string                         `json:"error"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -794,17 +770,7 @@ func (h *Handler) ReportLocalSkillListResult(w http.ResponseWriter, r *http.Requ
 		if body.McpSupported != nil {
 			mcpSupported = *body.McpSupported
 		}
-		authoritativeMcp := false
-		if body.AuthoritativeMcp != nil {
-			authoritativeMcp = *body.AuthoritativeMcp
-		}
-		if err := h.LocalSkillListStore.Complete(r.Context(), requestID, RuntimeLocalSkillListResult{
-			Skills:           body.Skills,
-			Supported:        supported,
-			McpServers:       body.McpServers,
-			McpSupported:     mcpSupported,
-			AuthoritativeMcp: authoritativeMcp,
-		}); err != nil {
+		if err := h.LocalSkillListStore.Complete(r.Context(), requestID, body.Skills, supported, body.McpServers, mcpSupported); err != nil {
 			// Surface the store failure as 5xx so the daemon can retry instead
 			// of swallowing the report (leaves the request stuck in running
 			// until the server-side timeout, which is exactly the "looks OK but

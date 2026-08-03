@@ -17,16 +17,6 @@ export interface OpenclawGatewayPin {
 export interface OpenclawRuntimeConfig {
   mode?: OpenclawRoutingMode;
   gateway?: OpenclawGatewayPin;
-  /**
-   * Keys of `runtime_config` this form does not own, carried through parse →
-   * serialize untouched so saving OpenClaw routing cannot delete settings
-   * stored alongside it — notably `mcp.inherit_runtime`, which decides whether
-   * the agent may reach the runtime host's MCP servers (GitHub #6283).
-   *
-   * Deliberately excluded from `openclawRuntimeConfigEquals`: the form never
-   * edits these, so they must not make it look dirty.
-   */
-  passthrough?: Record<string, unknown>;
 }
 
 // Sentinel the API substitutes for a non-empty `gateway.token` on every read.
@@ -36,10 +26,9 @@ export interface OpenclawRuntimeConfig {
 export const OPENCLAW_GATEWAY_TOKEN_MASK = "***";
 
 // Parse an arbitrary runtime_config payload into the typed schema. Unknown
-// keys are preserved verbatim under `passthrough` (see below), malformed
-// payloads collapse to an empty object. The form never throws on bad input —
-// invalid configs simply render as defaults so the user can correct them
-// without a JSON parse error blocking the UI.
+// keys are dropped, malformed payloads collapse to an empty object. The form
+// never throws on bad input — invalid configs simply render as defaults so
+// the user can correct them without a JSON parse error blocking the UI.
 export function parseOpenclawRuntimeConfig(
   raw: unknown,
 ): OpenclawRuntimeConfig {
@@ -58,18 +47,6 @@ export function parseOpenclawRuntimeConfig(
     if (typeof gw.tls === "boolean") pin.tls = gw.tls;
     if (Object.keys(pin).length > 0) out.gateway = pin;
   }
-  // Keep every key this form does not own. `runtime_config` is a single JSONB
-  // column shared with settings owned elsewhere — notably
-  // `mcp.inherit_runtime`, which controls whether the agent may reach the
-  // host's MCP servers (GitHub #6283). Dropping unknown keys here made saving
-  // an unrelated OpenClaw routing change silently reset that security setting,
-  // because the tab persists this parse result as the WHOLE object.
-  const passthrough: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(root)) {
-    if (key === "mode" || key === "gateway") continue;
-    passthrough[key] = value;
-  }
-  if (Object.keys(passthrough).length > 0) out.passthrough = passthrough;
   return out;
 }
 
@@ -81,13 +58,6 @@ export function serializeOpenclawRuntimeConfig(
   cfg: OpenclawRuntimeConfig,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  // Settings owned by other tabs go back first so this form can never clobber
-  // them; `mode`/`gateway` below are the only keys it owns.
-  if (cfg.passthrough) {
-    for (const [key, value] of Object.entries(cfg.passthrough)) {
-      out[key] = value;
-    }
-  }
   if (cfg.mode) out.mode = cfg.mode;
   if (cfg.gateway) {
     const gw: Record<string, unknown> = {};

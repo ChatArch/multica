@@ -31,7 +31,6 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
-	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // ---------------------------------------------------------------------------
@@ -1664,59 +1663,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if agent.McpConfig != nil {
 			mcpConfig = json.RawMessage(agent.McpConfig)
 		}
-		// Fail closed against a daemon that predates the authoritative
-		// mcp_config semantics: it would merge the runtime host's own MCP
-		// servers underneath this agent's managed set, handing the agent tools
-		// the operator explicitly scoped out (GitHub #6283). Running the task
-		// anyway is the vulnerability, and the UI cannot honestly report the
-		// boundary either.
-		//
-		// FailTask rather than CancelTask, because the default claim path is the
-		// machine-level BATCH endpoint, which skips build failures and still
-		// answers 200 {"tasks":[]} — a bare cancel would show the operator a
-		// task that vanished for no stated reason. The classified failure
-		// reason + message are stored on the task, so the upgrade requirement
-		// reaches the user on every claim path and on any daemon version. The
-		// reason is not auto-retryable: the same outdated daemon would claim the
-		// retry and fail it again.
-		if mcpConfigNeedsAuthoritativeDaemon(runtime.Provider, mcpConfig, agent.RuntimeConfig) &&
-			!requestHasClientCapability(r, protocol.DaemonCapabilityAuthoritativeMcpV1) {
-			slog.Error("task claim: daemon predates authoritative mcp_config; failing task instead of widening the agent's MCP tools",
-				"task_id", uuidToString(task.ID),
-				"agent_id", uuidToString(agent.ID),
-				"runtime_id", runtimeID,
-				"provider", runtime.Provider,
-				"required_capability", protocol.DaemonCapabilityAuthoritativeMcpV1,
-			)
-			if _, ferr := h.TaskService.FailTask(r.Context(), task.ID,
-				mcpConfigDaemonOutdatedMessage, "", "",
-				string(taskfailure.ReasonMcpConfigDaemonOutdated), false, ""); ferr != nil {
-				slog.Error("task claim: fail after authoritative mcp_config check failed",
-					"task_id", uuidToString(task.ID), "error", ferr)
-			}
-			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
-				outcome: "error_mcp_config_daemon_outdated",
-				status:  http.StatusPreconditionFailed,
-				message: mcpConfigDaemonOutdatedMessage,
-			}
-		}
 		// Layer the per-task overlay (set at enqueue from the initiator
 		// user's active integrations — currently Composio) on top of the
 		// agent's saved mcp_config. Overlay wins on server-name collisions
 		// because it carries the live user-scoped session URL. Errors are
 		// logged but never fail the claim: a broken overlay must not prevent
 		// the agent from running with its base config.
-		//
-		// mcpConfigOverlayOnly tells the daemon the payload is purely the
-		// overlay so it keeps inheriting the runtime's MCP servers for an
-		// agent that never configured any (GitHub #6283).
-		var mcpConfigOverlayOnly bool
 		if composioMCPEnabled && len(task.RuntimeMcpOverlay) > 0 {
-			resolved, overlayOnly, err := resolveClaimMcpConfig(mcpConfig, json.RawMessage(task.RuntimeMcpOverlay))
-			if err != nil {
+			if merged, err := mergeMCPOverlay(mcpConfig, json.RawMessage(task.RuntimeMcpOverlay)); err != nil {
 				slog.Warn("daemon claim: merge runtime_mcp_overlay failed; falling back to agent mcp_config", "task_id", uuidToString(task.ID), "error", err)
+			} else {
+				mcpConfig = merged
 			}
-			mcpConfig, mcpConfigOverlayOnly = resolved, overlayOnly
 		}
 		// runtime_config is stored as JSONB and may legitimately be the
 		// empty object `{}` for agents that haven't opted into any
@@ -1733,7 +1691,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			CustomEnv:             customEnv,
 			CustomArgs:            customArgs,
 			McpConfig:             mcpConfig,
-			McpConfigOverlayOnly:  mcpConfigOverlayOnly,
 			Model:                 agent.Model.String,
 			ThinkingLevel:         agent.ThinkingLevel.String,
 			ServiceTier:           agent.ServiceTier.String,

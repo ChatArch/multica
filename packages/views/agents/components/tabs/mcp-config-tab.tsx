@@ -32,8 +32,6 @@ import { Button } from "@multica/ui/components/ui/button";
 import { toast } from "sonner";
 import { useT } from "../../../i18n";
 import {
-  clearManagedMcpConfig,
-  inheritsRuntimeMcp,
   listManagedMcpServers,
   removeManagedMcpServer,
   upsertManagedMcpServer,
@@ -59,20 +57,6 @@ export function McpConfigTab({
       : null;
   const runtimeQuery = useQuery(runtimeCapabilitiesOptions(runtimeId));
   const redacted = agent.mcp_config_redacted === true;
-  // A managed mcp_config is an authoritative allowlist on the daemon side, so
-  // the runtime's own servers are only exposed when Multica manages nothing for
-  // this agent or it explicitly opted back in (GitHub #6283). The copy below
-  // has to say which of the two is in effect — an operator who believes the
-  // wrong one mis-scopes the agent's tool access.
-  const inheritsRuntime = useMemo(
-    () =>
-      inheritsRuntimeMcp(
-        agent.mcp_config,
-        agent.mcp_config_redacted,
-        agent.runtime_config,
-      ),
-    [agent.mcp_config, agent.mcp_config_redacted, agent.runtime_config],
-  );
   const managedServers = useMemo(
     () => listManagedMcpServers(agent.mcp_config),
     [agent.mcp_config],
@@ -88,18 +72,6 @@ export function McpConfigTab({
   const [deletingServer, setDeletingServer] =
     useState<ManagedMcpServer | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [clearOpen, setClearOpen] = useState(false);
-  const [clearing, setClearing] = useState(false);
-
-  // The strict semantics are enforced by the DAEMON, so a config saved against
-  // an older daemon is not yet in effect: that daemon still merges the host's
-  // MCP servers. Claiming "Not exposed" in that window would be the same false
-  // security guarantee this issue is about, so only trust a daemon that
-  // reports the capability (GitHub #6283).
-  const runtimeAuthoritative = runtimeQuery.data?.authoritativeMcp === true;
-  const daemonEnforcesManagedConfig = !inheritsRuntime && runtimeAuthoritative;
-  const daemonNeedsUpgradeForMcp =
-    !inheritsRuntime && runtimeQuery.data !== undefined && !runtimeAuthoritative;
 
   useEffect(() => onDirtyChange?.(false), [onDirtyChange]);
 
@@ -160,23 +132,6 @@ export function McpConfigTab({
     }
   };
 
-  const handleClearManaged = async () => {
-    setClearing(true);
-    try {
-      await onSave({ mcp_config: clearManagedMcpConfig() });
-      toast.success(t(($) => $.tab_body.mcp_config.cleared_toast));
-      setClearOpen(false);
-    } catch (error) {
-      toast.error(
-        error instanceof Error && error.message
-          ? error.message
-          : t(($) => $.tab_body.mcp_config.save_failed_toast),
-      );
-    } finally {
-      setClearing(false);
-    }
-  };
-
   return (
     <div className="space-y-8">
       <p className="max-w-2xl break-words text-pretty text-body leading-6 text-muted-foreground">
@@ -190,9 +145,7 @@ export function McpConfigTab({
               {t(($) => $.tab_body.mcp_config.managed_title)}
             </h3>
             <p className="mt-1 max-w-2xl text-caption leading-5 text-muted-foreground">
-              {inheritsRuntime
-                ? t(($) => $.tab_body.mcp_config.managed_hint)
-                : t(($) => $.tab_body.mcp_config.managed_hint_authoritative)}
+              {t(($) => $.tab_body.mcp_config.managed_hint)}
             </p>
           </div>
           {!redacted && (
@@ -202,14 +155,6 @@ export function McpConfigTab({
             </Button>
           )}
         </div>
-
-        {/* The saved config is only a real boundary once the daemon enforces
-            it. Warn instead of letting the operator assume it already does. */}
-        {daemonNeedsUpgradeForMcp && (
-          <McpNotice
-            text={t(($) => $.tab_body.mcp_config.daemon_upgrade_required)}
-          />
-        )}
 
         {redacted ? (
           <div className="flex items-start gap-2 rounded-lg border px-4 py-3">
@@ -236,27 +181,7 @@ export function McpConfigTab({
             deleteLabel={t(($) => $.tab_body.mcp_config.delete_aria)}
           />
         ) : (
-          <McpNotice
-            text={
-              inheritsRuntime
-                ? t(($) => $.tab_body.mcp_config.managed_empty)
-                : t(($) => $.tab_body.mcp_config.managed_empty_strict)
-            }
-          />
-        )}
-
-        {/* Restoring inheritance WIDENS the agent's tool surface, so it is its
-            own deliberate action rather than a side effect of deleting the last
-            server (GitHub #6283). Only offered when a managed config exists. */}
-        {!redacted && !inheritsRuntime && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setClearOpen(true)}
-            disabled={clearing}
-          >
-            {t(($) => $.tab_body.mcp_config.clear_action)}
-          </Button>
+          <McpNotice text={t(($) => $.tab_body.mcp_config.managed_empty)} />
         )}
       </section>
 
@@ -267,21 +192,9 @@ export function McpConfigTab({
               {t(($) => $.tab_body.mcp_config.runtime_title)}
             </h3>
             <p className="mt-1 max-w-2xl text-caption leading-5 text-muted-foreground">
-              {inheritsRuntime
-                ? t(($) => $.tab_body.mcp_config.runtime_hint, {
-                    runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
-                  })
-                : daemonNeedsUpgradeForMcp
-                  ? t(($) => $.tab_body.mcp_config.runtime_hint_needs_upgrade, {
-                      runtime: runtime
-                        ? runtimeDisplayLabel(runtime)
-                        : "Runtime",
-                    })
-                  : t(($) => $.tab_body.mcp_config.runtime_hint_excluded, {
-                      runtime: runtime
-                        ? runtimeDisplayLabel(runtime)
-                        : "Runtime",
-                    })}
+              {t(($) => $.tab_body.mcp_config.runtime_hint, {
+                runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
+              })}
             </p>
           </div>
           {runtimeId && (
@@ -334,20 +247,10 @@ export function McpConfigTab({
               transport: server.transport || "unknown",
               enabled: server.enabled,
               source: server.source,
-              // Only claim exclusion once the daemon actually enforces it.
-              // Against an older daemon these servers ARE still reachable, so
-              // fall back to the name-collision badge and let the section hint
-              // carry the "needs upgrade" warning.
-              overridden: daemonEnforcesManagedConfig
-                ? true
-                : managedNames.has(server.name),
+              overridden: managedNames.has(server.name),
             }))}
             disabledLabel={t(($) => $.tab_body.mcp_config.runtime_disabled_badge)}
-            overriddenLabel={
-              daemonEnforcesManagedConfig
-                ? t(($) => $.tab_body.mcp_config.runtime_excluded_badge)
-                : t(($) => $.tab_body.mcp_config.runtime_overridden_badge)
-            }
+            overriddenLabel={t(($) => $.tab_body.mcp_config.runtime_overridden_badge)}
           />
         )}
       </section>
@@ -393,42 +296,6 @@ export function McpConfigTab({
                 />
               )}
               {t(($) => $.tab_body.mcp_config.delete_action)}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog
-        open={clearOpen}
-        onOpenChange={(open) => !open && !clearing && setClearOpen(false)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t(($) => $.tab_body.mcp_config.clear_dialog_title)}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {t(($) => $.tab_body.mcp_config.clear_dialog_description, {
-                runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
-              })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={clearing}>
-              {t(($) => $.tab_body.mcp_config.dialog_cancel)}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={handleClearManaged}
-              disabled={clearing}
-            >
-              {clearing && (
-                <Loader2
-                  className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-              )}
-              {t(($) => $.tab_body.mcp_config.clear_confirm_action)}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -12,13 +12,13 @@
 // This package lifts that classifier into the in-flight write path so the
 // stored failure_reason is already refined when the row is first
 // persisted, and so server / daemon / cloud share a single source of
-// truth for the canonical 23 values. PR1 of the Grafana board plan
+// truth for the canonical 22 values. PR1 of the Grafana board plan
 // ([MUL-2946](https://multica/issues/MUL-2946)). Subsequent PRs use
 // AllReasons() to pre-warm the Prometheus failure_reason label set.
 //
-// The 23 canonical values fall into two groups:
+// The 22 canonical values fall into two groups:
 //
-//   - 9 platform-side values (no `agent_error.` prefix) emitted by the
+//   - 8 platform-side values (no `agent_error.` prefix) emitted by the
 //     server-side sweepers and daemon classifiers when the failure is
 //     attributable to the platform/scheduler/runtime layer rather than
 //     anything the agent process did:
@@ -48,7 +48,7 @@ type Reason string
 
 // agentErrorPrefix marks the 14 sub-reasons that originate inside the
 // agent process (provider error, runner crash, context overflow, etc.)
-// as opposed to the 9 platform-side reasons (queue expiry, runtime
+// as opposed to the 8 platform-side reasons (queue expiry, runtime
 // offline, sweeper timeout, etc.). IsAgentError uses this prefix so
 // callers don't have to enumerate the agent-side reasons by hand.
 const agentErrorPrefix = "agent_error."
@@ -110,21 +110,6 @@ const (
 	// converge instead of re-downloading the whole set. Written by
 	// taskRunFailureReason in daemon/daemon.go.
 	ReasonSkillBundleUnavailable Reason = "skill_bundle_unavailable"
-
-	// ReasonMcpConfigDaemonOutdated: the agent has a managed mcp_config that
-	// must be enforced as an authoritative allowlist, but the daemon that
-	// claimed the task predates that enforcement and would have merged the
-	// runtime host's own MCP servers underneath it (GitHub #6283). The claim
-	// path refuses rather than run the agent with tools the operator scoped
-	// out, so the agent process was never launched. Platform-side: nothing the
-	// agent did caused it, and the operator fix is to upgrade the daemon (or
-	// set runtime_config.mcp.inherit_runtime to accept the host's servers).
-	//
-	// Deliberately NOT in retryableReasons: the same outdated daemon would
-	// claim the retry and fail it again, so an auto-retry would spin instead of
-	// surfacing the upgrade requirement. Written by the claim path in
-	// internal/handler/daemon.go.
-	ReasonMcpConfigDaemonOutdated Reason = "mcp_config_daemon_outdated"
 
 	// Agent process side: failure surfaced by the agent CLI / SDK as
 	// an error string. Classify(rawError) is responsible for picking
@@ -201,15 +186,9 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 23 reasons. Order is
+// allReasons is the canonical ordered list of the 22 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
-// AllReasons) can build deterministic label sets across restarts. New reasons
-// are APPENDED to their group so existing positions never shift.
-//
-// Membership is not cosmetic: metrics.NormalizeFailureReason only treats values
-// in AllReasons() as known, and falls back to free-text Classify() otherwise —
-// which silently relabels an unregistered platform-side reason as
-// `agent_error.unknown`. Every new Reason must be added here.
+// AllReasons) can build deterministic label sets across restarts.
 //
 // Ordering:
 //  1. Platform-side reasons in the same order they tend to fire in a
@@ -226,9 +205,6 @@ var allReasons = []Reason{
 	ReasonAgentBlocked,
 	ReasonAPIInvalidRequest,
 	ReasonSkillBundleUnavailable,
-	// Fires at claim time — earlier than any of the above in lifecycle terms,
-	// but appended to keep the established label ordering stable.
-	ReasonMcpConfigDaemonOutdated,
 
 	// Agent process side: provider errors.
 	ReasonAgentProviderAuthOrAccess,
@@ -268,7 +244,7 @@ func (r Reason) IsAgentError() bool {
 	return strings.HasPrefix(string(r), agentErrorPrefix)
 }
 
-// AllReasons returns the canonical 23 reasons in a stable order. The
+// AllReasons returns the canonical 22 reasons in a stable order. The
 // caller MUST NOT mutate the returned slice; a copy is returned so
 // concurrent callers can append to their local copy without corrupting
 // the package-level fixture.

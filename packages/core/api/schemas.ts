@@ -43,7 +43,6 @@ import type {
   ListWebhookDeliveriesResponse,
   NotificationPreferenceResponse,
   ResourceLabelsResponse,
-  RuntimeLocalSkillListRequest,
   RuntimeModelListRequest,
   SearchIssuesResponse,
   SearchProjectsResponse,
@@ -2017,70 +2016,3 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
   created_at: "",
   updated_at: "",
 };
-
-export const RuntimeLocalSkillSummarySchema = z
-  .object({
-    key: z.string().default(""),
-    name: z.string().default(""),
-    description: z.string().optional(),
-    source_path: z.string().default(""),
-    provider: z.string().default(""),
-    root: z.string().optional(),
-    plugin: z.string().optional(),
-    can_disable: z.boolean().optional(),
-    file_count: z.number().default(0),
-  })
-  .loose();
-
-export const RuntimeLocalMcpServerSummarySchema = z
-  .object({
-    name: z.string().default(""),
-    transport: z.string().optional(),
-    source: z.string().optional(),
-    enabled: z.boolean().default(false),
-  })
-  .loose();
-
-// Runtime capability discovery (skills + MCP inventory). Validated rather than
-// cast because `authoritative_mcp` decides whether the agent MCP tab may tell
-// an operator that the host's MCP servers are excluded from an agent — a
-// security claim that must not rest on an unchecked type assertion.
-//
-// Both MCP booleans default to FALSE, which is the fail-closed direction:
-//   - `authoritative_mcp` absent → the daemon predates the guarantee, so the
-//     UI shows "needs upgrade" instead of claiming the boundary is enforced.
-//   - `mcp_supported` absent → the runtime cannot report an inventory.
-export const RuntimeLocalSkillListRequestSchema = z
-  .object({
-    id: z.string().default(""),
-    runtime_id: z.string().default(""),
-    status: z.string(),
-    skills: z.array(RuntimeLocalSkillSummarySchema).optional(),
-    supported: z.boolean().default(true),
-    mcp_servers: z.array(RuntimeLocalMcpServerSummarySchema).optional(),
-    mcp_supported: z.boolean().default(false),
-    authoritative_mcp: z.boolean().default(false),
-    error: z.string().optional(),
-    created_at: z.string().default(""),
-    updated_at: z.string().default(""),
-  })
-  .loose();
-
-// Fallback for an unparseable capability-discovery response. Mirrors the model
-// discovery rationale: `failed` surfaces the problem immediately instead of
-// spinning until the poll timeout, and — unlike `completed` — cannot be read as
-// "this runtime genuinely has no MCP servers". Critically it leaves
-// `authoritative_mcp` false, so a malformed response can never let the UI
-// assert an MCP boundary it has not verified.
-export const MALFORMED_RUNTIME_LOCAL_SKILL_LIST_REQUEST: RuntimeLocalSkillListRequest =
-  {
-    id: "",
-    runtime_id: "",
-    status: "failed",
-    supported: true,
-    mcp_supported: false,
-    authoritative_mcp: false,
-    error: "invalid runtime capability response",
-    created_at: "",
-    updated_at: "",
-  };

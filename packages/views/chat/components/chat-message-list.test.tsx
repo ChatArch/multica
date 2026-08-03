@@ -344,19 +344,6 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
     expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
   });
 
-  // The daemon-upgrade refusal has to say what to upgrade. Without the map
-  // entry the chat showed only generic fallback copy and buried the actionable
-  // detail in the collapsed raw error (GitHub #6283).
-  it("renders dedicated copy when the daemon is too old to enforce MCP limits", async () => {
-    renderFailure("mcp_config_daemon_outdated");
-    expect(
-      await screen.findByText(
-        enChat.message_list.failure.mcp_config_daemon_outdated,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
-  });
-
   it("renders dedicated copy for a refined reason the map names", async () => {
     renderFailure("agent_error.provider_network");
     expect(

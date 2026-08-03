@@ -53,17 +53,8 @@ function configToForm(cfg: OpenclawRuntimeConfig): FormState {
   };
 }
 
-function formToConfig(
-  state: FormState,
-  passthrough?: Record<string, unknown>,
-): OpenclawRuntimeConfig {
+function formToConfig(state: FormState): OpenclawRuntimeConfig {
   const cfg: OpenclawRuntimeConfig = { mode: state.mode };
-  // Carry keys owned by other tabs (e.g. mcp.inherit_runtime) so saving this
-  // form cannot delete them — the tab persists the serialized result as the
-  // WHOLE runtime_config object (GitHub #6283).
-  if (passthrough && Object.keys(passthrough).length > 0) {
-    cfg.passthrough = passthrough;
-  }
   if (state.mode === "gateway") {
     const gw: NonNullable<OpenclawRuntimeConfig["gateway"]> = {};
     if (state.host.trim() !== "") gw.host = state.host.trim();
@@ -116,10 +107,7 @@ export function RuntimeConfigTab({
     previousFormRef.current = originalForm;
   }, [originalForm]);
 
-  const currentCfg = useMemo(
-    () => formToConfig(state, original.passthrough),
-    [state, original.passthrough],
-  );
+  const currentCfg = useMemo(() => formToConfig(state), [state]);
   const dirty = !openclawRuntimeConfigEquals(original, currentCfg);
 
   useEffect(() => {

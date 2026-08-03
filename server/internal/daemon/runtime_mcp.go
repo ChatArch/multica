@@ -23,18 +23,15 @@ type runtimeLocalMcpServerSummary struct {
 }
 
 // mergeRuntimeAndAgentMcpConfig builds the task-local MCP configuration used
-// when an agent inherits the runtime's own MCP servers on top of its managed
-// ones. Runtime servers are the base layer and the agent's entries win on a
-// same-name collision. The merge happens inside the local daemon so runtime
-// URLs, headers, commands, and env values never need to leave the machine.
+// when an agent has MCP servers managed by Multica. Runtime servers are the
+// base layer and the agent's entries win on a same-name collision. The merge
+// happens inside the local daemon so runtime URLs, headers, commands, and env
+// values never need to leave the machine.
 //
 // A nil/null agent config keeps the provider's native inheritance path intact.
-//
-// This function does NOT decide whether inheriting is allowed — callers must go
-// through resolveEffectiveMcpConfig, which defaults to treating a managed
-// config as an authoritative allowlist. Calling this unconditionally is what
-// made an explicitly empty `{"mcpServers":{}}` resolve to the complete host set
-// (GitHub #6283).
+// A present config (including an empty mcpServers map) opts into the merged,
+// task-local config so adding one managed server no longer disables unrelated
+// runtime servers.
 func mergeRuntimeAndAgentMcpConfig(provider string, agentConfig json.RawMessage) (json.RawMessage, error) {
 	trimmed := bytes.TrimSpace(agentConfig)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
