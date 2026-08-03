@@ -255,6 +255,9 @@ type FailOfflineRuntimeTasksByIDsParams struct {
 // `OFFSET 0` fences the status test out of the locked scan so the row is locked
 // whatever its state, matching FailStaleTasksByIDs and staying correct regardless of
 // how the planner chooses to push predicates down.
+//
+// Same lock order and the same teardown mutex as FailStaleTasksByIDs: see the note
+// there and on LockWorkspaceForRuntimeTeardown.
 func (q *Queries) FailOfflineRuntimeTasksByIDs(ctx context.Context, arg FailOfflineRuntimeTasksByIDsParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failOfflineRuntimeTasksByIDs, arg.Error, arg.FailureReason, arg.Ids)
 	if err != nil {

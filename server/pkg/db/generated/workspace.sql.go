@@ -426,6 +426,40 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const lockWorkspaceForRuntimeTeardown = `-- name: LockWorkspaceForRuntimeTeardown :one
+SELECT id FROM workspace WHERE id = $1 FOR UPDATE
+`
+
+// The EXCLUSIVE half of the automation protocol, taken first by every runtime /
+// runtime-profile teardown (MUL-4332 review: sweeper vs teardown lock order).
+//
+// Those teardowns walk agent_runtime -> agent_task_queue: they take FOR UPDATE on
+// the runtime rows (LockAgentRuntime / ListAgentRuntimeIDsByProfile) and only then
+// cancel that runtime's tasks. The bulk sweepers walk the OTHER way — they lock the
+// candidate task rows and then take FOR SHARE on each task's runtime row, because
+// the runtime is where their eligibility actually lives. Two paths acquiring the
+// same two tables in opposite orders is a genuine deadlock cycle (40P01), not a
+// theoretical one: whoever PostgreSQL picks as victim surfaces either a 500 on the
+// delete or a rolled-back sweep tick.
+//
+// Rather than invert one of the two walks — both orders are load-bearing where they
+// are — the two paths are made mutually exclusive one level up, reusing the
+// workspace row that already serves as the automation mutex. This FOR UPDATE
+// conflicts with LockWorkspaceForAutomationWrite's FOR KEY SHARE (and with the
+// non-blocking TryLock the sweepers use), so a teardown and a sweep can never both
+// be past their first lock in the same workspace: the sweep skips a workspace under
+// teardown and retries next tick, and a teardown waits for the in-flight sweep
+// before it touches a single runtime row. Neither can be holding one of the two
+// tables while waiting for the other, so no cycle can form.
+//
+// Returns no rows when the workspace is already gone (its runtimes went with it).
+func (q *Queries) LockWorkspaceForRuntimeTeardown(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForRuntimeTeardown, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const tryLockWorkspaceForAutomationWrite = `-- name: TryLockWorkspaceForAutomationWrite :one
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE SKIP LOCKED
 `

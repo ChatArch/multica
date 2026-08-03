@@ -441,6 +441,9 @@ FOR UPDATE SKIP LOCKED;
 -- `OFFSET 0` fences the status test out of the locked scan so the row is locked
 -- whatever its state, matching FailStaleTasksByIDs and staying correct regardless of
 -- how the planner chooses to push predicates down.
+--
+-- Same lock order and the same teardown mutex as FailStaleTasksByIDs: see the note
+-- there and on LockWorkspaceForRuntimeTeardown.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),

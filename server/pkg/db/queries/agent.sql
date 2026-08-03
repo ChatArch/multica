@@ -1089,10 +1089,13 @@ RETURNING *;
 -- and our commit: it either lands before this statement's snapshot (we see it and
 -- skip the task) or it waits behind this lock (serialized after our decision).
 --
--- Lock order is workspace -> agent_task_queue -> agent_runtime, matching the existing
--- task-then-runtime order in the workspace revoke transaction
--- (CancelAgentTasksByRuntimeOrAgent then ForceOfflineRuntimesByIDs); nothing in the
--- codebase takes agent_runtime before agent_task_queue, so this adds no cycle.
+-- Lock order here is workspace -> agent_task_queue -> agent_runtime. The runtime and
+-- runtime-profile teardowns take the REVERSE order (they lock the runtime row, then
+-- cancel its tasks), which is a real deadlock cycle rather than a theoretical one.
+-- The two are kept apart one level up: every such teardown now takes
+-- LockWorkspaceForRuntimeTeardown (FOR UPDATE) as its FIRST lock, which conflicts
+-- with the FOR KEY SHARE the sweep already holds on the same workspace row, so a
+-- sweep and a teardown can never both be past their first lock in one workspace.
 --
 -- The `OFFSET 0` is a deliberate optimization fence, NOT cosmetic: without it the
 -- planner pushes the online/last_seen_at test down into the locked scan, so a STALE
