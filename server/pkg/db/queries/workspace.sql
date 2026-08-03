@@ -90,6 +90,31 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE;
 -- implicit FOR KEY SHARE, which would vanish if that FK is dropped.
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 
+-- name: LockWorkspaceForAutomationWrite :one
+-- The writer half of the workspace delete/create protocol for Event Hooks data
+-- (MUL-4332), mirroring LockWorkspaceForChatSessionCreate (#5219).
+--
+-- The six Event Hooks tables (hook, hook_revision, hook_execution,
+-- hook_action_effect, automation_state, domain_event) carry NO foreign key to
+-- workspace — the workspace DB rule forbids FKs — so, unlike the CASCADE-backed
+-- tables, they get no implicit FOR KEY SHARE on the parent workspace row. Without
+-- this explicit lock a writer can commit inside DeleteWorkspace's window: the
+-- automation sweep runs, sees nothing, and the writer's rows survive their
+-- workspace as orphans (the data-modifying CTEs in DeleteWorkspaceAutomation share
+-- one statement snapshot, so they are not a barrier against concurrent commits).
+--
+-- Every transaction that INSERTS any of those six tables takes this FOR KEY SHARE
+-- lock FIRST, before any other lock it needs. FOR KEY SHARE conflicts with
+-- LockWorkspaceForDelete's FOR UPDATE (so a write is blocked while a delete is in
+-- progress, and vice versa) but not with other writers, so concurrent automation
+-- writes stay unserialized. Taking it first also fixes the lock order as
+-- workspace -> (member | hook | issue | ...), matching the delete's own order, so
+-- the two can never deadlock.
+--
+-- Returns no rows when the workspace is already gone; callers treat that as
+-- "the workspace is being torn down" and abort rather than writing orphans.
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
+
 -- name: DeleteWorkspace :exec
 -- The channel_* tables (MUL-3515 §4), resource-label junctions, custom issue
 -- property definitions, and quick actions carry NO FK to workspace, so — unlike the CASCADE-backed

@@ -251,6 +251,25 @@ func (s *HookService) decideAndFinalize(ctx context.Context, tx pgx.Tx, qtx *db.
 		return false, err
 	}
 
+	// Join the workspace teardown protocol before deciding anything. An event whose
+	// workspace is already gone is an orphan: it can never produce a valid decision,
+	// so it is terminal here rather than an error that would halt this tick and leave
+	// it at the head of the queue forever (MUL-4332 review: teardown race).
+	if err := lockWorkspaceForAutomationWrite(ctx, qtx, owned.WorkspaceID); err != nil {
+		if errors.Is(err, ErrWorkspaceGone) {
+			rows, ferr := qtx.MarkDomainEventFailed(ctx, db.MarkDomainEventFailedParams{ID: owned.ID, LeaseToken: lease})
+			if ferr != nil {
+				return false, ferr
+			}
+			if rows != 1 {
+				return false, errLeaseLost
+			}
+			slog.Warn("hook matcher: event workspace is gone, marked failed", "event_id", util.UUIDToString(owned.ID))
+			return false, nil
+		}
+		return false, err
+	}
+
 	// Project the event once, so every candidate sees the same view. A payload the
 	// matcher can never decode fails identically on every retry, so it is terminal
 	// rather than re-leased forever.
@@ -291,6 +310,11 @@ func (s *HookService) MatchEvent(ctx context.Context, event db.DomainEvent) erro
 		return err
 	}
 	return s.inTxWith(ctx, func(tx pgx.Tx, qtx *db.Queries) error {
+		// Teardown protocol, before any hook row lock, so the order matches
+		// DeleteWorkspace's and a decision cannot outlive its workspace.
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, event.WorkspaceID); err != nil {
+			return err
+		}
 		rows, err := qtx.ListActiveHookRevisionsForEvent(ctx, db.ListActiveHookRevisionsForEventParams{
 			WorkspaceID: event.WorkspaceID,
 			EventType:   event.Type,

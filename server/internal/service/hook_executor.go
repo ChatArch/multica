@@ -206,6 +206,12 @@ func (s *HookService) runAction(ctx context.Context, exec db.HookExecution, leas
 
 	var post *IssueTransition
 	err := domainevent.WriteInTx(ctx, s.TxStarter, s.Queries, func(qtx *db.Queries) ([]domainevent.Event, error) {
+		// Teardown protocol first: this transaction writes hook_action_effect (and,
+		// through the shared command, the issue + its domain event). Before any other
+		// lock, so the order matches DeleteWorkspace's.
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, exec.WorkspaceID); err != nil {
+			return nil, err
+		}
 		// Ownership, fail-closed, before any write.
 		owned, err := qtx.GetOwnedHookExecution(ctx, db.GetOwnedHookExecutionParams{ID: exec.ID, LeaseToken: lease})
 		if err != nil {
@@ -493,6 +499,9 @@ func (s *HookService) finalizeSkippedAction(ctx context.Context, exec db.HookExe
 		"action_index", index, "reason", skip.reason, "detail", skip.detail)
 
 	err := s.inTx(ctx, func(qtx *db.Queries) error {
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, exec.WorkspaceID); err != nil {
+			return err
+		}
 		if skip.reason == skipPrincipalInvalid {
 			if err := s.pauseHookForInvalidPrincipal(ctx, qtx, exec); err != nil {
 				return err
@@ -596,6 +605,9 @@ func (s *HookService) rescheduleOrFail(ctx context.Context, exec db.HookExecutio
 	// successful one does.
 	var finalized bool
 	if err := s.inTx(ctx, func(qtx *db.Queries) error {
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, exec.WorkspaceID); err != nil {
+			return err
+		}
 		if err := s.writeTerminalEffect(ctx, qtx, exec, action, index, hookExecFailed, errCodeInfra, cause.Error()); err != nil {
 			return err
 		}

@@ -25,6 +25,9 @@ var (
 	ErrHookNoPrincipal       = errors.New("no accountable authorization principal for this hook")
 	ErrHookForbidden         = errors.New("only the hook's principal or a workspace admin may modify it")
 	ErrHookPrincipalDeparted = errors.New("the hook's authorization principal is no longer a member of this workspace")
+	// ErrWorkspaceGone reports that the workspace was deleted (or is being
+	// deleted) — an automation write must abort rather than orphan rows.
+	ErrWorkspaceGone = errors.New("workspace is gone")
 )
 
 // HookAuthor carries the resolved identity for a hook write: who is acting
@@ -91,6 +94,11 @@ func (s *HookService) CreateHook(ctx context.Context, workspaceID pgtype.UUID, s
 
 	var out HookWithRevision
 	err = s.inTx(ctx, func(qtx *db.Queries) error {
+		// Teardown protocol first, so this hook cannot outlive its workspace and the
+		// lock order matches DeleteWorkspace's (workspace -> member).
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, workspaceID); err != nil {
+			return err
+		}
 		// The creator's principal must be a current member of the workspace. The
 		// FOR SHARE lock blocks a concurrent removal/demotion from committing before
 		// this hook write does (review round 5).
@@ -167,6 +175,10 @@ func (s *HookService) UpdateHook(ctx context.Context, workspaceID, hookID pgtype
 	revisionID := util.NewUUID()
 	var out HookWithRevision
 	err = s.inTx(ctx, func(qtx *db.Queries) error {
+		// Teardown protocol first: UpdateHook appends a hook_revision row.
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, workspaceID); err != nil {
+			return err
+		}
 		existing, err := s.lockEditableHook(ctx, qtx, workspaceID, hookID, author)
 		if err != nil {
 			return err
@@ -395,6 +407,22 @@ func authorizeHookEdit(hook db.Hook, editor db.Member) error {
 
 func principalMatches(a, b pgtype.UUID) bool {
 	return a.Valid && b.Valid && a.Bytes == b.Bytes
+}
+
+// lockWorkspaceForAutomationWrite joins the workspace teardown protocol
+// (MUL-4332): the six Event Hooks tables have no FK to workspace, so this
+// explicit FOR KEY SHARE is what keeps a write from committing into a workspace
+// that DeleteWorkspace is tearing down. It must be the FIRST lock a writing
+// transaction takes, so the lock order (workspace -> member/hook/...) matches the
+// delete's and the two cannot deadlock.
+func lockWorkspaceForAutomationWrite(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	if _, err := qtx.LockWorkspaceForAutomationWrite(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrWorkspaceGone
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *HookService) inTx(ctx context.Context, fn func(qtx *db.Queries) error) error {

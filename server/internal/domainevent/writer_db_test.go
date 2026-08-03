@@ -43,6 +43,29 @@ func newDomainEventTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// seedWorkspace creates a real workspace row. Write takes a FOR KEY SHARE lock on
+// it (the teardown protocol, MUL-4332), so an event can only be written for a
+// workspace that actually exists — these tests therefore need a real parent rather
+// than a fabricated UUID.
+func seedWorkspace(t *testing.T, pool *pgxpool.Pool) pgtype.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var id pgtype.UUID
+	slug := "de-writer-" + uuid.NewString()[:12]
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('domainevent writer test', $1, 'temporary', 'DEW')
+		RETURNING id`, slug).Scan(&id); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		pool.Exec(bg, `DELETE FROM domain_event WHERE workspace_id = $1`, id)
+		pool.Exec(bg, `DELETE FROM workspace WHERE id = $1`, id)
+	})
+	return id
+}
+
 func countEventsForWorkspace(t *testing.T, pool *pgxpool.Pool, ws pgtype.UUID) int {
 	t.Helper()
 	var n int
@@ -71,7 +94,7 @@ func TestWriteCommitPersistsRootEvent(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(pool)
 
-	ws := pgUUID(uuid.New())
+	ws := seedWorkspace(t, pool)
 	subj := pgUUID(uuid.New())
 	actor := MemberActor(pgUUID(uuid.New()))
 	t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
@@ -119,7 +142,7 @@ func TestWriteRollbackPersistsNothing(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(pool)
 
-	ws := pgUUID(uuid.New())
+	ws := seedWorkspace(t, pool)
 	t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
 
 	tx, err := pool.Begin(ctx)
@@ -148,7 +171,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 	queries := db.New(pool)
 
 	t.Run("commit persists fact and event", func(t *testing.T) {
-		ws := pgUUID(uuid.New())
+		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
 		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
 			// Stand-in "domain write" inside the tx.
@@ -166,7 +189,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 	})
 
 	t.Run("fn error rolls back the fact", func(t *testing.T) {
-		ws := pgUUID(uuid.New())
+		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
 		boom := errors.New("domain write failed")
 		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
@@ -184,7 +207,7 @@ func TestWriteInTxAtomicity(t *testing.T) {
 	})
 
 	t.Run("invalid event rolls back the fact", func(t *testing.T) {
-		ws := pgUUID(uuid.New())
+		ws := seedWorkspace(t, pool)
 		t.Cleanup(func() { cleanupWorkspaceEvents(pool, ws) })
 		err := WriteInTx(ctx, pool, queries, func(qtx *db.Queries) ([]Event, error) {
 			if _, err := Write(ctx, qtx, standInFactEvent(ws)); err != nil {

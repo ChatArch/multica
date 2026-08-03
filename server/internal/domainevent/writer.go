@@ -2,6 +2,7 @@ package domainevent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -35,7 +36,17 @@ func IssueCreatedFromRow(issue db.Issue) Event {
 // it an interface (not *db.Queries) lets tests substitute a fake.
 type Creator interface {
 	CreateDomainEvent(ctx context.Context, arg db.CreateDomainEventParams) (db.DomainEvent, error)
+	// LockWorkspaceForAutomationWrite is the writer half of the workspace
+	// delete/create protocol (MUL-4332). domain_event has no FK to workspace, so
+	// this explicit FOR KEY SHARE is what keeps an event from committing into a
+	// workspace that is being torn down.
+	LockWorkspaceForAutomationWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 }
+
+// ErrWorkspaceGone reports that the event's workspace no longer exists — it was
+// deleted, or a delete is committing now. The caller's transaction must abort
+// rather than write an orphaned event.
+var ErrWorkspaceGone = errors.New("domainevent: workspace is gone")
 
 // txBeginner is the subset of *pgxpool.Pool that WriteInTx needs.
 type txBeginner interface {
@@ -52,6 +63,17 @@ type txBeginner interface {
 func Write(ctx context.Context, q Creator, evt Event) (db.DomainEvent, error) {
 	if err := evt.validate(); err != nil {
 		return db.DomainEvent{}, err
+	}
+
+	// Join the workspace teardown protocol before inserting. Every outbox producer
+	// funnels through here, so this one lock covers them all: it blocks while a
+	// DeleteWorkspace holds FOR UPDATE, and a workspace already gone fails closed
+	// instead of leaving an event with no owner (MUL-4332 review: teardown race).
+	if _, err := q.LockWorkspaceForAutomationWrite(ctx, evt.WorkspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.DomainEvent{}, fmt.Errorf("%w: %s", ErrWorkspaceGone, evt.Type)
+		}
+		return db.DomainEvent{}, fmt.Errorf("domainevent: lock workspace for %s: %w", evt.Type, err)
 	}
 
 	id := pgUUID(uuid.New())
