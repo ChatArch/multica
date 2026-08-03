@@ -746,6 +746,11 @@ const voltaShimName = "volta-shim"
 var (
 	// voltaResolveTimeout bounds a single `volta` invocation.
 	voltaResolveTimeout = 5 * time.Second
+	// voltaResolveWaitDelay is how long after the context fires we wait for a
+	// wedged child's pipes to close. A hung shell can leave grandchildren
+	// holding our stdout, and cmd.Output() blocks in Wait() until that pipe
+	// closes, so the real worst case for one call is timeout + this.
+	voltaResolveWaitDelay = time.Second
 	// voltaResolveBudget caps the TOTAL time one Volta install may cost across
 	// all commands before we stop asking it. Without this, N alias lookups
 	// against a wedged install each paid the per-call timeout and the startup
@@ -967,14 +972,17 @@ func voltaNodeDir(voltaBin string) (string, bool) {
 	return filepath.Dir(nodePath), true
 }
 
-func runVolta(voltaBin string, args ...string) (string, bool) {
+// runVolta invokes the Volta CLI and returns its trimmed stdout. A var so tests
+// can exercise the caching/cooldown logic without a real subprocess, following
+// the same seam pattern as resolveAgentsViaLoginShell and detectAgentVersion.
+var runVolta = func(voltaBin string, args ...string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), voltaResolveTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, voltaBin, args...)
 	cmd.Dir = voltaNonProjectDir(voltaBin)
 	// Volta prints results on stdout and diagnostics on stderr; Output()
 	// captures only stdout. WaitDelay keeps a hung child from outliving ctx.
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = voltaResolveWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false

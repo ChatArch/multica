@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,8 +46,6 @@ type voltaFixtureOpts struct {
 	commands []string
 	// omitVolta models an install whose `volta` binary cannot be run.
 	omitVolta bool
-	// hang makes every `volta` invocation block, modelling a wedged install.
-	hang bool
 	// projectDir, when set, makes `volta which` answer with a project-local
 	// binary whenever it is invoked from inside that directory — which is what
 	// real Volta does (upstream src/command/which.rs prefers the project bin).
@@ -115,10 +114,6 @@ exec %q/"$n" "$@"
 // `which node`, prints nothing and exits non-zero otherwise, like upstream.
 func voltaFixtureScript(f voltaFixture, opts voltaFixtureOpts) string {
 	var body string
-	if opts.hang {
-		// Blocks forever so a test can measure how the caller bounds the cost.
-		return "#!/bin/sh\nwhile :; do sleep 1; done\n"
-	}
 	if opts.projectDir != "" {
 		// Project-local preference: only triggered when invoked from inside the
 		// project, which is exactly the cwd sensitivity the caller must avoid.
@@ -406,16 +401,39 @@ func TestVoltaResolve_IgnoresProjectDirectory(t *testing.T) {
 // TestVoltaResolve_BoundsTotalCostWhenVoltaHangs covers review item 4. A wedged
 // Volta install used to cost one full timeout PER command, so a machine with
 // several Volta-managed CLIs stalled startup for the sum of them.
+//
+// The invocation count is the real invariant ("ask a broken install once, not
+// once per command"), so it is asserted directly rather than inferred from wall
+// clock. runVolta is stubbed instead of hanging a real subprocess: a killed child
+// reports its side effects asynchronously, which made a file-based counter race
+// with the kill and read one call behind.
 func TestVoltaResolve_BoundsTotalCostWhenVoltaHangs(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
-	origTimeout := voltaResolveTimeout
-	t.Cleanup(func() { voltaResolveTimeout = origTimeout })
-	voltaResolveTimeout = 300 * time.Millisecond
+	origTimeout, origWait := voltaResolveTimeout, voltaResolveWaitDelay
+	origRun := runVolta
+	t.Cleanup(func() {
+		voltaResolveTimeout, voltaResolveWaitDelay = origTimeout, origWait
+		runVolta = origRun
+	})
+	voltaResolveTimeout = 100 * time.Millisecond
+	voltaResolveWaitDelay = 50 * time.Millisecond
+
+	var mu sync.Mutex
+	calls := 0
+	// Models a wedged install: every invocation burns the whole per-call budget
+	// (timeout + the wait for a hung child's pipes) and then fails.
+	runVolta = func(string, ...string) (string, bool) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		time.Sleep(voltaResolveTimeout + voltaResolveWaitDelay)
+		return "", false
+	}
 
 	commands := []string{"claude", "codex", "pi"}
-	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands, hang: true})
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
 	t.Setenv("PATH", pathWithout(f.binDir))
 
 	start := time.Now()
@@ -426,11 +444,68 @@ func TestVoltaResolve_BoundsTotalCostWhenVoltaHangs(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Additive behavior would be len(commands) x timeout. Allow one timeout plus
-	// slack: after the first failure the cooldown must short-circuit the rest.
-	if budget := 2 * voltaResolveTimeout; elapsed > budget {
-		t.Errorf("resolving %d hung aliases took %v (> %v); the per-command timeout is "+
-			"still additive and can stall daemon startup", len(commands), elapsed, budget)
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("`volta` was invoked %d times for %d commands, want 1; a broken install "+
+			"must be asked once per cooldown, not once per command", got, len(commands))
+	}
+
+	singleCall := voltaResolveTimeout + voltaResolveWaitDelay
+	if additive := time.Duration(len(commands)) * singleCall; elapsed >= additive {
+		t.Errorf("resolving %d hung aliases took %v, at least the additive bound %v; "+
+			"the per-command timeout can still stall daemon startup", len(commands), elapsed, additive)
+	}
+}
+
+// TestVoltaResolve_FailureCooldownExpires is the other half of the circuit
+// breaker: a temporarily broken install must be retried once the cooldown is up,
+// not written off for the daemon's lifetime.
+func TestVoltaResolve_FailureCooldownExpires(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	origRun, origCooldown := runVolta, voltaFailureCooldown
+	t.Cleanup(func() { runVolta, voltaFailureCooldown = origRun, origCooldown })
+	voltaFailureCooldown = 20 * time.Millisecond
+
+	var mu sync.Mutex
+	calls := 0
+	runVolta = func(string, ...string) (string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		return "", false
+	}
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", pathWithout(f.binDir))
+
+	if _, ok := voltaResolve(f.shim(), "claude"); ok {
+		t.Fatal("unexpectedly resolved")
+	}
+	// Inside the cooldown: no new invocation.
+	if _, ok := voltaResolve(f.shim(), "claude"); ok {
+		t.Fatal("unexpectedly resolved")
+	}
+	mu.Lock()
+	during := calls
+	mu.Unlock()
+	if during != 1 {
+		t.Errorf("invocations inside the cooldown = %d, want 1", during)
+	}
+
+	time.Sleep(2 * voltaFailureCooldown)
+	if _, ok := voltaResolve(f.shim(), "claude"); ok {
+		t.Fatal("unexpectedly resolved")
+	}
+	mu.Lock()
+	after := calls
+	mu.Unlock()
+	if after != 2 {
+		t.Errorf("invocations after the cooldown expired = %d, want 2; a transient failure "+
+			"must not disable Volta resolution permanently", after)
 	}
 }
 
