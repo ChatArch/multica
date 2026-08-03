@@ -4462,20 +4462,240 @@ func (q *Queries) LockAgentForAutopilotAssignment(ctx context.Context, arg LockA
 	return i, err
 }
 
-const lockAgentTasksByIDsForFail = `-- name: LockAgentTasksByIDsForFail :many
+const lockExpiredQueuedTasksByIDsForFail = `-- name: LockExpiredQueuedTasksByIDsForFail :many
 SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for FROM agent_task_queue
 WHERE id = ANY($1::uuid[])
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND status = 'queued'
+  AND created_at < now() - make_interval(secs => $2::double precision)
 ORDER BY created_at ASC
 FOR UPDATE SKIP LOCKED
 `
 
-// Re-lock a specific, workspace-grouped id set with FOR UPDATE SKIP LOCKED, AFTER
-// that workspace is locked. Rows another worker (or a teardown) already holds are
-// skipped rather than waited on, so one busy workspace cannot stall the sweep and
-// the lock order stays workspace -> task.
-func (q *Queries) LockAgentTasksByIDsForFail(ctx context.Context, ids []pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, lockAgentTasksByIDsForFail, ids)
+type LockExpiredQueuedTasksByIDsForFailParams struct {
+	Ids     []pgtype.UUID `json:"ids"`
+	TtlSecs float64       `json:"ttl_secs"`
+}
+
+func (q *Queries) LockExpiredQueuedTasksByIDsForFail(ctx context.Context, arg LockExpiredQueuedTasksByIDsForFailParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, lockExpiredQueuedTasksByIDsForFail, arg.Ids, arg.TtlSecs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockOrphanedTasksByIDsForFail = `-- name: LockOrphanedTasksByIDsForFail :many
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for FROM agent_task_queue
+WHERE id = ANY($1::uuid[])
+  AND runtime_id = $2
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at ASC
+FOR UPDATE
+`
+
+type LockOrphanedTasksByIDsForFailParams struct {
+	Ids       []pgtype.UUID `json:"ids"`
+	RuntimeID pgtype.UUID   `json:"runtime_id"`
+}
+
+// The per-runtime orphan-recovery caller: its candidates are the runtime's
+// dispatched/running/waiting rows, so the predicate is that status set scoped to the
+// runtime it swept. A task the daemon re-claimed onto another runtime, or that
+// already reached a terminal status, is no longer an orphan and drops out here.
+//
+// Plain FOR UPDATE, NOT SKIP LOCKED — the one re-lock that differs, for the same
+// reason SelectOrphanedTasksForRuntime does: recovery pages with a keyset cursor
+// that advances permanently over every candidate, so a row silently skipped here
+// would never be selected by a later page and would leak forever (the runtime is
+// back `online`, so the offline sweep will not reap it either). Waiting is safe:
+// this transaction already holds the workspace lock, and every writer that touches
+// a task row takes that workspace lock FIRST, so no one can hold a task row while
+// waiting on our workspace lock — there is no cycle to deadlock on.
+func (q *Queries) LockOrphanedTasksByIDsForFail(ctx context.Context, arg LockOrphanedTasksByIDsForFailParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, lockOrphanedTasksByIDsForFail, arg.Ids, arg.RuntimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockStaleTasksByIDsForFail = `-- name: LockStaleTasksByIDsForFail :many
+
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for FROM agent_task_queue
+WHERE id = ANY($1::uuid[])
+  AND (
+        (
+          status = 'dispatched'
+          AND dispatched_at < now() - make_interval(secs => $2::double precision)
+          AND (prepare_lease_expires_at IS NULL OR prepare_lease_expires_at < now())
+        )
+     OR (
+          status = 'running'
+          AND started_at < now() - make_interval(secs => $3::double precision)
+          AND NOT EXISTS (
+              SELECT 1 FROM agent_runtime r
+              WHERE r.id = agent_task_queue.runtime_id
+                AND r.status = 'online'
+                AND r.last_seen_at > now() - make_interval(secs => $4::double precision)
+          )
+        )
+      )
+ORDER BY created_at ASC
+FOR UPDATE SKIP LOCKED
+`
+
+type LockStaleTasksByIDsForFailParams struct {
+	Ids                   []pgtype.UUID `json:"ids"`
+	DispatchedTimeoutSecs float64       `json:"dispatched_timeout_secs"`
+	RunningTimeoutSecs    float64       `json:"running_timeout_secs"`
+	RuntimeStaleSecs      float64       `json:"runtime_stale_secs"`
+}
+
+// Re-lock queries for the workspace-first bulk sweep. Each one re-applies its
+// sweeper's FULL eligibility predicate under the task row lock (MUL-4332 review).
+//
+// This matters because the candidate peek is deliberately UNLOCKED: between the peek
+// and this lock a task can legitimately stop being eligible — a daemon commits
+// queued -> dispatched, an offline runtime comes back online, a prepare lease is
+// refreshed. A shared "status is one of the active values" predicate would let the
+// sweep kill a task that just started running. Re-checking the same predicate the
+// peek used, now under the row lock, closes that window; FOR UPDATE SKIP LOCKED
+// keeps the sweep off rows another worker or a teardown holds.
+func (q *Queries) LockStaleTasksByIDsForFail(ctx context.Context, arg LockStaleTasksByIDsForFailParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, lockStaleTasksByIDsForFail,
+		arg.Ids,
+		arg.DispatchedTimeoutSecs,
+		arg.RunningTimeoutSecs,
+		arg.RuntimeStaleSecs,
+	)
 	if err != nil {
 		return nil, err
 	}

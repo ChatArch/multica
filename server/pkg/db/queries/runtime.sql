@@ -414,3 +414,17 @@ WHERE status IN ('dispatched', 'running', 'waiting_local_directory')
   )
 ORDER BY created_at ASC
 LIMIT @max_per_tick::int;
+
+
+-- name: LockOfflineRuntimeTasksByIDsForFail :many
+-- Re-applies the offline-runtime eligibility predicate under the task row lock (see
+-- the re-lock note in agent.sql). A runtime that came back online between the peek
+-- and here makes its tasks ineligible again, so they are left alone.
+SELECT * FROM agent_task_queue
+WHERE id = ANY(@ids::uuid[])
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND runtime_id IN (
+    SELECT id FROM agent_runtime WHERE status = 'offline'
+  )
+ORDER BY created_at ASC
+FOR UPDATE SKIP LOCKED;

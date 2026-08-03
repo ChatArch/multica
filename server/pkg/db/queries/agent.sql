@@ -1660,13 +1660,65 @@ WHERE status = 'queued'
 ORDER BY created_at ASC
 LIMIT @max_per_tick::int;
 
--- name: LockAgentTasksByIDsForFail :many
--- Re-lock a specific, workspace-grouped id set with FOR UPDATE SKIP LOCKED, AFTER
--- that workspace is locked. Rows another worker (or a teardown) already holds are
--- skipped rather than waited on, so one busy workspace cannot stall the sweep and
--- the lock order stays workspace -> task.
+-- Re-lock queries for the workspace-first bulk sweep. Each one re-applies its
+-- sweeper's FULL eligibility predicate under the task row lock (MUL-4332 review).
+--
+-- This matters because the candidate peek is deliberately UNLOCKED: between the peek
+-- and this lock a task can legitimately stop being eligible — a daemon commits
+-- queued -> dispatched, an offline runtime comes back online, a prepare lease is
+-- refreshed. A shared "status is one of the active values" predicate would let the
+-- sweep kill a task that just started running. Re-checking the same predicate the
+-- peek used, now under the row lock, closes that window; FOR UPDATE SKIP LOCKED
+-- keeps the sweep off rows another worker or a teardown holds.
+
+-- name: LockStaleTasksByIDsForFail :many
 SELECT * FROM agent_task_queue
 WHERE id = ANY(@ids::uuid[])
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND (
+        (
+          status = 'dispatched'
+          AND dispatched_at < now() - make_interval(secs => @dispatched_timeout_secs::double precision)
+          AND (prepare_lease_expires_at IS NULL OR prepare_lease_expires_at < now())
+        )
+     OR (
+          status = 'running'
+          AND started_at < now() - make_interval(secs => @running_timeout_secs::double precision)
+          AND NOT EXISTS (
+              SELECT 1 FROM agent_runtime r
+              WHERE r.id = agent_task_queue.runtime_id
+                AND r.status = 'online'
+                AND r.last_seen_at > now() - make_interval(secs => @runtime_stale_secs::double precision)
+          )
+        )
+      )
 ORDER BY created_at ASC
 FOR UPDATE SKIP LOCKED;
+
+-- name: LockExpiredQueuedTasksByIDsForFail :many
+SELECT * FROM agent_task_queue
+WHERE id = ANY(@ids::uuid[])
+  AND status = 'queued'
+  AND created_at < now() - make_interval(secs => @ttl_secs::double precision)
+ORDER BY created_at ASC
+FOR UPDATE SKIP LOCKED;
+
+-- name: LockOrphanedTasksByIDsForFail :many
+-- The per-runtime orphan-recovery caller: its candidates are the runtime's
+-- dispatched/running/waiting rows, so the predicate is that status set scoped to the
+-- runtime it swept. A task the daemon re-claimed onto another runtime, or that
+-- already reached a terminal status, is no longer an orphan and drops out here.
+--
+-- Plain FOR UPDATE, NOT SKIP LOCKED — the one re-lock that differs, for the same
+-- reason SelectOrphanedTasksForRuntime does: recovery pages with a keyset cursor
+-- that advances permanently over every candidate, so a row silently skipped here
+-- would never be selected by a later page and would leak forever (the runtime is
+-- back `online`, so the offline sweep will not reap it either). Waiting is safe:
+-- this transaction already holds the workspace lock, and every writer that touches
+-- a task row takes that workspace lock FIRST, so no one can hold a task row while
+-- waiting on our workspace lock — there is no cycle to deadlock on.
+SELECT * FROM agent_task_queue
+WHERE id = ANY(@ids::uuid[])
+  AND runtime_id = @runtime_id
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at ASC
+FOR UPDATE;

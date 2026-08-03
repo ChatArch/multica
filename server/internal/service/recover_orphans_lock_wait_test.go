@@ -104,6 +104,7 @@ func TestRecoverOrphansWaitsForLockedOldestOrphan(t *testing.T) {
 				candidates = c
 				return c, e
 			},
+			lockInFlightForTest(ctx, util.MustParseUUID(runtimeID)),
 			func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 				return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 					Ids:           ids,

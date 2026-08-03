@@ -993,6 +993,14 @@ func TestBulkSweepRacingWorkspaceDeleteDoesNotDeadlock(t *testing.T) {
 				})
 			},
 			func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
+				return qtx.LockStaleTasksByIDsForFail(ctx, db.LockStaleTasksByIDsForFailParams{
+					Ids:                   ids,
+					DispatchedTimeoutSecs: 60,
+					RunningTimeoutSecs:    60,
+					RuntimeStaleSecs:      60,
+				})
+			},
+			func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 				return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 					Ids:           ids,
 					Error:         pgtype.Text{String: "stale", Valid: true},

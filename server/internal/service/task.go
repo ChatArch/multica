@@ -4237,18 +4237,28 @@ func (s *TaskService) resolveTaskWorkspaceForEvent(ctx context.Context, qtx *db.
 // FailBulkTasksWithEvents is the poison-isolated bulk fail path (MUL-4332 review
 // points 2 & 3). Rather than one condition-scoped UPDATE that fails every match
 // in a single statement — where one corrupt row rolls back the whole batch and
-// an unbounded match can lock a huge span — it runs, in ONE transaction:
+// an unbounded match can lock a huge span — it runs, per workspace:
 //
-//  1. selectFn row-locks a BOUNDED candidate batch (FOR UPDATE SKIP LOCKED +
-//     LIMIT), so the lock hold is short and we never contend with a daemon's
-//     claim path;
-//  2. each candidate's workspace is resolved on the same tx. A task whose
-//     workspace is genuinely unresolvable (corrupt / orphaned historical row)
-//     is EXCLUDED and logged — it can never have a valid event, so failing it
-//     would strand a fact without one; skipping it fail-closed keeps the healthy
-//     tasks in the batch unblocked (review point 2);
-//  3. failFn fails only the resolvable id set;
-//  4. one task.failed event is written per failed row, atomically with the fail.
+//  1. peekFn reads a BOUNDED candidate batch taking NO lock (see the lock-order
+//     note below), so a global sweep never has to guess a workspace up front;
+//  2. each candidate's workspace is resolved. A task whose workspace is genuinely
+//     unresolvable (corrupt / orphaned historical row) is EXCLUDED and logged — it
+//     can never have a valid event, so failing it would strand a fact without one;
+//     skipping it fail-closed keeps the healthy tasks in the batch unblocked
+//     (review point 2);
+//  3. one transaction PER WORKSPACE locks that workspace first, then re-locks that
+//     group's tasks via lockFn — which re-applies the CALLER'S OWN full eligibility
+//     predicate, not a shared status set (see lockFn below);
+//  4. failFn fails only the still-eligible, locked id set;
+//  5. one task.failed event is written per failed row, atomically with the fail.
+//
+// lockFn is what makes the unlocked peek safe. Because the peek takes no lock, a
+// candidate can legitimately stop being eligible before its transaction gets to it:
+// a daemon commits queued -> dispatched, an offline runtime comes back online, a
+// prepare lease is refreshed. Re-locking on a broad "any active status" predicate
+// would let the sweep fail a task that just started running. Each caller therefore
+// passes the lock query that repeats ITS OWN peek predicate under the task row lock,
+// so a row that stopped qualifying is dropped instead of killed.
 //
 // The actor is the platform (SystemActor): these are sweeper / orphan-recovery
 // paths, not an agent action — the agent is already carried in the payload
@@ -4258,12 +4268,17 @@ func (s *TaskService) resolveTaskWorkspaceForEvent(ctx context.Context, qtx *db.
 // created best-effort AFTER commit, so the event never promises a fresh attempt
 // will actually arrive (review point 3, third round).
 //
-// A transient event/commit failure rolls back only the CURRENT batch (no fact is
-// ever committed without its event), so the next sweep tick simply re-selects and
-// retries — every caller runs on a fixed cadence.
+// A transient event/commit failure rolls back only the CURRENT workspace's batch (no
+// fact is ever committed without its event), so the next sweep tick simply re-selects
+// and retries — every caller runs on a fixed cadence. Because the other workspaces in
+// the same tick DID commit, this returns their rows alongside the error: callers MUST
+// dispatch the returned rows through HandleFailedTasks before acting on err, or those
+// already-terminal tasks lose their post-commit side effects forever (review: partial
+// success). Both return values are meaningful at once.
 func (s *TaskService) FailBulkTasksWithEvents(
 	ctx context.Context,
 	peekFn func(q *db.Queries) ([]db.AgentTaskQueue, error),
+	lockFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
 	failFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
 ) ([]db.AgentTaskQueue, error) {
 	// WORKSPACE-FIRST, BATCHED PER WORKSPACE (MUL-4332 review: bulk deadlock).
@@ -4310,7 +4325,7 @@ func (s *TaskService) FailBulkTasksWithEvents(
 	var allFailed []db.AgentTaskQueue
 	var firstErr error
 	for _, key := range order {
-		failed, err := s.failWorkspaceTaskBatch(ctx, wsIDs[key], byWorkspace[key], failFn)
+		failed, err := s.failWorkspaceTaskBatch(ctx, wsIDs[key], byWorkspace[key], lockFn, failFn)
 		if err != nil {
 			// One workspace's batch failing must not strand the others in this tick,
 			// so keep going — but still SURFACE the error, so a transient blip is
@@ -4332,6 +4347,7 @@ func (s *TaskService) failWorkspaceTaskBatch(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
 	ids []pgtype.UUID,
+	lockFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
 	failFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
 ) ([]db.AgentTaskQueue, error) {
 	tx, err := s.TxStarter.Begin(ctx)
@@ -4353,9 +4369,11 @@ func (s *TaskService) failWorkspaceTaskBatch(
 		return nil, err
 	}
 
-	// Re-lock this group's tasks now that the workspace is held. SKIP LOCKED means a
-	// row someone else holds is dropped from this batch instead of blocking it.
-	locked, err := qtx.LockAgentTasksByIDsForFail(ctx, ids)
+	// Re-lock this group's tasks now that the workspace is held, re-applying the
+	// caller's FULL eligibility predicate under the row lock: the peek was unlocked,
+	// so a candidate that has since become ineligible (queued -> dispatched, runtime
+	// back online, prepare lease refreshed) must drop out here rather than be failed.
+	locked, err := lockFn(qtx, ids)
 	if err != nil {
 		return nil, err
 	}

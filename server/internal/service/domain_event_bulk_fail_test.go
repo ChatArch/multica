@@ -62,6 +62,7 @@ func TestFailBulkTasksIsolatesPoisonRow(t *testing.T) {
 			poison.AutopilotRunID = pgtype.UUID{}
 			return []db.AgentTaskQueue{good, poison}, nil
 		},
+		lockInFlightForTest(ctx, runtimeIDForAgentTest(t, pool, agentID)),
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 				Ids:           ids,
@@ -122,11 +123,12 @@ func TestFailBulkTasksTransientFailureRecoversNextTick(t *testing.T) {
 		}
 		return []db.AgentTaskQueue{row}, nil
 	}
+	lockFn := lockInFlightForTest(ctx, runtimeIDForAgentTest(t, pool, agentID))
 
 	// Tick 1: the fail step errors (a transient DB blip). The whole batch rolls
 	// back — the task is NOT failed and no event is written.
 	boom := errors.New("transient DB blip")
-	if _, err := svc.FailBulkTasksWithEvents(ctx, sel,
+	if _, err := svc.FailBulkTasksWithEvents(ctx, sel, lockFn,
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return nil, boom
 		}); !errors.Is(err, boom) {
@@ -140,7 +142,7 @@ func TestFailBulkTasksTransientFailureRecoversNextTick(t *testing.T) {
 	}
 
 	// Tick 2: the same still-selectable task fails cleanly.
-	failed, err := svc.FailBulkTasksWithEvents(ctx, sel,
+	failed, err := svc.FailBulkTasksWithEvents(ctx, sel, lockFn,
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 				Ids:           ids,
@@ -236,6 +238,30 @@ func TestHandleFailedTasksDoesNotReopenUserCompletedIssue(t *testing.T) {
 
 	if s := issueStatusForTest(t, pool, issueID); s != "done" {
 		t.Fatalf("issue status = %q, want done — a user-completed issue must not be reopened by the stuck-issue reset (review point 4)", s)
+	}
+}
+
+// runtimeIDForAgentTest loads an agent's runtime id, so a test can build the
+// predicate-specific re-lock function FailBulkTasksWithEvents now requires.
+func runtimeIDForAgentTest(t *testing.T, pool *pgxpool.Pool, agentID string) pgtype.UUID {
+	t.Helper()
+	var runtimeID string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("load runtime id: %v", err)
+	}
+	return util.MustParseUUID(runtimeID)
+}
+
+// lockInFlightForTest is the re-lock half for tests whose candidates are one
+// runtime's in-flight tasks: it re-applies exactly that predicate under the row
+// lock, the same way the orphan-recovery caller does in production.
+func lockInFlightForTest(ctx context.Context, runtimeID pgtype.UUID) func(*db.Queries, []pgtype.UUID) ([]db.AgentTaskQueue, error) {
+	return func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
+		return qtx.LockOrphanedTasksByIDsForFail(ctx, db.LockOrphanedTasksByIDsForFailParams{
+			Ids:       ids,
+			RuntimeID: runtimeID,
+		})
 	}
 }
 

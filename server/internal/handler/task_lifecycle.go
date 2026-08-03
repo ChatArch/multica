@@ -170,6 +170,16 @@ func (h *Handler) recoverOrphansPage(
 			candidates = c
 			return c, e
 		},
+		// Re-lock under the SAME orphan predicate (this runtime, still in flight): the
+		// peek's row lock is released when its statement auto-commits, so a task the
+		// restarted daemon has already re-claimed, or that finished on its own, must
+		// drop out here instead of being failed out from under it.
+		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
+			return qtx.LockOrphanedTasksByIDsForFail(ctx, db.LockOrphanedTasksByIDsForFailParams{
+				Ids:       ids,
+				RuntimeID: runtimeUUID,
+			})
+		},
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 				Ids:           ids,
@@ -177,16 +187,22 @@ func (h *Handler) recoverOrphansPage(
 				FailureReason: pgtype.Text{String: "runtime_recovery", Valid: true},
 			})
 		})
-	if err != nil {
-		return RecoverOrphansResponse{}, pgtype.Timestamptz{}, pgtype.UUID{}, err
-	}
 
 	// Funnel through the shared post-failure pipeline so we get the same
 	// task:failed events, agent reconcile, issue rollback, and auto-retry
 	// behaviour as the runtime sweeper. This was previously a fast-path
 	// that bypassed those side effects, leaving the UI stale when no retry
 	// was created (max_attempts exhausted, autopilot, non-retryable reason).
+	//
+	// Runs BEFORE the error check on purpose: a page can span several workspaces and
+	// fail partially, and the workspaces that DID commit hold already-terminal tasks
+	// that no later page will re-select. Returning early on err would strand them
+	// without a retry, reconcile or realtime update forever (MUL-4332 review: partial
+	// success).
 	retried := h.TaskService.HandleFailedTasks(ctx, rows)
+	if err != nil {
+		return RecoverOrphansResponse{}, pgtype.Timestamptz{}, pgtype.UUID{}, err
+	}
 
 	// A full candidate page means there may be more behind it. The cursor advances
 	// over the LAST candidate we locked (failed or skipped), so the next page never

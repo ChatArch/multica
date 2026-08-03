@@ -47,6 +47,7 @@ func TestFailBulkTasksWithEventsEmitsTaskFailed(t *testing.T) {
 			}
 			return []db.AgentTaskQueue{row}, nil
 		},
+		lockInFlightForTest(ctx, runtimeIDForAgentTest(t, pool, agentID)),
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 				Ids:           ids,
@@ -142,6 +143,7 @@ func TestTaskFailedRetryEligibleIsNotAChildPromise(t *testing.T) {
 					}
 					return []db.AgentTaskQueue{row}, nil
 				},
+				lockInFlightForTest(ctx, runtimeIDForAgentTest(t, pool, agentID)),
 				func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 					return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
 						Ids:           ids,
