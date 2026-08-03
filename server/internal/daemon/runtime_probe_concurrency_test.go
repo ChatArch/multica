@@ -22,7 +22,7 @@ func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 
 	const probeBlock = 100 * time.Millisecond
 	var inFlight, maxInFlight int32
-	detectAgentVersion = func(_ context.Context, _ string) (string, error) {
+	detectAgentVersion = func(_ context.Context, _ string, _ []string) (string, error) {
 		cur := atomic.AddInt32(&inFlight, 1)
 		for {
 			prev := atomic.LoadInt32(&maxInFlight)
@@ -83,7 +83,7 @@ func TestDetectBuiltinRuntimes_SkipsFailedProbes(t *testing.T) {
 		checkAgentMinVersion = origCheck
 	})
 
-	detectAgentVersion = func(_ context.Context, path string) (string, error) {
+	detectAgentVersion = func(_ context.Context, path string, _ []string) (string, error) {
 		if path == "/broken" {
 			return "", context.DeadlineExceeded
 		}

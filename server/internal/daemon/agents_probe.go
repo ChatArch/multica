@@ -109,11 +109,12 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 	getShellResolved := cachedShellResolvedAgents
 	probe := func(envVar, defaultCmd, modelEnv string) (AgentEntry, bool) {
 		cmd := envOrDefault(envVar, defaultCmd)
-		if path, err := resolveAgentExecutablePath(cmd); err == nil {
+		if resolved, err := resolveAgentExecutable(cmd); err == nil {
 			return AgentEntry{
-				Path:    path,
-				Command: cmd,
-				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:     resolved.Path,
+				PathDirs: resolved.PathDirs,
+				Command:  cmd,
+				Model:    strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		// The shell fallback only rescues bare command names. An operator
@@ -124,10 +125,18 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 			return AgentEntry{}, false
 		}
 		if path, ok := getShellResolved()[cmd]; ok {
+			// The login-shell script only canonicalizes the *directory* and
+			// keeps the file name, so a Volta alias arrives here still pointing
+			// at the shared shim. Run it through the same resolution the
+			// LookPath leg uses, or a GUI-launched daemon (the case this
+			// fallback exists for) would pin an alias the version gate cannot
+			// hold — the inconsistency #6183's fix is supposed to remove.
+			resolved := canonicalExecutable(path)
 			return AgentEntry{
-				Path:    path,
-				Command: cmd,
-				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:     resolved.Path,
+				PathDirs: resolved.PathDirs,
+				Command:  cmd,
+				Model:    strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		if defaultCmd == "codex" && cmd == defaultCmd {

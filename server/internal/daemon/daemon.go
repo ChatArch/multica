@@ -187,7 +187,7 @@ var (
 	// real agent helpers so tests can run the registration path without
 	// shelling out to a real CLI. Mirrors the pattern used for the brew
 	// helpers above.
-	detectAgentVersion   = agent.DetectVersion
+	detectAgentVersion   = agent.DetectVersionWithPathDirs
 	checkAgentMinVersion = agent.CheckMinVersion
 
 	// lookPath is an indirection over exec.LookPath so registration tests can
@@ -504,6 +504,9 @@ func (d *Daemon) agentVersion(provider string) string {
 type healedAgent struct {
 	path    string
 	version string
+	// pathDirs travels with path/version so a reader that adopts the healed
+	// path also gets the environment that path was verified under.
+	pathDirs []string
 }
 
 // resolveAgentEntry returns entry with a usable executable path plus the CLI
@@ -552,6 +555,7 @@ func (d *Daemon) resolveAgentEntry(ctx context.Context, provider string, entry A
 	d.resolvedPathsMu.RUnlock()
 	if ok && agentExecutablePresent(healed.path) {
 		entry.Path = healed.path
+		entry.PathDirs = healed.pathDirs
 		return entry, healed.version
 	}
 
@@ -575,6 +579,7 @@ func (d *Daemon) resolveAgentEntry(ctx context.Context, provider string, entry A
 		return entry, d.agentVersion(provider)
 	}
 	entry.Path = healed.path
+	entry.PathDirs = healed.pathDirs
 	return entry, healed.version
 }
 
@@ -607,19 +612,19 @@ func (d *Daemon) healAgentPath(ctx context.Context, provider, command string) he
 	// older or broken install must not be launched under the daemon's stale
 	// version policy, and must not slip past the minimum-version gate that the
 	// registration path applies (MUL-4486 review).
-	version, err := detectAgentVersion(ctx, newPath)
+	version, err := detectAgentVersion(ctx, newPath.Path, newPath.PathDirs)
 	if err != nil {
 		d.logger.Warn("re-resolved agent executable failed version detection; keeping pinned path",
-			"provider", provider, "command", command, "new_path", newPath, "error", err)
+			"provider", provider, "command", command, "new_path", newPath.Path, "error", err)
 		return healedAgent{}
 	}
 	if err := checkAgentMinVersion(provider, version); err != nil {
 		d.logger.Warn("re-resolved agent executable is below the minimum supported version; not adopting it",
-			"provider", provider, "command", command, "new_path", newPath, "version", version, "error", err)
+			"provider", provider, "command", command, "new_path", newPath.Path, "version", version, "error", err)
 		return healedAgent{}
 	}
 
-	adopted := healedAgent{path: newPath, version: version}
+	adopted := healedAgent{path: newPath.Path, version: version, pathDirs: newPath.PathDirs}
 	// Publish path + version atomically: any reader that sees the new path in
 	// resolveAgentEntry gets the matching version out of the same struct value.
 	d.resolvedPathsMu.Lock()
@@ -1455,7 +1460,7 @@ func (d *Daemon) probeBuiltinRuntime(ctx context.Context, name string, entry Age
 		// fixes: the upgrade that removed the old path may not have published
 		// the new one yet on the first attempt.
 		resolved, _ := d.resolveAgentEntry(ctx, name, entry)
-		version, err := detectAgentVersion(ctx, resolved.Path)
+		version, err := detectAgentVersion(ctx, resolved.Path, resolved.PathDirs)
 		if err != nil {
 			lastErr = err
 			if time.Since(startedAt) >= runtimeVersionProbeRetryWindow {
@@ -1805,7 +1810,9 @@ func (d *Daemon) appendProfileRuntimes(ctx context.Context, workspaceID string, 
 			resolved = r
 		}
 		// Best-effort version detection; an empty version is acceptable.
-		version, verErr := detectAgentVersion(ctx, resolved)
+		// Custom runtime profiles carry an absolute command path and no
+		// resolution-supplied environment.
+		version, verErr := detectAgentVersion(ctx, resolved, nil)
 		if verErr != nil {
 			d.logger.Debug("custom runtime profile: version probe failed (registering with empty version)",
 				"workspace_id", workspaceID, "profile_id", profile.ID, "path", resolved, "error", verErr)
@@ -5168,6 +5175,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		binDir := filepath.Dir(selfBin)
 		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
+	// Apply the PATH entries that came out of executable resolution, so the task
+	// runs the CLI in the same environment its version was verified under. For a
+	// Volta package binary this is the Node platform Volta bound to it; without
+	// it an `#!/usr/bin/env node` script would pick up whatever node the task's
+	// directory happens to resolve, or none at all.
+	agent.PrependPathDirs(agentEnv, entry.PathDirs)
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {

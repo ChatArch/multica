@@ -599,20 +599,32 @@ func shellArgsFromEnv(name string) ([]string, error) {
 // When ~/.multica/hooks shadows a real agent binary, skip that hooks directory:
 // previously generated hook wrappers can execute the same command name and
 // recurse forever if the daemon records or launches the wrapper.
-func resolveAgentExecutablePath(cmd string) (string, error) {
+//
+// The returned PATH entries must be prepended to the environment of BOTH the
+// version probe and the task launch — see resolvedExecutable.
+func resolveAgentExecutable(cmd string) (resolvedExecutable, error) {
 	resolved, err := exec.LookPath(cmd)
 	if err != nil {
-		return "", err
+		return resolvedExecutable{}, err
 	}
 	if strings.ContainsAny(cmd, "/\\") {
-		return resolved, nil
+		// An operator-pinned absolute/relative path is taken literally: it is
+		// not canonicalized today and must keep that contract.
+		return resolvedExecutable{Path: resolved}, nil
 	}
 	if isInMulticaHooksDir(resolved) {
 		if unshadowed, err := lookPathExcludingMulticaHooks(cmd); err == nil {
 			return unshadowed, nil
 		}
 	}
-	return canonicalExecutablePath(resolved), nil
+	return canonicalExecutable(resolved), nil
+}
+
+// resolveAgentExecutablePath is the path-only form, for callers that do not
+// launch the result (and for tests asserting the pinned path).
+func resolveAgentExecutablePath(cmd string) (string, error) {
+	resolved, err := resolveAgentExecutable(cmd)
+	return resolved.Path, err
 }
 
 // agentExecutablePresent reports whether path currently resolves to a runnable
@@ -629,19 +641,19 @@ func agentExecutablePresent(path string) bool {
 }
 
 // reresolveAgentCommand re-runs the startup resolution for a single agent
-// command name, returning the freshly resolved absolute path. It mirrors the
+// command name, returning the freshly resolved executable. It mirrors the
 // probe() order in LoadConfig: exec.LookPath (with the ~/.multica/hooks
-// exclusion preserved via resolveAgentExecutablePath) first, then the login
+// exclusion preserved via resolveAgentExecutable) first, then the login
 // shell fallback for a bare command name a GUI-launched daemon can't see on
 // its own PATH. It is only called on the miss path — when a previously pinned
 // path has disappeared — so the login-shell cost is paid rarely, never on a
 // normal launch.
-func reresolveAgentCommand(cmd string) (string, bool) {
+func reresolveAgentCommand(cmd string) (resolvedExecutable, bool) {
 	if cmd == "" {
-		return "", false
+		return resolvedExecutable{}, false
 	}
-	if path, err := resolveAgentExecutablePath(cmd); err == nil {
-		return path, true
+	if resolved, err := resolveAgentExecutable(cmd); err == nil {
+		return resolved, true
 	}
 	// A bare command name the daemon's own PATH can't see: retry via the
 	// user's login shell, exactly as the startup probe does for
@@ -650,13 +662,15 @@ func reresolveAgentCommand(cmd string) (string, bool) {
 	// stay a hard miss rather than silently resolve a different binary.
 	if !strings.ContainsAny(cmd, "/\\") {
 		if path, ok := resolveAgentsViaLoginShell([]string{cmd})[cmd]; ok {
-			return path, true
+			// Same reason as the probe's shell leg: the script preserves the
+			// file name, so a Volta alias still needs the real resolution.
+			return canonicalExecutable(path), true
 		}
 	}
-	return "", false
+	return resolvedExecutable{}, false
 }
 
-func lookPathExcludingMulticaHooks(cmd string) (string, error) {
+func lookPathExcludingMulticaHooks(cmd string) (resolvedExecutable, error) {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" {
 			dir = "."
@@ -666,10 +680,10 @@ func lookPathExcludingMulticaHooks(cmd string) (string, error) {
 		}
 		candidate := filepath.Join(dir, cmd)
 		if isExecutableFile(candidate) {
-			return canonicalExecutablePath(candidate), nil
+			return canonicalExecutable(candidate), nil
 		}
 	}
-	return "", exec.ErrNotFound
+	return resolvedExecutable{}, exec.ErrNotFound
 }
 
 func isInMulticaHooksDir(path string) bool {
@@ -707,6 +721,21 @@ func samePathDir(a, b string) bool {
 	return absA == absB
 }
 
+// resolvedExecutable is a pinned executable together with the PATH entries it
+// needs in order to run. The two travel as one result on purpose: Volta package
+// binaries are frequently `#!/usr/bin/env node` scripts, and Volta normally
+// supplies the Node platform bound to that package when it launches them
+// (upstream volta-core/src/run/binary.rs). Pinning only the path would leave the
+// version probe and the task launch to find *some* node on their own — a
+// different one per working directory, or none at all under a GUI-stripped PATH.
+// Keeping them together is what makes the gated version and the executed
+// version the same thing.
+type resolvedExecutable struct {
+	Path string
+	// PathDirs are prepended to PATH, highest priority first.
+	PathDirs []string
+}
+
 // voltaShimName is the basename of the single trampoline binary Volta installs
 // and symlinks EVERY managed command to (claude, codex, pi, ...). Upstream names
 // it "volta-shim[.exe]" (volta-layout/src/v1.rs, VoltaInstall.shim_executable),
@@ -714,14 +743,25 @@ func samePathDir(a, b string) bool {
 // (volta-core/src/shim.rs, unix create()).
 const voltaShimName = "volta-shim"
 
-// voltaResolveTimeout bounds the `volta which` call below. Resolution runs on
-// the startup/discovery path, so a wedged Volta install must not stall the
-// daemon: on timeout we fail closed and the provider simply stays unregistered.
-var voltaResolveTimeout = 5 * time.Second
+var (
+	// voltaResolveTimeout bounds a single `volta` invocation.
+	voltaResolveTimeout = 5 * time.Second
+	// voltaResolveBudget caps the TOTAL time one Volta install may cost across
+	// all commands before we stop asking it. Without this, N alias lookups
+	// against a wedged install each paid the per-call timeout and the startup
+	// probe stalled for N × timeout.
+	voltaResolveBudget = 8 * time.Second
+	// voltaFailureCooldown is how long a failing install is left alone. It turns
+	// "every command pays the timeout, every discovery tick" into "one command
+	// pays it, once per cooldown".
+	voltaFailureCooldown = 5 * time.Minute
+)
 
-// canonicalExecutablePath collapses path to the real file behind any symlinks,
-// so version-manager prefix dirs and other indirection settle onto one stable
-// path we can pin.
+// canonicalExecutable resolves path to the concrete executable to pin plus the
+// PATH entries required to run it.
+//
+// Symlinks are collapsed so version-manager prefix dirs and other indirection
+// settle onto one stable path we can pin.
 //
 // Volta needs a detour. It points every command it manages at one shared
 // volta-shim and picks the tool from the name it was invoked as — upstream
@@ -732,33 +772,37 @@ var voltaResolveTimeout = 5 * time.Second
 // exits 126 for any Volta error, which is the symptom reported in #6183. Volta
 // documents the same hazard from its own side in volta-cli/volta#579.
 //
-// So for a Volta alias we ask Volta itself for the concrete binary and pin that.
-// The tempting alternative — keep the alias path and let the shim dispatch —
-// breaks the {path, version} invariant the rest of the daemon relies on: the
-// shim resolves per current directory (`volta which` prefers a project-local
-// bin, src/command/which.rs), so the version verified at registration would not
-// be the version a task executes, and the minimum-version gate could be
-// bypassed. Pinning the concrete path keeps Volta installs on exactly the same
-// footing as every other install method.
+// So for a Volta alias we ask Volta itself for the concrete binary and pin that,
+// together with the Node platform directory it needs. Keeping the alias instead
+// and letting the shim dispatch would break the {path, version} invariant the
+// rest of the daemon relies on: the shim resolves per working directory, so the
+// version verified at registration would not be the version a task executes and
+// the minimum-version gate could be bypassed.
 //
 // Failing to resolve is deliberate: we return the shim path, version detection
 // fails as before, and the provider stays unregistered rather than being
 // launched through an ungated path. MULTICA_*_PATH remains the manual override.
-func canonicalExecutablePath(path string) string {
+func canonicalExecutable(path string) resolvedExecutable {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return path
+		return resolvedExecutable{Path: path}
 	}
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return abs
+		return resolvedExecutable{Path: abs}
 	}
 	if isVoltaShimPath(real) && !isVoltaShimPath(abs) {
-		if concrete, ok := voltaConcreteExecutable(real, filepath.Base(abs)); ok {
-			return concrete
+		if resolved, ok := voltaResolve(real, filepath.Base(abs)); ok {
+			return resolved
 		}
 	}
-	return real
+	return resolvedExecutable{Path: real}
+}
+
+// canonicalExecutablePath is the path-only form of canonicalExecutable, for
+// callers that pin a path without launching it.
+func canonicalExecutablePath(path string) string {
+	return canonicalExecutable(path).Path
 }
 
 // isVoltaShimPath reports whether path is Volta's shared shim. The accepted
@@ -776,69 +820,166 @@ func isVoltaShimPath(path string) bool {
 	return false
 }
 
+type voltaInstallState struct {
+	tools    map[string]resolvedExecutable // command -> resolution
+	nodeDir  string                        // Node platform dir, "" if unknown
+	nodeDone bool
+	spent    time.Duration // cumulative cost, against voltaResolveBudget
+	failedAt time.Time     // last failure, for the cooldown
+}
+
 var (
-	voltaResolveMu    sync.Mutex
-	voltaResolveCache = map[string]string{}
+	voltaMu     sync.Mutex
+	voltaStates = map[string]*voltaInstallState{}
 )
 
-// voltaConcreteExecutable asks Volta for the real binary behind command and
-// returns it only when the answer is an absolute, currently runnable path.
-//
-// `volta` lives in the same directory as volta-shim (both are VoltaInstall
-// entries), so we invoke it by absolute path instead of trusting PATH — the
-// daemon may not have Volta's bin dir at all.
-//
-// Answers are cached process-wide and revalidated by existence rather than a
-// TTL: probeAgentCLIs re-runs on every discovery tick, and a steady-state
-// daemon must not fork `volta which` forever. When Volta replaces the binary
-// and the cached path disappears, the entry is dropped and re-resolved, which
-// dovetails with the MUL-4486 self-heal.
-func voltaConcreteExecutable(shimPath, command string) (string, bool) {
-	// command comes from a filesystem basename; keep it to the same bare-name
-	// shape the shell resolver enforces so nothing flag-like reaches argv.
-	if !isSafeAgentName(command) {
-		return "", false
-	}
+// voltaExecutable returns the `volta` binary that belongs to shimPath. Both are
+// VoltaInstall entries, so they live in the same directory; we invoke it by
+// absolute path because the daemon may not have Volta's bin dir on PATH at all.
+func voltaExecutable(shimPath string) string {
 	voltaBin := filepath.Join(filepath.Dir(shimPath), "volta")
 	if runtime.GOOS == "windows" {
 		voltaBin += ".exe"
 	}
-	cacheKey := voltaBin + "\x00" + command
+	return voltaBin
+}
 
-	voltaResolveMu.Lock()
-	defer voltaResolveMu.Unlock()
-	if cached, ok := voltaResolveCache[cacheKey]; ok {
-		if isExecutableFile(cached) {
+// voltaNonProjectDir is where `volta` is invoked. Volta resolves a *project*
+// tool before the user default — upstream src/command/which.rs prefers
+// session.project().find_bin() — by walking up from the working directory
+// looking for a package.json. Inheriting the daemon's directory would therefore
+// let a daemon started inside a JS project pin that project's node_modules
+// binary as the machine-wide runtime. The filesystem root is the only directory
+// with no ancestor that could hold a package.json.
+func voltaNonProjectDir(voltaBin string) string {
+	if runtime.GOOS == "windows" {
+		if vol := filepath.VolumeName(voltaBin); vol != "" {
+			return vol + string(os.PathSeparator)
+		}
+	}
+	return string(os.PathSeparator)
+}
+
+// voltaResolve asks Volta for the concrete binary behind command, plus the Node
+// platform directory needed to run it, and caches the answer.
+//
+// Answers are revalidated by existence rather than a TTL: probeAgentCLIs re-runs
+// on every discovery tick, and a steady-state daemon must not fork `volta`
+// forever. When Volta replaces the binary and the cached path disappears, the
+// entry is dropped and re-resolved, which dovetails with the MUL-4486 self-heal.
+func voltaResolve(shimPath, command string) (resolvedExecutable, bool) {
+	// command comes from a filesystem basename; keep it to the same bare-name
+	// shape the shell resolver enforces so nothing flag-like reaches argv.
+	if !isSafeAgentName(command) {
+		return resolvedExecutable{}, false
+	}
+	voltaBin := voltaExecutable(shimPath)
+
+	voltaMu.Lock()
+	state := voltaStates[voltaBin]
+	if state == nil {
+		state = &voltaInstallState{tools: map[string]resolvedExecutable{}}
+		voltaStates[voltaBin] = state
+	}
+	if cached, ok := state.tools[command]; ok {
+		if isExecutableFile(cached.Path) {
+			voltaMu.Unlock()
 			return cached, true
 		}
-		delete(voltaResolveCache, cacheKey)
+		delete(state.tools, command)
 	}
+	// Circuit breaker: a wedged or broken install is asked once per cooldown,
+	// not once per command and not on every tick.
+	if !state.failedAt.IsZero() && time.Since(state.failedAt) < voltaFailureCooldown {
+		voltaMu.Unlock()
+		return resolvedExecutable{}, false
+	}
+	if state.spent >= voltaResolveBudget {
+		voltaMu.Unlock()
+		return resolvedExecutable{}, false
+	}
+	nodeDir, nodeDone := state.nodeDir, state.nodeDone
+	// Released for the subprocess below: holding it would serialize every
+	// command behind one timeout and make the stall additive.
+	voltaMu.Unlock()
+
 	if !isExecutableFile(voltaBin) {
-		return "", false
+		voltaMu.Lock()
+		state.failedAt = time.Now()
+		voltaMu.Unlock()
+		return resolvedExecutable{}, false
 	}
 
+	started := time.Now()
+	toolPath, toolOK := voltaWhich(voltaBin, command)
+	if toolOK && !nodeDone {
+		// One extra call per install, not per command: the Node platform dir is
+		// what makes an `env node` package script runnable.
+		nodeDir, _ = voltaNodeDir(voltaBin)
+		nodeDone = true
+	}
+	elapsed := time.Since(started)
+
+	voltaMu.Lock()
+	defer voltaMu.Unlock()
+	state.spent += elapsed
+	state.nodeDir, state.nodeDone = nodeDir, nodeDone
+	if !toolOK {
+		state.failedAt = time.Now()
+		return resolvedExecutable{}, false
+	}
+	state.failedAt = time.Time{}
+	resolved := resolvedExecutable{Path: toolPath}
+	if nodeDir != "" {
+		resolved.PathDirs = []string{nodeDir}
+	}
+	state.tools[command] = resolved
+	return resolved, true
+}
+
+// voltaWhich runs `volta which <command>` and returns the concrete path.
+func voltaWhich(voltaBin, command string) (string, bool) {
+	out, ok := runVolta(voltaBin, "which", command)
+	if !ok {
+		return "", false
+	}
+	// `volta which` prints nothing and exits non-zero when it cannot find the
+	// binary, so anything that is not a single absolute runnable path is a miss
+	// rather than something we should pin.
+	if out == "" || strings.ContainsAny(out, "\r\n") || !filepath.IsAbs(out) {
+		return "", false
+	}
+	if !isExecutableFile(out) {
+		return "", false
+	}
+	return out, true
+}
+
+// voltaNodeDir returns the directory of the Node that Volta runs package
+// binaries with. Resolved through the same public `volta which` interface (in
+// the same non-project directory) so it is the default toolchain's Node rather
+// than whatever a project pins.
+func voltaNodeDir(voltaBin string) (string, bool) {
+	nodePath, ok := voltaWhich(voltaBin, "node")
+	if !ok {
+		return "", false
+	}
+	return filepath.Dir(nodePath), true
+}
+
+func runVolta(voltaBin string, args ...string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), voltaResolveTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, voltaBin, "which", command)
-	// Volta prints the path on stdout and diagnostics on stderr; Output()
+	cmd := exec.CommandContext(ctx, voltaBin, args...)
+	cmd.Dir = voltaNonProjectDir(voltaBin)
+	// Volta prints results on stdout and diagnostics on stderr; Output()
 	// captures only stdout. WaitDelay keeps a hung child from outliving ctx.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
-	// `volta which` prints nothing and exits non-zero when it cannot find the
-	// binary, so anything that is not a single absolute runnable path is a miss
-	// rather than something we should pin.
-	resolved := strings.TrimSpace(string(out))
-	if resolved == "" || strings.ContainsAny(resolved, "\r\n") || !filepath.IsAbs(resolved) {
-		return "", false
-	}
-	if !isExecutableFile(resolved) {
-		return "", false
-	}
-	voltaResolveCache[cacheKey] = resolved
-	return resolved, true
+	return strings.TrimSpace(string(out)), true
 }
 
 func isExecutableFile(path string) bool {

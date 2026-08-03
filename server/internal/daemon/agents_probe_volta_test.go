@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
@@ -14,14 +17,14 @@ import (
 // Volta installs one trampoline binary and symlinks every managed command to
 // it, dispatching on the name it was invoked as (#6183). Resolving that symlink
 // collapses claude/codex/pi onto the same volta-shim path and the shim then
-// exits 126, so the daemon asks Volta for the concrete binary instead. These
-// tests cover that resolution, the registration it has to survive, and the
-// blast radius of the exception.
+// exits 126, so the daemon asks Volta for the concrete binary instead — plus the
+// Node platform directory that binary needs to run.
 
 // voltaFixture is a ~/.volta lookalike.
 type voltaFixture struct {
-	binDir   string // the shim dir: volta, volta-shim, and one symlink per command
-	imageDir string // where the concrete per-tool binaries live
+	binDir   string // shim dir: volta, volta-shim, one symlink per command
+	imageDir string // concrete per-tool binaries
+	nodeDir  string // Volta's Node platform bin dir
 }
 
 func (f voltaFixture) alias(command string) string    { return filepath.Join(f.binDir, command) }
@@ -30,38 +33,57 @@ func (f voltaFixture) concrete(command string) string { return filepath.Join(f.i
 
 // voltaFixtureVersions are the versions the concrete fixture binaries report.
 // They must clear agent.MinVersions (claude >= 2.0.0, codex >= 0.100.0) or the
-// registration-level test below would prove nothing: the provider would be
-// dropped by the min-version gate rather than by the bug under test.
+// registration-level tests would prove nothing: the provider would be dropped by
+// the min-version gate rather than by the bug under test.
 var voltaFixtureVersions = map[string]string{
 	"claude": "2.1.0 (Claude Code)",
 	"codex":  "codex-cli 0.140.0",
 	"pi":     "pi 0.9.0",
 }
 
-// newVoltaFixture builds the shim dir, the concrete binaries, a faithful
-// argv[0]-dispatching volta-shim, and a `volta` that answers `which`.
+type voltaFixtureOpts struct {
+	commands []string
+	// omitVolta models an install whose `volta` binary cannot be run.
+	omitVolta bool
+	// hang makes every `volta` invocation block, modelling a wedged install.
+	hang bool
+	// projectDir, when set, makes `volta which` answer with a project-local
+	// binary whenever it is invoked from inside that directory — which is what
+	// real Volta does (upstream src/command/which.rs prefers the project bin).
+	projectDir string
+}
+
+// newVoltaFixture builds the shim dir, concrete binaries, a Node platform dir, a
+// faithful argv[0]-dispatching volta-shim, and a `volta` answering `which`.
 //
-// withVolta=false omits the `volta` binary, modelling an install where the
-// daemon cannot ask Volta for the concrete path.
-func newVoltaFixture(t *testing.T, withVolta bool, commands ...string) voltaFixture {
+// Every concrete tool here needs `node` on PATH, mirroring the real install
+// where package bins are `#!/usr/bin/env node` scripts (verified against
+// @openai/codex 0.146.0). `node` exists ONLY in the Node platform dir, so a
+// resolution that forgets to carry that dir produces an unrunnable path.
+func newVoltaFixture(t *testing.T, opts voltaFixtureOpts) voltaFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := voltaFixture{
 		binDir:   filepath.Join(root, "bin"),
 		imageDir: filepath.Join(root, "image"),
+		nodeDir:  filepath.Join(root, "node-image", "bin"),
 	}
-	for _, dir := range []string{f.binDir, f.imageDir} {
+	for _, dir := range []string{f.binDir, f.imageDir, f.nodeDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	writeScript(t, filepath.Join(f.nodeDir, "node"), "#!/bin/sh\nexit 0\n")
 
-	for _, command := range commands {
+	for _, command := range opts.commands {
 		version, ok := voltaFixtureVersions[command]
 		if !ok {
 			t.Fatalf("no fixture version defined for %q", command)
 		}
-		writeScript(t, f.concrete(command), fmt.Sprintf("#!/bin/sh\necho %q\n", version))
+		writeScript(t, f.concrete(command), fmt.Sprintf(`#!/bin/sh
+command -v node >/dev/null 2>&1 || { echo "env: node: No such file or directory" >&2; exit 127; }
+echo %q
+`, version))
 	}
 
 	// Faithful shim: refuses to run under its own name exactly like upstream
@@ -77,24 +99,51 @@ fi
 exec %q/"$n" "$@"
 `, voltaShimName, f.imageDir))
 
-	for _, command := range commands {
+	for _, command := range opts.commands {
 		if err := os.Symlink(f.shim(), f.alias(command)); err != nil {
 			t.Fatalf("symlink %s -> volta-shim: %v", command, err)
 		}
 	}
 
-	if withVolta {
-		// `volta which <tool>` prints the concrete path on stdout and exits
-		// non-zero without output when it cannot resolve, as upstream does.
-		writeScript(t, filepath.Join(f.binDir, "volta"), fmt.Sprintf(`#!/bin/sh
+	if !opts.omitVolta {
+		writeScript(t, filepath.Join(f.binDir, "volta"), voltaFixtureScript(f, opts))
+	}
+	return f
+}
+
+// voltaFixtureScript renders the fake `volta`. It answers `which <tool>` and
+// `which node`, prints nothing and exits non-zero otherwise, like upstream.
+func voltaFixtureScript(f voltaFixture, opts voltaFixtureOpts) string {
+	var body string
+	if opts.hang {
+		// Blocks forever so a test can measure how the caller bounds the cost.
+		return "#!/bin/sh\nwhile :; do sleep 1; done\n"
+	}
+	if opts.projectDir != "" {
+		// Project-local preference: only triggered when invoked from inside the
+		// project, which is exactly the cwd sensitivity the caller must avoid.
+		body = fmt.Sprintf(`
+case "$PWD" in
+  %q*)
+    if [ "$1" = "which" ] && [ -n "$2" ]; then
+      p=%q/"$2"
+      if [ -x "$p" ]; then echo "$p"; exit 0; fi
+    fi
+    ;;
+esac
+`, opts.projectDir, filepath.Join(opts.projectDir, "node_modules", ".bin"))
+	}
+	return fmt.Sprintf(`#!/bin/sh
+%s
+if [ "$1" = "which" ] && [ "$2" = "node" ]; then
+  echo %q; exit 0
+fi
 if [ "$1" = "which" ] && [ -n "$2" ]; then
   p=%q/"$2"
   if [ -x "$p" ]; then echo "$p"; exit 0; fi
 fi
 exit 1
-`, f.imageDir))
-	}
-	return f
+`, body, filepath.Join(f.nodeDir, "node"), f.imageDir)
 }
 
 func writeScript(t *testing.T, path, body string) {
@@ -129,49 +178,79 @@ func isolateAgentDiscovery(t *testing.T) {
 	codexDesktopAppBundlePaths = func() []string { return nil }
 }
 
-// resetVoltaResolveCache clears the process-wide `volta which` cache so tests
-// cannot observe each other's answers.
+// resetVoltaResolveCache clears the process-wide Volta resolution state (cached
+// answers, failure cooldown and spend budget) so tests cannot observe each
+// other's results.
 func resetVoltaResolveCache(t *testing.T) {
 	t.Helper()
 	clear := func() {
-		voltaResolveMu.Lock()
-		defer voltaResolveMu.Unlock()
-		voltaResolveCache = map[string]string{}
+		voltaMu.Lock()
+		defer voltaMu.Unlock()
+		voltaStates = map[string]*voltaInstallState{}
 	}
 	clear()
 	t.Cleanup(clear)
 }
 
+// runVoltaFromDir runs the fixture `volta` with an explicit working directory,
+// so a test can confirm the fixture is genuinely cwd-sensitive before asserting
+// that production code is not.
+func runVoltaFromDir(t *testing.T, voltaBin, dir string, args ...string) (string, bool) {
+	t.Helper()
+	cmd := exec.Command(voltaBin, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// pathWithout returns a PATH containing only dirs (plus /bin and /usr/bin for
+// the shell itself), deliberately excluding Volta's Node platform dir.
+func pathWithout(dirs ...string) string {
+	all := append([]string{}, dirs...)
+	all = append(all, "/usr/bin", "/bin")
+	out := ""
+	for _, d := range all {
+		if out != "" {
+			out += string(os.PathListSeparator)
+		}
+		out += d
+	}
+	return out
+}
+
 // TestResolveAgentExecutablePath_PinsVoltaConcreteBinary is the primary
-// regression test for #6183. The pinned path must be the concrete binary, so
-// that the path we version-check is the path we later execute.
+// regression test for #6183: the pinned path must be the concrete binary, so the
+// path we version-check is the path we later execute.
 func TestResolveAgentExecutablePath_PinsVoltaConcreteBinary(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
 	commands := []string{"claude", "codex", "pi"}
-	f := newVoltaFixture(t, true, commands...)
-	t.Setenv("PATH", f.binDir)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
+	t.Setenv("PATH", pathWithout(f.binDir))
 
 	for _, command := range commands {
-		got, err := resolveAgentExecutablePath(command)
+		resolved, err := resolveAgentExecutable(command)
 		if err != nil {
-			t.Fatalf("%s: resolveAgentExecutablePath: %v", command, err)
+			t.Fatalf("%s: resolveAgentExecutable: %v", command, err)
 		}
-		if got == f.shim() {
-			t.Fatalf("%s pinned the shared shim %q; the version probe exits 126 there (#6183)", command, got)
+		if resolved.Path == f.shim() {
+			t.Fatalf("%s pinned the shared shim; the version probe exits 126 there (#6183)", command)
 		}
-		if got == f.alias(command) {
-			t.Errorf("%s pinned the Volta alias %q; that path dispatches per working directory, "+
-				"so the gated version would not be the executed version", command, got)
+		if resolved.Path == f.alias(command) {
+			t.Errorf("%s pinned the Volta alias %q; that path dispatches per working "+
+				"directory, so the gated version would not be the executed version", command, resolved.Path)
 		}
-		if want := f.concrete(command); got != want {
-			t.Errorf("%s path = %q, want the concrete binary %q", command, got, want)
+		if want := f.concrete(command); resolved.Path != want {
+			t.Errorf("%s path = %q, want the concrete binary %q", command, resolved.Path, want)
 		}
 
-		version, err := agent.DetectVersion(context.Background(), got)
+		version, err := agent.DetectVersionWithPathDirs(context.Background(), resolved.Path, resolved.PathDirs)
 		if err != nil {
-			t.Fatalf("%s: DetectVersion(%q): %v", command, got, err)
+			t.Fatalf("%s: DetectVersionWithPathDirs(%q): %v", command, resolved.Path, err)
 		}
 		if version != voltaFixtureVersions[command] {
 			t.Errorf("%s version = %q, want %q", command, version, voltaFixtureVersions[command])
@@ -179,20 +258,229 @@ func TestResolveAgentExecutablePath_PinsVoltaConcreteBinary(t *testing.T) {
 	}
 }
 
+// TestResolveAgentExecutable_CarriesVoltaNodePlatform covers review item 3: the
+// concrete binary is a node script, so the resolution must also hand back the
+// Node platform dir. Without it the pinned path is unrunnable under a PATH that
+// has no node — the GUI-launched case — and the version probe and the task
+// launch could disagree about which node runs the CLI.
+func TestResolveAgentExecutable_CarriesVoltaNodePlatform(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"codex"}})
+	// Note: no node anywhere on PATH, only inside Volta's platform dir.
+	t.Setenv("PATH", pathWithout(f.binDir))
+
+	resolved, err := resolveAgentExecutable("codex")
+	if err != nil {
+		t.Fatalf("resolveAgentExecutable: %v", err)
+	}
+	if len(resolved.PathDirs) == 0 {
+		t.Fatal("resolution returned no PATH dirs; a node-script package binary cannot run without Volta's Node platform")
+	}
+	if resolved.PathDirs[0] != f.nodeDir {
+		t.Errorf("PathDirs[0] = %q, want Volta's node dir %q", resolved.PathDirs[0], f.nodeDir)
+	}
+
+	// With the environment: runnable.
+	if _, err := agent.DetectVersionWithPathDirs(context.Background(), resolved.Path, resolved.PathDirs); err != nil {
+		t.Errorf("version probe with the resolved environment failed: %v", err)
+	}
+	// Without it: not runnable. This is what makes carrying the dirs necessary
+	// rather than cosmetic.
+	if _, err := agent.DetectVersion(context.Background(), resolved.Path); err == nil {
+		t.Error("version probe without the resolved environment unexpectedly succeeded; " +
+			"the fixture no longer models the `#!/usr/bin/env node` dependency")
+	}
+}
+
+// TestProbeAgentCLIs_ShellFallbackResolvesVoltaAlias covers review item 1. A
+// GUI-launched daemon does not see Volta on its own PATH and falls back to the
+// login shell, whose script preserves the file name — so the alias arrives here
+// still pointing at the shared shim. That leg must apply the same resolution as
+// the LookPath leg, otherwise Desktop users keep the ungated alias.
+func TestProbeAgentCLIs_ShellFallbackResolvesVoltaAlias(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	// Empty PATH: the LookPath leg must miss so the shell fallback is the only
+	// way claude can resolve, exactly as on a GUI-launched daemon.
+	t.Setenv("PATH", "")
+
+	origShell := resolveAgentsViaLoginShell
+	t.Cleanup(func() { resolveAgentsViaLoginShell = origShell })
+	resolveAgentsViaLoginShell = func([]string) map[string]string {
+		return map[string]string{"claude": f.alias("claude")}
+	}
+	resetShellResolveCacheForTest(t)
+	origBundle := codexDesktopAppBundlePaths
+	t.Cleanup(func() { codexDesktopAppBundlePaths = origBundle })
+	codexDesktopAppBundlePaths = func() []string { return nil }
+
+	entry, ok := probeAgentCLIs()["claude"]
+	if !ok {
+		t.Fatal("claude not discovered via the login-shell fallback")
+	}
+	if entry.Path == f.alias("claude") {
+		t.Fatalf("shell fallback pinned the Volta alias %q; the GUI path bypassed resolution", entry.Path)
+	}
+	if want := f.concrete("claude"); entry.Path != want {
+		t.Errorf("path = %q, want the concrete binary %q", entry.Path, want)
+	}
+	if len(entry.PathDirs) == 0 || entry.PathDirs[0] != f.nodeDir {
+		t.Errorf("PathDirs = %v, want Volta's node dir %q", entry.PathDirs, f.nodeDir)
+	}
+}
+
+// TestReresolveAgentCommand_ShellFallbackResolvesVoltaAlias is item 1 for the
+// self-heal path, which has its own shell branch.
+func TestReresolveAgentCommand_ShellFallbackResolvesVoltaAlias(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", "")
+
+	origShell := resolveAgentsViaLoginShell
+	t.Cleanup(func() { resolveAgentsViaLoginShell = origShell })
+	resolveAgentsViaLoginShell = func([]string) map[string]string {
+		return map[string]string{"claude": f.alias("claude")}
+	}
+
+	resolved, ok := reresolveAgentCommand("claude")
+	if !ok {
+		t.Fatal("reresolveAgentCommand did not resolve claude")
+	}
+	if resolved.Path == f.alias("claude") {
+		t.Fatalf("self-heal pinned the Volta alias %q", resolved.Path)
+	}
+	if want := f.concrete("claude"); resolved.Path != want {
+		t.Errorf("path = %q, want %q", resolved.Path, want)
+	}
+}
+
+// TestVoltaResolve_IgnoresProjectDirectory covers review item 2. Volta resolves a
+// project-local binary before the user default, so asking it from whatever
+// directory the daemon happens to be started in would pin one project's
+// dependency as the machine-wide runtime.
+func TestVoltaResolve_IgnoresProjectDirectory(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	projectDir := t.TempDir()
+	projectBin := filepath.Join(projectDir, "node_modules", ".bin")
+	if err := os.MkdirAll(projectBin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeScript(t, filepath.Join(projectBin, "claude"), "#!/bin/sh\necho \"0.0.1 (project local)\"\n")
+
+	f := newVoltaFixture(t, voltaFixtureOpts{
+		commands:   []string{"claude"},
+		projectDir: projectDir,
+	})
+	t.Setenv("PATH", pathWithout(f.binDir))
+
+	// Sanity: the fixture really is cwd-sensitive, so this test can fail.
+	if out, ok := runVoltaFromDir(t, filepath.Join(f.binDir, "volta"), projectDir, "which", "claude"); !ok {
+		t.Fatalf("fixture volta failed inside the project dir")
+	} else if out != filepath.Join(projectBin, "claude") {
+		t.Fatalf("fixture is not cwd-sensitive: got %q", out)
+	}
+
+	// Run the daemon's resolution with the process cwd inside the project.
+	t.Chdir(projectDir)
+
+	resolved, ok := voltaResolve(f.shim(), "claude")
+	if !ok {
+		t.Fatal("voltaResolve failed")
+	}
+	if got := resolved.Path; got == filepath.Join(projectBin, "claude") {
+		t.Errorf("resolved the project-local binary %q; a daemon started inside a JS "+
+			"project would pin that project's dependency as the machine runtime", got)
+	} else if want := f.concrete("claude"); got != want {
+		t.Errorf("path = %q, want the default toolchain binary %q", got, want)
+	}
+}
+
+// TestVoltaResolve_BoundsTotalCostWhenVoltaHangs covers review item 4. A wedged
+// Volta install used to cost one full timeout PER command, so a machine with
+// several Volta-managed CLIs stalled startup for the sum of them.
+func TestVoltaResolve_BoundsTotalCostWhenVoltaHangs(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	origTimeout := voltaResolveTimeout
+	t.Cleanup(func() { voltaResolveTimeout = origTimeout })
+	voltaResolveTimeout = 300 * time.Millisecond
+
+	commands := []string{"claude", "codex", "pi"}
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands, hang: true})
+	t.Setenv("PATH", pathWithout(f.binDir))
+
+	start := time.Now()
+	for _, command := range commands {
+		if _, ok := voltaResolve(f.shim(), command); ok {
+			t.Fatalf("%s unexpectedly resolved against a hung volta", command)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// Additive behavior would be len(commands) x timeout. Allow one timeout plus
+	// slack: after the first failure the cooldown must short-circuit the rest.
+	if budget := 2 * voltaResolveTimeout; elapsed > budget {
+		t.Errorf("resolving %d hung aliases took %v (> %v); the per-command timeout is "+
+			"still additive and can stall daemon startup", len(commands), elapsed, budget)
+	}
+}
+
+// TestDetectBuiltinRuntimes_RegistersVoltaManagedCLIs is the end-result test:
+// availability alone was never the user-visible outcome. This runs the real
+// version probe and the real minimum-version gate over a Volta install and
+// asserts all three providers reach the registration payload.
+func TestDetectBuiltinRuntimes_RegistersVoltaManagedCLIs(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	commands := []string{"claude", "codex", "pi"}
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
+	t.Setenv("PATH", pathWithout(f.binDir))
+	isolateAgentDiscovery(t)
+
+	// Deliberately no detectAgentVersion / checkAgentMinVersion stubs: the point
+	// is that the real gate accepts what discovery pinned.
+	d := freshDaemon("")
+	d.cfg.Agents = probeAgentCLIs()
+
+	registered := map[string]string{}
+	for _, rt := range d.detectBuiltinRuntimes(context.Background()) {
+		registered[rt["type"]] = rt["version"]
+	}
+	for _, command := range commands {
+		version, ok := registered[command]
+		if !ok {
+			t.Errorf("%s missing from the registration payload; skipped reasons: %#v",
+				command, d.skippedAgentsSnapshot())
+			continue
+		}
+		if version != voltaFixtureVersions[command] {
+			t.Errorf("%s registered version = %q, want %q", command, version, voltaFixtureVersions[command])
+		}
+	}
+}
+
 // TestProbeAgentCLIs_DiscoversVoltaManagedCLIs covers the discovery entry point
-// the daemon actually calls and asserts the three providers get three distinct
-// concrete paths rather than one shared shim.
+// and asserts the three providers get three distinct concrete paths.
 func TestProbeAgentCLIs_DiscoversVoltaManagedCLIs(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
 	commands := []string{"claude", "codex", "pi"}
-	f := newVoltaFixture(t, true, commands...)
-	t.Setenv("PATH", f.binDir)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
+	t.Setenv("PATH", pathWithout(f.binDir))
 	isolateAgentDiscovery(t)
 
 	agents := probeAgentCLIs()
-
 	seen := map[string]string{}
 	for _, command := range commands {
 		entry, ok := agents[command]
@@ -209,54 +497,17 @@ func TestProbeAgentCLIs_DiscoversVoltaManagedCLIs(t *testing.T) {
 	}
 }
 
-// TestDetectBuiltinRuntimes_RegistersVoltaManagedCLIs is the end-result test:
-// availability alone was never the user-visible outcome. This runs the real
-// version probe and the real minimum-version gate over a Volta install and
-// asserts all three providers reach the registration payload.
-func TestDetectBuiltinRuntimes_RegistersVoltaManagedCLIs(t *testing.T) {
-	skipIfNoPOSIXShell(t)
-	resetVoltaResolveCache(t)
-
-	commands := []string{"claude", "codex", "pi"}
-	f := newVoltaFixture(t, true, commands...)
-	t.Setenv("PATH", f.binDir)
-	isolateAgentDiscovery(t)
-
-	// Deliberately no detectAgentVersion / checkAgentMinVersion stubs: the point
-	// is that the real gate accepts what discovery pinned.
-	d := freshDaemon("")
-	d.cfg.Agents = probeAgentCLIs()
-
-	runtimes := d.detectBuiltinRuntimes(context.Background())
-
-	registered := map[string]string{}
-	for _, rt := range runtimes {
-		registered[rt["type"]] = rt["version"]
-	}
-	for _, command := range commands {
-		version, ok := registered[command]
-		if !ok {
-			t.Errorf("%s missing from the registration payload; skipped reasons: %#v",
-				command, d.skippedAgentsSnapshot())
-			continue
-		}
-		if version != voltaFixtureVersions[command] {
-			t.Errorf("%s registered version = %q, want %q", command, version, voltaFixtureVersions[command])
-		}
-	}
-}
-
 // TestResolveAgentExecutablePath_FailsClosedWithoutVoltaResolution pins the
-// deliberate failure mode: with no way to ask Volta for the concrete binary we
-// must NOT fall back to the alias, because that path is only version-checkable
-// under conditions we cannot reproduce at launch. Staying unregistered is the
-// correct outcome; MULTICA_*_PATH remains the escape hatch.
+// deliberate failure mode: with no way to ask Volta we must NOT fall back to the
+// alias, because that path is only version-checkable under conditions we cannot
+// reproduce at launch. Staying unregistered is correct; MULTICA_*_PATH remains
+// the escape hatch.
 func TestResolveAgentExecutablePath_FailsClosedWithoutVoltaResolution(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
-	f := newVoltaFixture(t, false, "claude")
-	t.Setenv("PATH", f.binDir)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}, omitVolta: true})
+	t.Setenv("PATH", pathWithout(f.binDir))
 
 	got, err := resolveAgentExecutablePath("claude")
 	if err != nil {
@@ -265,8 +516,6 @@ func TestResolveAgentExecutablePath_FailsClosedWithoutVoltaResolution(t *testing
 	if got == f.alias("claude") {
 		t.Fatalf("fell back to the alias %q; that reintroduces an ungated launch path", got)
 	}
-	// The shim path itself is still canonicalized, so compare against the
-	// resolved form (on macOS /tmp is a symlink to /private/tmp).
 	wantShim, err := filepath.EvalSymlinks(f.shim())
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
@@ -279,29 +528,25 @@ func TestResolveAgentExecutablePath_FailsClosedWithoutVoltaResolution(t *testing
 	}
 }
 
-// TestVoltaConcreteExecutable_ReresolvesAfterBinaryReplaced covers the cache's
+// TestVoltaResolve_ReresolvesAfterBinaryReplaced covers the cache's
 // revalidation-by-existence: when Volta swaps the underlying tool and the old
 // concrete path disappears, the next resolution must not keep serving it.
-func TestVoltaConcreteExecutable_ReresolvesAfterBinaryReplaced(t *testing.T) {
+func TestVoltaResolve_ReresolvesAfterBinaryReplaced(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
-	f := newVoltaFixture(t, true, "claude")
-	t.Setenv("PATH", f.binDir)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", pathWithout(f.binDir))
 
-	first, ok := voltaConcreteExecutable(f.shim(), "claude")
+	first, ok := voltaResolve(f.shim(), "claude")
 	if !ok {
 		t.Fatal("initial resolution failed")
 	}
-
-	// Cached answer is reused while it is still runnable.
-	if again, ok := voltaConcreteExecutable(f.shim(), "claude"); !ok || again != first {
-		t.Fatalf("cached resolution = (%q, %v), want (%q, true)", again, ok, first)
+	if again, ok := voltaResolve(f.shim(), "claude"); !ok || again.Path != first.Path {
+		t.Fatalf("cached resolution = (%q, %v), want (%q, true)", again.Path, ok, first.Path)
 	}
 
-	// Volta replaces the tool: the old path is gone and `volta which` now
-	// answers with a different one.
-	if err := os.Remove(first); err != nil {
+	if err := os.Remove(first.Path); err != nil {
 		t.Fatalf("remove concrete binary: %v", err)
 	}
 	newImage := filepath.Join(t.TempDir(), "image")
@@ -310,27 +555,28 @@ func TestVoltaConcreteExecutable_ReresolvesAfterBinaryReplaced(t *testing.T) {
 	}
 	writeScript(t, filepath.Join(newImage, "claude"), "#!/bin/sh\necho \"3.0.0 (Claude Code)\"\n")
 	writeScript(t, filepath.Join(f.binDir, "volta"), fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "which" ] && [ "$2" = "node" ]; then echo %q; exit 0; fi
 if [ "$1" = "which" ] && [ -n "$2" ]; then
   p=%q/"$2"
   if [ -x "$p" ]; then echo "$p"; exit 0; fi
 fi
 exit 1
-`, newImage))
+`, filepath.Join(f.nodeDir, "node"), newImage))
 
-	second, ok := voltaConcreteExecutable(f.shim(), "claude")
+	second, ok := voltaResolve(f.shim(), "claude")
 	if !ok {
 		t.Fatal("re-resolution failed after the pinned binary disappeared")
 	}
-	if second == first {
-		t.Errorf("still serving the removed path %q", first)
+	if second.Path == first.Path {
+		t.Errorf("still serving the removed path %q", first.Path)
 	}
-	if want := filepath.Join(newImage, "claude"); second != want {
-		t.Errorf("re-resolved path = %q, want %q", second, want)
+	if want := filepath.Join(newImage, "claude"); second.Path != want {
+		t.Errorf("re-resolved path = %q, want %q", second.Path, want)
 	}
 }
 
-// TestResolveAgentExecutablePath_VoltaAliasShadowedByHooks proves the fix
-// reaches the ~/.multica/hooks branch, which canonicalizes independently: a
+// TestResolveAgentExecutablePath_VoltaAliasShadowedByHooks proves the fix reaches
+// the ~/.multica/hooks branch, which canonicalizes independently: a
 // hooks-shadowed Volta command must skip the recursive wrapper AND still land on
 // the concrete binary.
 func TestResolveAgentExecutablePath_VoltaAliasShadowedByHooks(t *testing.T) {
@@ -345,18 +591,21 @@ func TestResolveAgentExecutablePath_VoltaAliasShadowedByHooks(t *testing.T) {
 	}
 	writeScript(t, filepath.Join(hooksDir, "claude"), "#!/bin/sh\nexec claude \"$@\"\n")
 
-	f := newVoltaFixture(t, true, "claude")
-	t.Setenv("PATH", hooksDir+string(os.PathListSeparator)+f.binDir)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", pathWithout(hooksDir, f.binDir))
 
-	got, err := resolveAgentExecutablePath("claude")
+	resolved, err := resolveAgentExecutable("claude")
 	if err != nil {
-		t.Fatalf("resolveAgentExecutablePath: %v", err)
+		t.Fatalf("resolveAgentExecutable: %v", err)
 	}
-	if filepath.Dir(got) == hooksDir {
-		t.Fatalf("resolved into the hooks dir (%q); the wrapper would recurse", got)
+	if filepath.Dir(resolved.Path) == hooksDir {
+		t.Fatalf("resolved into the hooks dir (%q); the wrapper would recurse", resolved.Path)
 	}
-	if want := f.concrete("claude"); got != want {
-		t.Errorf("path = %q, want the concrete binary %q", got, want)
+	if want := f.concrete("claude"); resolved.Path != want {
+		t.Errorf("path = %q, want the concrete binary %q", resolved.Path, want)
+	}
+	if len(resolved.PathDirs) == 0 {
+		t.Error("hooks branch dropped the Volta Node platform dir")
 	}
 }
 
@@ -414,7 +663,7 @@ func TestCanonicalExecutablePath_ExplicitShimPathStaysCanonical(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
-	f := newVoltaFixture(t, true)
+	f := newVoltaFixture(t, voltaFixtureOpts{})
 	if got := canonicalExecutablePath(f.shim()); filepath.Base(got) != voltaShimName {
 		t.Errorf("canonicalExecutablePath(%q) = %q, want it to stay volta-shim", f.shim(), got)
 	}
@@ -442,5 +691,18 @@ func TestIsVoltaShimPath(t *testing.T) {
 		if got := isVoltaShimPath(tc.path); got != tc.want {
 			t.Errorf("isVoltaShimPath(%q) = %v, want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestVoltaNonProjectDir keeps the deterministic working directory an ancestor
+// nothing can shadow: any directory with a package.json above it would let Volta
+// pick a project tool.
+func TestVoltaNonProjectDir(t *testing.T) {
+	got := voltaNonProjectDir(filepath.Join("/home", "u", ".volta", "bin", "volta"))
+	if runtime.GOOS != "windows" && got != "/" {
+		t.Errorf("voltaNonProjectDir = %q, want the filesystem root", got)
+	}
+	if got == "" {
+		t.Error("voltaNonProjectDir returned an empty directory")
 	}
 }

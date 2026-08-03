@@ -28,7 +28,7 @@ func newSelfHealTestDaemon() *Daemon {
 func stubDetectVersionFromPath(t *testing.T) {
 	t.Helper()
 	orig := detectAgentVersion
-	detectAgentVersion = func(_ context.Context, path string) (string, error) {
+	detectAgentVersion = func(_ context.Context, path string, _ []string) (string, error) {
 		return filepath.Base(filepath.Dir(filepath.Dir(path))), nil
 	}
 	t.Cleanup(func() { detectAgentVersion = orig })

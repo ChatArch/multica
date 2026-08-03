@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -342,6 +344,55 @@ func New(agentType string, cfg Config) (Backend, error) {
 // DetectVersion runs the agent CLI with --version and returns the output.
 func DetectVersion(ctx context.Context, executablePath string) (string, error) {
 	return detectCLIVersion(ctx, executablePath)
+}
+
+// DetectVersionWithPathDirs is DetectVersion with pathDirs prepended to PATH,
+// for executables that only run under a specific toolchain directory (a Volta
+// package binary needs the Node platform Volta bound to it). Callers pass the
+// same dirs they will use at launch so the gated version is the executed one.
+func DetectVersionWithPathDirs(ctx context.Context, executablePath string, pathDirs []string) (string, error) {
+	return detectCLIVersionWithPathDirs(ctx, executablePath, pathDirs)
+}
+
+// PrependPathDirs returns env with dirs prepended to its PATH entry, preserving
+// the rest of the environment. Exported so the daemon builds task environments
+// the same way the version probe does.
+func PrependPathDirs(env map[string]string, dirs []string) {
+	if len(dirs) == 0 {
+		return
+	}
+	joined := strings.Join(dirs, string(os.PathListSeparator))
+	existing := env["PATH"]
+	if existing == "" {
+		existing = os.Getenv("PATH")
+	}
+	if existing == "" {
+		env["PATH"] = joined
+		return
+	}
+	env["PATH"] = joined + string(os.PathListSeparator) + existing
+}
+
+// envWithPathDirs returns a copy of environ with dirs prepended to PATH.
+func envWithPathDirs(environ []string, dirs []string) []string {
+	if len(dirs) == 0 {
+		return environ
+	}
+	joined := strings.Join(dirs, string(os.PathListSeparator))
+	out := make([]string, 0, len(environ)+1)
+	replaced := false
+	for _, kv := range environ {
+		if name, value, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, "PATH") {
+			out = append(out, name+"="+joined+string(os.PathListSeparator)+value)
+			replaced = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !replaced {
+		out = append(out, "PATH="+joined)
+	}
+	return out
 }
 
 // launchHeaders maps each supported agent type to the user-visible skeleton

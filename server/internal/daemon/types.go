@@ -18,6 +18,14 @@ type AgentEntry struct {
 	// Daemon.resolveAgentEntry and MUL-4486.
 	Command string
 	Model   string // model override (optional)
+	// PathDirs are directories that must be prepended to PATH for this
+	// executable to run, produced by the same resolution step that produced
+	// Path. Volta package binaries are the motivating case: they are often
+	// `#!/usr/bin/env node` scripts that only work with the Node platform Volta
+	// bound to the package. Both the registration version probe and the task
+	// launch apply these, so the gated version is the executed version.
+	// Empty for the ordinary case.
+	PathDirs []string
 }
 
 // Runtime represents a registered daemon runtime.

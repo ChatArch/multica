@@ -1058,10 +1058,22 @@ func cleanupMcpConfigTemp(path string) {
 var detectVersionTimeout = 10 * time.Second
 
 func detectCLIVersion(ctx context.Context, execPath string) (string, error) {
+	return detectCLIVersionWithPathDirs(ctx, execPath, nil)
+}
+
+// detectCLIVersionWithPathDirs runs `<execPath> --version` with pathDirs
+// prepended to PATH. The probe must use the same environment the task launch
+// will, or the version this gates on is not the version that ends up running:
+// a Volta package binary is often a `#!/usr/bin/env node` script that resolves
+// a different node — or no node at all — under a different PATH.
+func detectCLIVersionWithPathDirs(ctx context.Context, execPath string, pathDirs []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, detectVersionTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, execPath, "--version")
+	if len(pathDirs) > 0 {
+		cmd.Env = envWithPathDirs(os.Environ(), pathDirs)
+	}
 	hideAgentWindow(cmd)
 	// exec.CommandContext only kills the direct child on timeout. A broken CLI
 	// (node/bun shim) can leave grandchildren that inherited and still hold our
