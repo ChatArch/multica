@@ -354,22 +354,17 @@ var issueCancelTaskCmd = &cobra.Command{
 var issueSearchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search issues by title, description, or comments",
-	Long: "Search issues in the current workspace. The query is matched against issue\n" +
-		"titles, descriptions and comment bodies. Comment bodies are searched too,\n" +
-		"so a conclusion that only ever landed in a comment thread is still findable\n" +
-		"here.\n\n" +
-		"A bare number matches the issue with that number, and so does anything\n" +
-		"shaped like an identifier: \"AGE-412\" and \"412\" both match issue 412. The\n" +
-		"number match is the same either way, but the text search still uses the\n" +
-		"query as written, so \"412\" also matches text containing \"1412\" while\n" +
-		"\"AGE-412\" does not. The prefix is not validated, so \"MUL-412\" and\n" +
-		"\"ZZZ-412\" match local issue 412 just the same. Number matches rank\n" +
-		"first, so pasting an identifier from another tracker can put an\n" +
-		"unrelated local issue at the top of the results.\n\n" +
-		"Each result carries a match_source of \"title\", \"description\" or \"comment\",\n" +
-		"shown in the MATCH column and returned by --output json. It reports the\n" +
-		"strongest field that matched, and \"comment\" is also the fallback for a\n" +
-		"number-only match, so treat it as a display hint rather than a filter.",
+	Long: "Search issues in the current workspace. The query matches issue titles,\n" +
+		"descriptions, and comment bodies, so a conclusion that only lives in a\n" +
+		"comment thread is still findable.\n\n" +
+		"A bare number or an identifier-shaped query (\"412\", \"AGE-412\") matches\n" +
+		"the issue with that number. The prefix is not validated, and number\n" +
+		"matches rank first, so pasting an identifier from another tracker can\n" +
+		"put an unrelated local issue at the top of the results.\n\n" +
+		"The MATCH column (match_source in --output json) reports the strongest\n" +
+		"field that matched — title, description, or comment — and falls back to\n" +
+		"\"comment\" for a number-only hit. Treat it as a display hint, not a\n" +
+		"filter.",
 	Args: cobra.ExactArgs(1),
 	RunE: runIssueSearch,
 }
