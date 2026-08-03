@@ -3,6 +3,7 @@ package execenv
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -2438,6 +2439,173 @@ func TestPrepareCodexHomeReportsMissingModelCatalogPath(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err, want)
 		}
+	}
+}
+
+// Regression test for MUL-5623 / #6271 — a user-level
+// `model_instructions_file = "./gpt-unrestricted.md"` survived the copy into the
+// per-task CODEX_HOME while the file it names did not, so Codex failed loading
+// its configuration before the task prompt was delivered.
+func TestPrepareCodexHomeCopiesRelativeModelInstructionsFile(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "./gpt-unrestricted.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "gpt-unrestricted.md"), []byte("Be direct."), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "gpt-unrestricted.md"))
+	if err != nil {
+		t.Fatalf("read per-task instructions: %v", err)
+	}
+	if string(data) != "Be direct." {
+		t.Errorf("per-task instructions = %q", data)
+	}
+
+	// The copy must be isolated: a task editing its instructions cannot reach
+	// back into the user's real Codex home.
+	if err := os.WriteFile(filepath.Join(codexHome, "gpt-unrestricted.md"), []byte("tampered"), 0o644); err != nil {
+		t.Fatalf("rewrite per-task instructions: %v", err)
+	}
+	shared, err := os.ReadFile(filepath.Join(sharedHome, "gpt-unrestricted.md"))
+	if err != nil {
+		t.Fatalf("read shared instructions: %v", err)
+	}
+	if string(shared) != "Be direct." {
+		t.Errorf("shared instructions mutated by task: %q", shared)
+	}
+}
+
+// A nested reference must land at the same relative location inside the task
+// home. The path is built with filepath.Join so Windows exercises its own
+// separator, and the TOML literal string keeps that backslash verbatim.
+func TestPrepareCodexHomeCopiesNestedDeprecatedInstructionsFile(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	rel := filepath.Join("prompts", "unrestricted.md")
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(fmt.Sprintf("experimental_instructions_file = '%s'", rel)), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sharedHome, "prompts"), 0o755); err != nil {
+		t.Fatalf("create shared prompts dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, rel), []byte("Nested."), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, rel))
+	if err != nil {
+		t.Fatalf("read per-task instructions: %v", err)
+	}
+	if string(data) != "Nested." {
+		t.Errorf("per-task instructions = %q", data)
+	}
+}
+
+// A missing source must fail while preparing the environment, with a diagnostic
+// naming the key and both paths — not as an opaque `os error 2` from Codex's own
+// configuration loading, after the task has already been launched.
+func TestPrepareCodexHomeReportsMissingModelInstructionsFile(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "missing-instructions.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	err := prepareCodexHome(codexHome, testLogger())
+	if err == nil {
+		t.Fatal("expected prepareCodexHome to fail for missing model instructions file")
+	}
+	for _, want := range []string{"model_instructions_file", "missing-instructions.md", filepath.Join(sharedHome, "missing-instructions.md")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// A relative reference that escapes the task home is rejected rather than
+// copied: honoring it would let any user config name an arbitrary host file and
+// have the daemon materialise it inside the task environment.
+func TestPrepareCodexHomeRejectsEscapingModelInstructionsFile(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	root := t.TempDir()
+	sharedHome := filepath.Join(root, "shared")
+	if err := os.MkdirAll(sharedHome, 0o755); err != nil {
+		t.Fatalf("create shared home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "../secrets.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secrets.md"), []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write escaping source: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	err := prepareCodexHome(codexHome, testLogger())
+	if err == nil {
+		t.Fatal("expected prepareCodexHome to reject an escaping model instructions path")
+	}
+	if !strings.Contains(err.Error(), "model_instructions_file") {
+		t.Fatalf("error %q does not name the offending key", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(codexHome), "secrets.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("escaping source was materialised outside the task home: %v", statErr)
+	}
+}
+
+// A reused task home must reflect the user's current instructions instead of
+// serving the snapshot an earlier run copied.
+func TestPrepareCodexHomeRefreshesModelInstructionsFileOnReuse(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "instructions-override.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	source := filepath.Join(sharedHome, "instructions-override.md")
+	if err := os.WriteFile(source, []byte("first"), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("first prepareCodexHome failed: %v", err)
+	}
+	if err := os.WriteFile(source, []byte("second"), 0o644); err != nil {
+		t.Fatalf("update shared instructions: %v", err)
+	}
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("second prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "instructions-override.md"))
+	if err != nil {
+		t.Fatalf("read per-task instructions: %v", err)
+	}
+	if string(data) != "second" {
+		t.Errorf("per-task instructions = %q, want the refreshed source", data)
 	}
 }
 

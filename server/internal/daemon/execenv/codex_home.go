@@ -246,8 +246,8 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		logger.Warn("execenv: codex-home sanitize config failed", "error", err)
 	}
 
-	if err := syncCodexModelCatalog(codexHome, sharedHome); err != nil {
-		return fmt.Errorf("sync codex model_catalog_json: %w", err)
+	if err := syncCodexReferencedFiles(codexHome, sharedHome); err != nil {
+		return fmt.Errorf("sync codex config file references: %w", err)
 	}
 
 	// Seed the shared model cache only for a fresh task home. On reuse, keep a
@@ -821,7 +821,21 @@ func linkCodexRollout(src, dst string) error {
 	return os.Symlink(src, dst)
 }
 
-func syncCodexModelCatalog(codexHome, sharedHome string) error {
+// syncCodexReferencedFiles materialises every file the copied config.toml
+// points at inside the per-task CODEX_HOME.
+//
+// config.toml is copied verbatim, so its path-valued keys survive the move to
+// the task home while the files they name do not. Codex resolves a relative
+// value against CODEX_HOME, which is now the task home, so an unmaterialised
+// reference makes Codex fail while loading its configuration — before the task
+// prompt is ever delivered (MUL-5623 / #6271: `failed to read model
+// instructions file <task-home>/gpt-unrestricted.md`).
+//
+// Only the keys listed below are followed. Copying every path a config could
+// mention would turn any user config into a channel for pulling arbitrary host
+// files into a task sandbox, and copying the whole shared home would drag
+// auth.json and the machine's session history along with it.
+func syncCodexReferencedFiles(codexHome, sharedHome string) error {
 	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
@@ -833,43 +847,78 @@ func syncCodexModelCatalog(codexHome, sharedHome string) error {
 
 	var cfg struct {
 		ModelCatalogJSON string `toml:"model_catalog_json"`
+		// Replacement for Codex's built-in instructions.
+		// experimental_instructions_file is the deprecated alias Codex still
+		// accepts, so configs written before the rename need it too.
+		ModelInstructionsFile        string `toml:"model_instructions_file"`
+		ExperimentalInstructionsFile string `toml:"experimental_instructions_file"`
 	}
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse %s: %w", configPath, err)
 	}
-	catalogPath := strings.TrimSpace(cfg.ModelCatalogJSON)
-	if catalogPath == "" {
+
+	for _, ref := range []struct{ key, path string }{
+		{"model_catalog_json", cfg.ModelCatalogJSON},
+		{"model_instructions_file", cfg.ModelInstructionsFile},
+		{"experimental_instructions_file", cfg.ExperimentalInstructionsFile},
+	} {
+		if err := syncCodexReferencedFile(codexHome, sharedHome, ref.key, ref.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// syncCodexReferencedFile copies one config-referenced file from the shared
+// Codex home into the task home at the same relative location, so the copied
+// config.toml keeps resolving under the relocated CODEX_HOME.
+//
+// Absolute and ~-rooted values are left alone: they address the same host the
+// task runs on, so Codex reads them directly and copying would only risk
+// serving a stale snapshot. A relative value must stay inside the task home
+// (filepath.IsLocal) — a `..` escape would otherwise let config.toml name any
+// file on the host and have the daemon copy it into the task environment.
+//
+// The copy is refreshed on every prepare, so reusing a task home picks up an
+// edited source instead of keeping a stale instruction file.
+func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) error {
+	referencedPath := strings.TrimSpace(configValue)
+	if referencedPath == "" {
 		return nil
 	}
 
-	src, err := resolveCodexConfigPath(catalogPath, sharedHome)
+	src, err := resolveCodexConfigPath(referencedPath, sharedHome, key)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("model_catalog_json %q resolved to missing file %s: %w", catalogPath, src, err)
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("%s %q resolved to missing file %s: %w", key, referencedPath, src, err)
 	}
 
-	if filepath.IsAbs(catalogPath) || strings.HasPrefix(catalogPath, "~") {
+	if filepath.IsAbs(referencedPath) || strings.HasPrefix(referencedPath, "~") {
 		return nil
 	}
-	cleanCatalogPath := filepath.Clean(catalogPath)
-	if !filepath.IsLocal(cleanCatalogPath) {
-		return fmt.Errorf("model_catalog_json %q must be a local relative path or an absolute path", catalogPath)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %q resolved to %s, which is not a regular file", key, referencedPath, src)
 	}
-	dst := filepath.Join(codexHome, cleanCatalogPath)
+	cleanReferencedPath := filepath.Clean(referencedPath)
+	if !filepath.IsLocal(cleanReferencedPath) {
+		return fmt.Errorf("%s %q must be a local relative path or an absolute path", key, referencedPath)
+	}
+	dst := filepath.Join(codexHome, cleanReferencedPath)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create model catalog directory %s: %w", filepath.Dir(dst), err)
+		return fmt.Errorf("create %s directory %s: %w", key, filepath.Dir(dst), err)
 	}
 	if _, err := os.Lstat(dst); err == nil {
 		if err := os.Remove(dst); err != nil {
-			return fmt.Errorf("remove stale model catalog %s: %w", dst, err)
+			return fmt.Errorf("remove stale %s copy %s: %w", key, dst, err)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat model catalog %s: %w", dst, err)
+		return fmt.Errorf("stat %s copy %s: %w", key, dst, err)
 	}
 	if err := copyFile(src, dst); err != nil {
-		return fmt.Errorf("copy model_catalog_json %s to %s: %w", src, dst, err)
+		return fmt.Errorf("copy %s %s to %s: %w", key, src, dst, err)
 	}
 	return nil
 }
@@ -972,7 +1021,7 @@ func codexModelsCacheConfigFingerprint(sharedHome string) (string, error) {
 		}
 		catalogPath := strings.TrimSpace(cfg.ModelCatalogJSON)
 		if catalogPath != "" {
-			resolved, err := resolveCodexConfigPath(catalogPath, sharedHome)
+			resolved, err := resolveCodexConfigPath(catalogPath, sharedHome, "model_catalog_json")
 			if err != nil {
 				return "", err
 			}
@@ -1030,19 +1079,25 @@ func writeCodexModelsCacheBinding(path, fingerprint string) error {
 	return nil
 }
 
-func resolveCodexConfigPath(configPath, sharedHome string) (string, error) {
+// resolveCodexConfigPath maps a path-valued config.toml entry to its source
+// file on this host. key is the config key the path came from and only shapes
+// the diagnostics, so an operator reading a failure knows which setting to fix.
+// A relative path resolves against the shared Codex home — that is the
+// directory the config was copied from, and the base Codex itself would have
+// used before the per-task home relocated CODEX_HOME.
+func resolveCodexConfigPath(configPath, sharedHome, key string) (string, error) {
 	if filepath.IsAbs(configPath) {
 		return filepath.Clean(configPath), nil
 	}
 	if strings.HasPrefix(configPath, "~/") || strings.HasPrefix(configPath, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve model_catalog_json %q: user home: %w", configPath, err)
+			return "", fmt.Errorf("resolve %s %q: user home: %w", key, configPath, err)
 		}
 		return filepath.Join(home, configPath[2:]), nil
 	}
 	if strings.HasPrefix(configPath, "~") {
-		return "", fmt.Errorf("model_catalog_json %q uses unsupported ~user expansion", configPath)
+		return "", fmt.Errorf("%s %q uses unsupported ~user expansion", key, configPath)
 	}
 	return filepath.Join(sharedHome, filepath.Clean(configPath)), nil
 }
