@@ -161,7 +161,7 @@ type AgentBuilderSessionSummary struct {
 	LastMessageRole    string `json:"last_message_role"`
 	LastMessageAt      string `json:"last_message_at"`
 	// Draft is the stored configuration, opaque to the server (see migration
-	// 251). It ships with the list rather than behind its own fetch because the
+	// 252). It ships with the list rather than behind its own fetch because the
 	// studio renders this list beside the conversation it switches between, so
 	// the picked row's configuration must be in hand at click time. Null when
 	// the conversation has only ever been driven by the AI — the client then
@@ -230,7 +230,7 @@ type SaveAgentBuilderDraftRequest struct {
 // SaveAgentBuilderDraft stores the configuration a creation conversation has
 // arrived at, including the edits the user typed but has not sent.
 //
-// The payload is opaque (see migration 251): its shape is the studio's
+// The payload is opaque (see migration 252): its shape is the studio's
 // AgentDraft, validated client-side, and nothing server-side reads a field.
 // Whole-object last-write-wins is correct here because a conversation has one
 // editor on one screen — a field-level merge could only reconstruct a state the

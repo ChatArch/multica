@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -77,23 +78,48 @@ export function useBuilderDraftSync(options: {
     setRestored(true);
   }, [restored, runtimeId, sessionId, setDraft, stored, storedSettled]);
 
+  // What the debounce is holding, so the unmount below can send it. Without
+  // this, navigating away inside the debounce window silently dropped the last
+  // edits — the exact keystrokes the user is most likely to have just made.
+  const pendingRef = useRef<StoredAgentDraft | null>(null);
+  const save = useCallback(
+    (next: StoredAgentDraft) => {
+      savedRef.current = next;
+      pendingRef.current = null;
+      void api.saveAgentBuilderDraft(sessionId, next).catch(() => {
+        // Best-effort: the next edit retries, and one lost write costs the user
+        // nothing they can see. An error banner here would interrupt typing for
+        // something that self-heals.
+        savedRef.current = null;
+      });
+    },
+    [sessionId],
+  );
+  // Read through a ref by the unmount effect below, which must not re-run — and
+  // therefore must not depend on anything.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
   useEffect(() => {
     if (!sessionId || !restored) return;
     const next = toStoredAgentDraft(draft, appliedMessageIdRef.current);
     if (savedRef.current && storedAgentDraftsEqual(savedRef.current, next)) {
       return;
     }
-    const timer = setTimeout(() => {
-      savedRef.current = next;
-      void api.saveAgentBuilderDraft(sessionId, next).catch(() => {
-        // Autosave is best-effort: the next edit retries, and losing one write
-        // costs the user nothing they can see. Surfacing an error banner here
-        // would interrupt typing for something that self-heals.
-        savedRef.current = null;
-      });
-    }, AUTOSAVE_DELAY_MS);
+    pendingRef.current = next;
+    const timer = setTimeout(() => save(next), AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [draft, restored, sessionId]);
+  }, [draft, restored, save, sessionId]);
+
+  // Unmount is the deadline: a tab switch, a route change or a session switch
+  // all tear this down, and the debounce timer dies with it.
+  useEffect(
+    () => () => {
+      const pending = pendingRef.current;
+      if (pending) saveRef.current(pending);
+    },
+    [],
+  );
 
   return {
     restored,

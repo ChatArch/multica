@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useManualAgentDraftStore } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
@@ -14,7 +15,7 @@ import { AgentCreateChip, AgentCreateShell } from "./create-shell";
 import { useCreateAgentForm } from "./use-create-agent-form";
 import { useCreateAgentSubmit } from "./use-create-agent-submit";
 import { useDuplicateDraftSeed } from "./use-duplicate-draft-seed";
-import { useUnsavedDraftWarning } from "./use-unsaved-draft-warning";
+import { useManualDraftSync } from "./use-manual-draft-sync";
 
 /**
  * Manual agent creation: every field filled in by hand.
@@ -40,6 +41,10 @@ export function ManualCreateAgentPage() {
   // True when a duplicate had to fall back to another runtime, which drops the
   // source's model / thinking / speed. The notice explains the empty fields.
   const [duplicateRuntimeReset, setDuplicateRuntimeReset] = useState(false);
+  // A duplicate seeds asynchronously (it waits for the runtime query). Saving
+  // before that lands would persist the empty form the seed is about to
+  // replace, and restoring before it would be undone a tick later.
+  const [duplicateSeeded, setDuplicateSeeded] = useState(false);
 
   useDuplicateDraftSeed({
     source: duplicateAgent,
@@ -57,26 +62,32 @@ export function ManualCreateAgentPage() {
       // is the user's own doing and needs no explanation.
       setDuplicateRuntimeReset(runtimeReset);
       form.setDraft(duplicated);
+      setDuplicateSeeded(true);
     },
   });
 
+  // What #6287 reported: the desktop shell mounts only the active tab, so
+  // coming back from another tab is a remount and everything typed was gone.
+  useManualDraftSync({
+    duplicateId,
+    draft: form.draft,
+    setDraft: form.setDraft,
+    ready: !duplicateId || duplicateSeeded,
+  });
+
+  const clearManualDraft = useManualAgentDraftStore((state) => state.clearDraft);
   const submit = useCreateAgentSubmit({
     draft: form.draft,
     runtimeId: form.selectedRuntime?.id ?? null,
     squadId,
     duplicateSource: duplicateAgent,
+    // The work is committed; leaving it stored would hand the finished agent's
+    // fields to whoever opens this form next.
+    onCreated: () => clearManualDraft(),
   });
 
   const canCreate =
     form.draft.name.trim().length > 0 && form.draftReady && !submit.creating;
-
-  useUnsavedDraftWarning(
-    !submit.creating &&
-      (form.draft.name.trim().length > 0 ||
-        form.draft.description.trim().length > 0 ||
-        form.draft.instructions.trim().length > 0 ||
-        form.draft.skillIds.size > 0),
-  );
 
   return (
     <AgentCreateShell

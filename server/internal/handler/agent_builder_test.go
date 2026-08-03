@@ -591,10 +591,9 @@ func TestListAgentBuilderSessionsFollowsARuntimeSwitch(t *testing.T) {
 	t.Fatalf("builder session %s missing from the list", session.SessionID)
 }
 
-// A session opened and abandoned before the first turn is not a draft. Listing
-// it would put an empty row in front of the user on every accidental entry into
-// the creation flow.
-func TestListAgentBuilderSessionsSkipsConversationsWithNoMessages(t *testing.T) {
+// A session opened and abandoned untouched is not a draft. Listing it would put
+// an empty row in front of the user on every accidental entry into the flow.
+func TestListAgentBuilderSessionsSkipsUntouchedConversations(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -602,9 +601,36 @@ func TestListAgentBuilderSessionsSkipsConversationsWithNoMessages(t *testing.T) 
 
 	for _, summary := range listBuilderSessions(t).Sessions {
 		if summary.SessionID == session.SessionID {
-			t.Fatalf("empty builder session %s must not be listed", session.SessionID)
+			t.Fatalf("untouched builder session %s must not be listed", session.SessionID)
 		}
 	}
+}
+
+// The configuration form is editable from the moment the session exists and
+// autosaves, so a user can open the builder, type a name and leave before the
+// first turn. Keying "is this a draft" on messages alone made that work
+// unreachable: the row existed and nothing could reach it.
+func TestListAgentBuilderSessionsIncludesASavedDraftWithNoMessages(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	session := newBuilderSession(t)
+	saveBuilderDraft(t, session.SessionID, map[string]any{"name": "Typed but never sent"})
+
+	for _, summary := range listBuilderSessions(t).Sessions {
+		if summary.SessionID != session.SessionID {
+			continue
+		}
+		if summary.LastMessageContent != "" || summary.LastMessageRole != "" {
+			t.Fatalf("expected an empty last message, got %q/%q",
+				summary.LastMessageRole, summary.LastMessageContent)
+		}
+		if summary.RuntimeID != testRuntimeID {
+			t.Fatalf("runtime_id = %q, want the carrier's runtime %q", summary.RuntimeID, testRuntimeID)
+		}
+		return
+	}
+	t.Fatalf("builder session %s with a saved draft is missing from the list", session.SessionID)
 }
 
 // Ordinary chats must never leak into the creation-draft list: their carrier is

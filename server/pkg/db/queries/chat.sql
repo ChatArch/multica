@@ -92,9 +92,15 @@ ORDER BY (cs.pinned_at IS NOT NULL) DESC, cs.pinned_at DESC, COALESCE(lm.created
 -- would put the picker on a runtime that no longer executes anything — the
 -- exact split MUL-5163 removed.
 --
--- The INNER join on lm drops sessions with no messages: a conversation opened
--- and abandoned before the first turn is not a draft, and listing it would put
--- an empty row in front of the user for every accidental entry into the flow.
+-- A conversation qualifies once it holds something the user would miss: a
+-- message, or a saved configuration. Requiring a message alone was wrong — the
+-- form on the right is editable from the moment the session exists and
+-- autosaves, so someone can open the builder, type a name, and leave before the
+-- first turn. That session has real work in it and was unreachable. Requiring
+-- neither is also wrong: a session opened and abandoned untouched is not a
+-- draft, and would put an empty row in front of the user on every accidental
+-- entry into the flow.
+--
 -- The stored draft rides along instead of needing its own fetch: the studio
 -- renders this list beside the conversation it is switching between, so the
 -- configuration for the row the user picks has to be in hand at click time.
@@ -105,14 +111,14 @@ SELECT cs.id,
        cs.created_at,
        cs.updated_at,
        a.runtime_id,
-       lm.content AS last_message_content,
-       lm.role AS last_message_role,
+       COALESCE(lm.content, '') AS last_message_content,
+       COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
        d.draft AS stored_draft
 FROM chat_session cs
 JOIN agent a ON a.id = cs.agent_id
 LEFT JOIN agent_builder_draft d ON d.chat_session_id = cs.id
-JOIN LATERAL (
+LEFT JOIN LATERAL (
   SELECT content, role, created_at
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
@@ -124,7 +130,10 @@ WHERE cs.workspace_id = $1
   AND cs.status = 'active'
   AND a.kind = 'system'
   AND a.system_key LIKE 'agent_builder:%'
-ORDER BY lm.created_at DESC;
+  AND (lm.created_at IS NOT NULL OR d.chat_session_id IS NOT NULL)
+-- A draft-only session has no message to sort by; fall back to when its
+-- configuration was last written so it still lands in activity order.
+ORDER BY COALESCE(lm.created_at, d.updated_at, cs.updated_at) DESC;
 
 -- name: UpdateChatSessionTitle :one
 UPDATE chat_session SET title = $2, updated_at = now()
