@@ -1706,3 +1706,95 @@ describe("ApiClient unsubscribe endpoints", () => {
     ).rejects.toBeInstanceOf(ApiError);
   });
 });
+
+// Runtime capability discovery feeds the agent MCP tab's security copy, so a
+// malformed body must degrade to an explicit failure that asserts NO MCP
+// boundary — never a fabricated guarantee (GitHub #6283).
+describe("ApiClient runtime capability discovery", () => {
+  function stubJSON(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  }
+
+  it("degrades a malformed initiate response to an explicit failure", async () => {
+    stubJSON({ status: 7, skills: "nope" });
+
+    const result = await new ApiClient(
+      "https://api.example.test",
+    ).initiateListLocalSkills("rt-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.authoritative_mcp).toBe(false);
+    expect(result.mcp_supported).toBe(false);
+    expect(result.error).toBe("invalid runtime capability response");
+    expect(result.runtime_id).toBe("rt-1");
+  });
+
+  it("degrades a malformed poll response to an explicit failure", async () => {
+    stubJSON("not-an-object");
+
+    const result = await new ApiClient(
+      "https://api.example.test",
+    ).getListLocalSkillsResult("rt-1", "req-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.authoritative_mcp).toBe(false);
+    expect(result.id).toBe("req-1");
+    expect(result.runtime_id).toBe("rt-1");
+  });
+
+  // An older daemon omits the flag entirely; the response is otherwise valid and
+  // must stay usable, with the flag reading false.
+  it("keeps an older daemon's response usable with authoritative_mcp false", async () => {
+    stubJSON({
+      id: "req-1",
+      runtime_id: "rt-1",
+      status: "completed",
+      supported: true,
+      skills: [],
+      mcp_servers: [
+        { name: "linear", transport: "http", enabled: true },
+      ],
+      mcp_supported: true,
+      created_at: "",
+      updated_at: "",
+    });
+
+    const result = await new ApiClient(
+      "https://api.example.test",
+    ).getListLocalSkillsResult("rt-1", "req-1");
+
+    expect(result.status).toBe("completed");
+    expect(result.mcp_supported).toBe(true);
+    expect(result.authoritative_mcp).toBe(false);
+    expect(result.mcp_servers?.[0]?.name).toBe("linear");
+  });
+
+  it("passes a current daemon's authoritative_mcp through", async () => {
+    stubJSON({
+      id: "req-1",
+      runtime_id: "rt-1",
+      status: "completed",
+      supported: true,
+      skills: [],
+      mcp_servers: [],
+      mcp_supported: true,
+      authoritative_mcp: true,
+      created_at: "",
+      updated_at: "",
+    });
+
+    const result = await new ApiClient(
+      "https://api.example.test",
+    ).getListLocalSkillsResult("rt-1", "req-1");
+
+    expect(result.authoritative_mcp).toBe(true);
+  });
+});

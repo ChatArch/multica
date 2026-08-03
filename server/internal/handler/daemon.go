@@ -31,6 +31,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // ---------------------------------------------------------------------------
@@ -1668,23 +1669,35 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// servers underneath this agent's managed set, handing the agent tools
 		// the operator explicitly scoped out (GitHub #6283). Running the task
 		// anyway is the vulnerability, and the UI cannot honestly report the
-		// boundary either, so cancel rather than silently widen.
-		if mcpConfigNeedsAuthoritativeDaemon(mcpConfig, agent.RuntimeConfig) &&
+		// boundary either.
+		//
+		// FailTask rather than CancelTask, because the default claim path is the
+		// machine-level BATCH endpoint, which skips build failures and still
+		// answers 200 {"tasks":[]} — a bare cancel would show the operator a
+		// task that vanished for no stated reason. The classified failure
+		// reason + message are stored on the task, so the upgrade requirement
+		// reaches the user on every claim path and on any daemon version. The
+		// reason is not auto-retryable: the same outdated daemon would claim the
+		// retry and fail it again.
+		if mcpConfigNeedsAuthoritativeDaemon(runtime.Provider, mcpConfig, agent.RuntimeConfig) &&
 			!requestHasClientCapability(r, protocol.DaemonCapabilityAuthoritativeMcpV1) {
-			slog.Error("task claim: daemon predates authoritative mcp_config; cancelling task instead of widening the agent's MCP tools",
+			slog.Error("task claim: daemon predates authoritative mcp_config; failing task instead of widening the agent's MCP tools",
 				"task_id", uuidToString(task.ID),
 				"agent_id", uuidToString(agent.ID),
 				"runtime_id", runtimeID,
+				"provider", runtime.Provider,
 				"required_capability", protocol.DaemonCapabilityAuthoritativeMcpV1,
 			)
-			if _, cerr := h.TaskService.CancelTask(r.Context(), task.ID); cerr != nil {
-				slog.Error("task claim: cancel after authoritative mcp_config check failed",
-					"task_id", uuidToString(task.ID), "error", cerr)
+			if _, ferr := h.TaskService.FailTask(r.Context(), task.ID,
+				mcpConfigDaemonOutdatedMessage, "", "",
+				string(taskfailure.ReasonMcpConfigDaemonOutdated), false, ""); ferr != nil {
+				slog.Error("task claim: fail after authoritative mcp_config check failed",
+					"task_id", uuidToString(task.ID), "error", ferr)
 			}
 			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
 				outcome: "error_mcp_config_daemon_outdated",
 				status:  http.StatusPreconditionFailed,
-				message: "this agent has a managed mcp_config, which requires a daemon that enforces it as an authoritative allowlist; upgrade the local daemon, or set runtime_config.mcp.inherit_runtime=true to accept the runtime host's MCP servers as well",
+				message: mcpConfigDaemonOutdatedMessage,
 			}
 		}
 		// Layer the per-task overlay (set at enqueue from the initiator

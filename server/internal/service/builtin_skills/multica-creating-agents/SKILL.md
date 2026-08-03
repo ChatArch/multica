@@ -246,9 +246,14 @@ multica agent update <agent-id> --runtime-config '{"mcp":{"inherit_runtime":true
 
 Enforcement lives in the **daemon**. The claim path refuses to hand a
 strictly-scoped task to a daemon that does not advertise the
-`authoritative-mcp-v1` capability — it cancels the task with a 412 rather than
-let an older daemon merge the host's servers in. Upgrade the daemon, or set
+`authoritative-mcp-v1` capability: the task is failed with reason
+`mcp_config_daemon_outdated` and an actionable message, rather than letting an
+older daemon merge the host's servers in. Upgrade the daemon, or set
 `inherit_runtime` to accept the wider surface deliberately.
+
+The gate is scoped to the providers whose older daemons actually merged host MCP
+(`claude`, `codebuddy`, `codex`, `cursor`, `opencode`, `openclaw`). Qwen Code was
+never merged and already had strict semantics, so its tasks are never gated.
 
 Two ways `mcp_config` differs from `custom_env`:
 

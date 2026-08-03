@@ -5,32 +5,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
+
+// mcpConfigDaemonOutdatedMessage is stored on the failed task AND returned on
+// the per-runtime claim path, so the operator reads the same actionable text
+// wherever they see the failure. Names both remedies: upgrading is the fix,
+// inherit_runtime is the honest opt-out (it declares that the host's MCP servers
+// are acceptable for this agent).
+const mcpConfigDaemonOutdatedMessage = "this agent has a managed mcp_config, which requires a daemon that enforces it as an authoritative allowlist; upgrade the local daemon, or set runtime_config.mcp.inherit_runtime=true to accept the runtime host's MCP servers as well"
+
+// providersOldDaemonsMergedRuntimeMcp are the providers whose pre-#6283 daemon
+// merged the runtime host's own MCP servers into a managed mcp_config — i.e. the
+// only providers where an outdated daemon can widen the agent's tool surface.
+//
+// Mirrors the provider switch in daemon.loadRuntimeMcpServerConfigs. Providers
+// absent from that switch (notably qwen) were never merged and already had
+// strict semantics, so gating them would cancel tasks that carry no risk. Keep
+// the two lists in lockstep: adding runtime MCP discovery for a new provider
+// must add it here too.
+var providersOldDaemonsMergedRuntimeMcp = map[string]bool{
+	"claude":    true,
+	"codebuddy": true,
+	"codex":     true,
+	"cursor":    true,
+	"opencode":  true,
+	"openclaw":  true,
+}
 
 // mcpConfigNeedsAuthoritativeDaemon reports whether handing this agent's
 // mcp_config to a daemon that predates DaemonCapabilityAuthoritativeMcpV1 would
 // widen the agent's tool surface beyond what the operator configured.
 //
-// True only when the agent itself saved a managed config OBJECT and has not
-// opted into inheriting the host's servers. In that case an old daemon merges
-// the runtime host's own MCP servers underneath the managed set — the GitHub
-// #6283 vulnerability — so the claim must fail closed instead of running the
-// agent with tools the operator believes are excluded.
+// True only when all of the following hold:
 //
-// False when:
+//   - The agent itself saved a managed config OBJECT. Only an object can carry
+//     `mcpServers`, so a non-object (array or primitive) expresses no boundary.
+//     An old daemon does not widen one either: mergeRuntimeAndAgentMcpConfig
+//     fails to unmarshal it and falls back to the agent config alone.
+//   - The agent has NOT opted into inheriting the host's servers via
+//     runtime_config.mcp.inherit_runtime. That opt-in means the merge is exactly
+//     what the operator asked for, so an old daemon already matches intent — and
+//     it doubles as the documented escape hatch for an operator who cannot
+//     upgrade the daemon yet.
+//   - The runtime's provider is one an old daemon actually merged for. A stale
+//     qwen daemon, for example, never merged host MCP, so failing its claims
+//     would be a pure false positive.
 //
-//   - The agent has no config of its own: nothing to widen, the host's servers
-//     were always in scope.
-//   - runtime_config.mcp.inherit_runtime is set: the merge is exactly what the
-//     operator asked for, so an old daemon already matches intent. That opt-in
-//     doubles as the documented escape hatch for an operator who cannot upgrade
-//     the daemon yet.
-//   - The config is not a JSON object (an array or a primitive). Only an object
-//     can carry `mcpServers`, so a non-object expresses no boundary to protect.
-//     An old daemon does not widen it either: mergeRuntimeAndAgentMcpConfig
-//     fails to unmarshal it and falls back to the agent config alone. Gating
-//     these would block tasks with no security benefit.
-func mcpConfigNeedsAuthoritativeDaemon(agentMcpConfig, runtimeConfig json.RawMessage) bool {
+// An unknown/empty provider is treated as NOT merging: the gate only fires where
+// we can point at the concrete old behaviour it protects against.
+func mcpConfigNeedsAuthoritativeDaemon(provider string, agentMcpConfig, runtimeConfig json.RawMessage) bool {
+	if !providersOldDaemonsMergedRuntimeMcp[strings.TrimSpace(strings.ToLower(provider))] {
+		return false
+	}
 	if !isManagedMcpConfigObject(agentMcpConfig) {
 		return false
 	}

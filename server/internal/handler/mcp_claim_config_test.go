@@ -128,6 +128,28 @@ func TestResolveClaimMcpConfigBadOverlayWithNoAgentConfigYieldsNil(t *testing.T)
 // the claim path must refuse rather than run the agent with tools the operator
 // scoped out (GitHub #6283).
 
+// The gate must only fire for providers whose pre-#6283 daemon actually merged
+// host MCP. qwen was never in that switch and already had strict semantics, so
+// gating it would cancel tasks that carry no risk at all.
+func TestMcpConfigNeedsAuthoritativeDaemonOnlyForMergingProviders(t *testing.T) {
+	t.Parallel()
+
+	managed := json.RawMessage(`{"mcpServers":{"a":{"command":"a"}}}`)
+
+	for _, provider := range []string{"claude", "codebuddy", "codex", "cursor", "opencode", "openclaw", "CLAUDE", " claude "} {
+		if !mcpConfigNeedsAuthoritativeDaemon(provider, managed, nil) {
+			t.Fatalf("provider %q merged host MCP before the fix and must gate", provider)
+		}
+	}
+	// qwen is deliberately absent from the merge switch; unknown providers fail
+	// to the same non-gating side because we cannot point at old behaviour.
+	for _, provider := range []string{"qwen", "", "hermes", "something-new"} {
+		if mcpConfigNeedsAuthoritativeDaemon(provider, managed, nil) {
+			t.Fatalf("provider %q never merged host MCP and must not gate", provider)
+		}
+	}
+}
+
 func TestMcpConfigNeedsAuthoritativeDaemonForManagedConfigs(t *testing.T) {
 	t.Parallel()
 
@@ -136,7 +158,7 @@ func TestMcpConfigNeedsAuthoritativeDaemonForManagedConfigs(t *testing.T) {
 		json.RawMessage(`{"mcpServers":{"a":{"command":"a"}}}`),
 		json.RawMessage(`{}`),
 	} {
-		if !mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+		if !mcpConfigNeedsAuthoritativeDaemon("claude", agentCfg, nil) {
 			t.Fatalf("managed config %q must require an authoritative daemon", string(agentCfg))
 		}
 	}
@@ -148,7 +170,7 @@ func TestMcpConfigNeedsAuthoritativeDaemonSkipsUnmanaged(t *testing.T) {
 	// Nothing to widen: the host's servers were always in scope for an agent
 	// with no config of its own.
 	for _, agentCfg := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage(" null ")} {
-		if mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+		if mcpConfigNeedsAuthoritativeDaemon("claude", agentCfg, nil) {
 			t.Fatalf("unmanaged config %q must not gate the claim", string(agentCfg))
 		}
 	}
@@ -168,7 +190,7 @@ func TestMcpConfigNeedsAuthoritativeDaemonSkipsNonObjectConfigs(t *testing.T) {
 		json.RawMessage(`7`),
 		json.RawMessage(`true`),
 	} {
-		if mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+		if mcpConfigNeedsAuthoritativeDaemon("claude", agentCfg, nil) {
 			t.Fatalf("non-object config %q must not gate the claim", string(agentCfg))
 		}
 	}
@@ -181,6 +203,7 @@ func TestMcpConfigNeedsAuthoritativeDaemonSkipsExplicitInherit(t *testing.T) {
 	t.Parallel()
 
 	if mcpConfigNeedsAuthoritativeDaemon(
+		"claude",
 		json.RawMessage(`{"mcpServers":{"a":{"command":"a"}}}`),
 		json.RawMessage(`{"mcp":{"inherit_runtime":true}}`),
 	) {
@@ -200,7 +223,7 @@ func TestMcpConfigNeedsAuthoritativeDaemonFailsClosedOnBadRuntimeConfig(t *testi
 		json.RawMessage(`{"mcp":{"inherit_runtime":true}`),    // truncated
 		json.RawMessage(`{"mode":"gateway"}`),
 	} {
-		if !mcpConfigNeedsAuthoritativeDaemon(managed, rc) {
+		if !mcpConfigNeedsAuthoritativeDaemon("claude", managed, rc) {
 			t.Fatalf("runtime_config %q must not count as an inherit opt-in", string(rc))
 		}
 	}

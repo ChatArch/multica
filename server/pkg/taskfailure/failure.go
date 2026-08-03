@@ -111,6 +111,21 @@ const (
 	// taskRunFailureReason in daemon/daemon.go.
 	ReasonSkillBundleUnavailable Reason = "skill_bundle_unavailable"
 
+	// ReasonMcpConfigDaemonOutdated: the agent has a managed mcp_config that
+	// must be enforced as an authoritative allowlist, but the daemon that
+	// claimed the task predates that enforcement and would have merged the
+	// runtime host's own MCP servers underneath it (GitHub #6283). The claim
+	// path refuses rather than run the agent with tools the operator scoped
+	// out, so the agent process was never launched. Platform-side: nothing the
+	// agent did caused it, and the operator fix is to upgrade the daemon (or
+	// set runtime_config.mcp.inherit_runtime to accept the host's servers).
+	//
+	// Deliberately NOT in retryableReasons: the same outdated daemon would
+	// claim the retry and fail it again, so an auto-retry would spin instead of
+	// surfacing the upgrade requirement. Written by the claim path in
+	// internal/handler/daemon.go.
+	ReasonMcpConfigDaemonOutdated Reason = "mcp_config_daemon_outdated"
+
 	// Agent process side: failure surfaced by the agent CLI / SDK as
 	// an error string. Classify(rawError) is responsible for picking
 	// the right sub-reason from the string. IsAgentError returns true

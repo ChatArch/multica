@@ -65,6 +65,11 @@ const REASON_CLASS: Record<string, FailureClass> = {
   // operator response is "check the daemon's link to Multica", the same as a
   // daemon that went offline — the model provider is not involved.
   skill_bundle_unavailable: "runtime",
+  // The claiming daemon predates authoritative mcp_config enforcement, so the
+  // run was refused rather than given the host's MCP servers (GitHub #6283).
+  // Runtime class for the same reason as the line above: the operator response
+  // is "upgrade the daemon", and the model provider is not involved.
+  mcp_config_daemon_outdated: "runtime",
 
   // The agent process itself produced the failure.
   "agent_error.process_failure": "agent",
