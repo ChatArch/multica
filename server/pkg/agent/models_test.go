@@ -581,7 +581,7 @@ exit 1
 `
 	writeTestExecutable(t, fake, []byte(script))
 
-	models, err := discoverOpenCodeModels(context.Background(), fake)
+	models, err := discoverOpenCodeModels(context.Background(), fake, ExecEnv{})
 	if err != nil {
 		t.Fatalf("discoverOpenCodeModels: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
 			fakePath := filepath.Join(t.TempDir(), "pi")
 			writeTestExecutable(t, fakePath, []byte(tc.script))
 
-			models, err := discoverPiModels(context.Background(), fakePath)
+			models, err := discoverPiModels(context.Background(), fakePath, ExecEnv{})
 			if err != nil {
 				t.Fatalf("discoverPiModels: %v", err)
 			}
@@ -779,7 +779,7 @@ func TestDiscoverOpenCodeModelsFallsBackOnVerboseNoise(t *testing.T) {
 	fakePath := filepath.Join(t.TempDir(), "opencode")
 	writeTestExecutable(t, fakePath, []byte(script))
 
-	models, err := discoverOpenCodeModels(context.Background(), fakePath)
+	models, err := discoverOpenCodeModels(context.Background(), fakePath, ExecEnv{})
 	if err != nil {
 		t.Fatalf("discoverOpenCodeModels: %v", err)
 	}

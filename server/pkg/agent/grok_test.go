@@ -743,7 +743,7 @@ func TestDiscoverGrokModelsWaitsForAdvertisedAuth(t *testing.T) {
 	t.Setenv("GROK_AUTH_METHODS", "api")
 	t.Setenv("XAI_API_KEY", "test-only-key")
 
-	catalog, err := discoverGrokModels(context.Background(), fakePath)
+	catalog, err := discoverGrokModels(context.Background(), fakePath, ExecEnv{})
 	if err != nil {
 		t.Fatalf("discover grok models: %v", err)
 	}
@@ -789,7 +789,7 @@ func TestDiscoverGrokModelsStopsOnAuthFailures(t *testing.T) {
 			t.Setenv("GROK_AUTH_FAIL", tc.authFail)
 			t.Setenv("XAI_API_KEY", "")
 
-			catalog, err := discoverGrokModels(context.Background(), fakePath)
+			catalog, err := discoverGrokModels(context.Background(), fakePath, ExecEnv{})
 			if err != nil {
 				t.Fatalf("discover grok models: %v", err)
 			}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func newSelfHealTestDaemon() *Daemon {
 func stubDetectVersionFromPath(t *testing.T) {
 	t.Helper()
 	orig := detectAgentVersion
-	detectAgentVersion = func(_ context.Context, path string, _ []string) (string, error) {
+	detectAgentVersion = func(_ context.Context, path string, _ agent.ExecEnv) (string, error) {
 		return filepath.Base(filepath.Dir(filepath.Dir(path))), nil
 	}
 	t.Cleanup(func() { detectAgentVersion = orig })

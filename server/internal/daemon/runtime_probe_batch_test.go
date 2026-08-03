@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -151,7 +152,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 		detectAgentVersion = origDetect
 		checkAgentMinVersion = origCheck
 	})
-	detectAgentVersion = func(_ context.Context, path string, _ []string) (string, error) {
+	detectAgentVersion = func(_ context.Context, path string, _ agent.ExecEnv) (string, error) {
 		fx.mu.Lock()
 		fx.probes[path]++
 		attempt := fx.probes[path]
@@ -522,7 +523,7 @@ func countingVersionProbe(t *testing.T, answer func(path string) (string, error)
 		checkAgentMinVersion = origCheck
 	})
 	var probes atomic.Int32
-	detectAgentVersion = func(_ context.Context, path string, _ []string) (string, error) {
+	detectAgentVersion = func(_ context.Context, path string, _ agent.ExecEnv) (string, error) {
 		probes.Add(1)
 		return answer(path)
 	}

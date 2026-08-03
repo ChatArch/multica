@@ -17,7 +17,7 @@ import (
 // the DevEco Code CLI and parses `provider/model` rows. Discovery failures
 // (binary missing, non-zero exit, unparseable output) silently yield an empty
 // list so model selection degrades to manual entry rather than blocking.
-func discoverDevecoModels(ctx context.Context, executablePath string) ([]Model, error) {
+func discoverDevecoModels(ctx context.Context, executablePath string, env ExecEnv) ([]Model, error) {
 	if executablePath == "" {
 		executablePath = "deveco"
 	}
@@ -28,7 +28,7 @@ func discoverDevecoModels(ctx context.Context, executablePath string) ([]Model, 
 	// run; allow a generous timeout so the picker isn't empty on a cold start.
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, executablePath, "models")
+	cmd := env.command(runCtx, executablePath, "models")
 	hideAgentWindow(cmd)
 	out, _ := cmd.Output()
 	models := parseDevecoModels(string(out))

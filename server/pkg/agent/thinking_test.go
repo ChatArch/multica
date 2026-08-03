@@ -179,7 +179,7 @@ func TestRunCodexDebugModels_ArgvSeenByBinary(t *testing.T) {
 	// Linux ETXTBSY when we exec the file (Go #22315).
 	writeTestExecutable(t, fake, []byte(script))
 
-	raw, err := runCodexDebugModels(context.Background(), fake)
+	raw, err := runCodexDebugModels(context.Background(), fake, ExecEnv{})
 	if err != nil {
 		t.Fatalf("runCodexDebugModels: %v (output=%q)", err, raw)
 	}
@@ -310,7 +310,7 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 `
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), fake)
+		got := discoverCodexModels(context.Background(), fake, ExecEnv{})
 		if len(got) != 1 || got[0].ID != "runtime-model" || got[0].Thinking == nil || !hasThinkingLevel(got[0].Thinking, "high") {
 			t.Fatalf("expected runtime catalog, got %+v", got)
 		}
@@ -324,7 +324,7 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 			"exit 99\n"
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), fake)
+		got := discoverCodexModels(context.Background(), fake, ExecEnv{})
 		if len(got) == 0 || got[0].ID != "gpt-5.6-sol" {
 			t.Fatalf("expected static fallback, got %+v", got)
 		}
@@ -338,7 +338,7 @@ echo '{"models":[{"slug":"runtime-model","display_name":"Runtime Model","visibil
 			"exit 1\n"
 		writeTestExecutable(t, fake, []byte(script))
 
-		got := discoverCodexModels(context.Background(), fake)
+		got := discoverCodexModels(context.Background(), fake, ExecEnv{})
 		if len(got) == 0 || got[0].ID != "gpt-5.6-sol" || got[0].Thinking == nil {
 			t.Fatalf("expected model + thinking fallback, got %+v", got)
 		}

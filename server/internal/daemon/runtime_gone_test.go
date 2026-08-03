@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func stubAgentVersion(t *testing.T) func() {
 	t.Helper()
 	origDetect := detectAgentVersion
 	origCheck := checkAgentMinVersion
-	detectAgentVersion = func(_ context.Context, _ string, _ []string) (string, error) {
+	detectAgentVersion = func(_ context.Context, _ string, _ agent.ExecEnv) (string, error) {
 		return "9.9.9", nil
 	}
 	checkAgentMinVersion = func(_, _ string) error { return nil }

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -130,8 +129,8 @@ var claudeStaticEffortFullSuperset = []string{"low", "medium", "high", "xhigh", 
 // through claudeModelEffortAllow. Errors are silently absorbed so a
 // missing CLI doesn't break model listing — the UI just hides the
 // picker for that model.
-func annotateClaudeThinking(ctx context.Context, models []Model, executablePath string) {
-	mapping := loadClaudeThinkingByModel(ctx, executablePath)
+func annotateClaudeThinking(ctx context.Context, models []Model, executablePath string, env ExecEnv) {
+	mapping := loadClaudeThinkingByModel(ctx, executablePath, env)
 	for i := range models {
 		if t, ok := mapping[models[i].ID]; ok && t != nil {
 			models[i].Thinking = t
@@ -139,17 +138,17 @@ func annotateClaudeThinking(ctx context.Context, models []Model, executablePath 
 	}
 }
 
-func loadClaudeThinkingByModel(ctx context.Context, executablePath string) map[string]*ModelThinking {
+func loadClaudeThinkingByModel(ctx context.Context, executablePath string, env ExecEnv) map[string]*ModelThinking {
 	if executablePath == "" {
 		executablePath = "claude"
 	}
-	version, _ := DetectVersion(ctx, executablePath)
+	version, _ := DetectVersionWithEnv(ctx, executablePath, env)
 	key := thinkingCacheKey{provider: "claude", executablePath: executablePath, cliVersion: version}
 	if cached, ok := thinkingCacheGet(key); ok {
 		return cached
 	}
 
-	superset := claudeEffortSuperset(ctx, executablePath)
+	superset := claudeEffortSuperset(ctx, executablePath, env)
 	result := map[string]*ModelThinking{}
 	for _, m := range claudeStaticModels() {
 		allow := claudeModelEffortAllow[m.ID]
@@ -170,8 +169,8 @@ func loadClaudeThinkingByModel(ctx context.Context, executablePath string) map[s
 // the help output can't be captured at all it returns the static
 // fallback rather than nothing so callers can still render a usable
 // picker.
-func claudeEffortSuperset(ctx context.Context, executablePath string) []string {
-	cmd := exec.CommandContext(ctx, executablePath, "--help")
+func claudeEffortSuperset(ctx context.Context, executablePath string, env ExecEnv) []string {
+	cmd := env.command(ctx, executablePath, "--help")
 	hideAgentWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -311,16 +310,16 @@ type codexDebugServiceTier struct {
 // catalog, including reasoning metadata. Version detection happens before the
 // debug command so old binaries do not log a predictable "unknown command"
 // failure on every cache refresh.
-func discoverCodexModels(ctx context.Context, executablePath string) []Model {
+func discoverCodexModels(ctx context.Context, executablePath string, env ExecEnv) []Model {
 	if executablePath == "" {
 		executablePath = "codex"
 	}
-	version, err := DetectVersion(ctx, executablePath)
+	version, err := DetectVersionWithEnv(ctx, executablePath, env)
 	if err != nil || !codexSupportsDebugModels(version) {
 		return codexStaticModels()
 	}
 
-	raw, err := runCodexDebugModels(ctx, executablePath)
+	raw, err := runCodexDebugModels(ctx, executablePath, env)
 	if err != nil {
 		return codexStaticModels()
 	}
@@ -351,8 +350,8 @@ func codexSupportsDebugModels(version string) bool {
 // in thinking_test.go.
 var codexDebugModelsArgs = []string{"debug", "models", "--bundled"}
 
-func runCodexDebugModels(ctx context.Context, executablePath string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, executablePath, codexDebugModelsArgs...)
+func runCodexDebugModels(ctx context.Context, executablePath string, env ExecEnv) ([]byte, error) {
+	cmd := env.command(ctx, executablePath, codexDebugModelsArgs...)
 	hideAgentWindow(cmd)
 	return cmd.Output()
 }
@@ -627,6 +626,12 @@ func parseACPCodebuddyEffort(raw json.RawMessage) (levels []string, defaultLevel
 // daemon's pre-execution guard and the server's UpdateAgent gate can
 // share the same source of truth.
 func ValidateThinkingLevel(ctx context.Context, providerType, executablePath, model, value string) (bool, error) {
+	return ValidateThinkingLevelWithEnv(ctx, providerType, executablePath, model, value, ExecEnv{})
+}
+
+// ValidateThinkingLevelWithEnv is ValidateThinkingLevel with the execution
+// environment produced by path resolution.
+func ValidateThinkingLevelWithEnv(ctx context.Context, providerType, executablePath, model, value string, env ExecEnv) (bool, error) {
 	if value == "" {
 		return true, nil
 	}
@@ -683,6 +688,12 @@ func ValidateThinkingLevel(ctx context.Context, providerType, executablePath, mo
 // means "inherit runtime configuration". An empty Codex model fails closed:
 // its effective model comes from config.toml and may not support the tier.
 func ValidateServiceTier(ctx context.Context, providerType, executablePath, model, value string) (bool, error) {
+	return ValidateServiceTierWithEnv(ctx, providerType, executablePath, model, value, ExecEnv{})
+}
+
+// ValidateServiceTierWithEnv is ValidateServiceTier with the execution
+// environment produced by path resolution.
+func ValidateServiceTierWithEnv(ctx context.Context, providerType, executablePath, model, value string, env ExecEnv) (bool, error) {
 	if value == "" {
 		return true, nil
 	}

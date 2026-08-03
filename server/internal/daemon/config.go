@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -14,8 +15,10 @@ import (
 	"time"
 
 	"github.com/mattn/go-shellwords"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 const (
@@ -721,19 +724,18 @@ func samePathDir(a, b string) bool {
 	return absA == absB
 }
 
-// resolvedExecutable is a pinned executable together with the PATH entries it
-// needs in order to run. The two travel as one result on purpose: Volta package
-// binaries are frequently `#!/usr/bin/env node` scripts, and Volta normally
-// supplies the Node platform bound to that package when it launches them
-// (upstream volta-core/src/run/binary.rs). Pinning only the path would leave the
-// version probe and the task launch to find *some* node on their own — a
-// different one per working directory, or none at all under a GUI-stripped PATH.
-// Keeping them together is what makes the gated version and the executed
-// version the same thing.
+// resolvedExecutable is a pinned executable together with the environment it
+// needs in order to run. The two travel as one result on purpose: a Volta-managed
+// global package binary is typically a `#!/usr/bin/env node` script, and Volta
+// supplies the Node platform bound to that package plus a NODE_PATH pointing at
+// its shared global lib dir when it launches one (upstream
+// volta-core/src/run/binary.rs). Pinning only the path would leave every consumer
+// to find some node on its own — a different one per directory, or none at all
+// under a GUI-stripped PATH — so the version the daemon gates on would not be
+// produced under the environment the CLI actually runs in.
 type resolvedExecutable struct {
 	Path string
-	// PathDirs are prepended to PATH, highest priority first.
-	PathDirs []string
+	Env  agent.ExecEnv
 }
 
 // voltaShimName is the basename of the single trampoline binary Volta installs
@@ -751,19 +753,19 @@ var (
 	// holding our stdout, and cmd.Output() blocks in Wait() until that pipe
 	// closes, so the real worst case for one call is timeout + this.
 	voltaResolveWaitDelay = time.Second
-	// voltaResolveBudget caps the TOTAL time one Volta install may cost across
-	// all commands before we stop asking it. Without this, N alias lookups
-	// against a wedged install each paid the per-call timeout and the startup
-	// probe stalled for N × timeout.
+	// voltaResolveBudget caps the time one Volta install may cost inside a single
+	// breaker window. Without it, N alias lookups against a wedged install each
+	// paid the per-call timeout and the startup probe stalled for N × timeout.
 	voltaResolveBudget = 8 * time.Second
 	// voltaFailureCooldown is how long a failing install is left alone. It turns
 	// "every command pays the timeout, every discovery tick" into "one command
-	// pays it, once per cooldown".
+	// pays it, once per cooldown". When it expires the budget resets too, so a
+	// transient outage can never latch the breaker open permanently.
 	voltaFailureCooldown = 5 * time.Minute
 )
 
 // canonicalExecutable resolves path to the concrete executable to pin plus the
-// PATH entries required to run it.
+// environment required to run it.
 //
 // Symlinks are collapsed so version-manager prefix dirs and other indirection
 // settle onto one stable path we can pin.
@@ -777,16 +779,16 @@ var (
 // exits 126 for any Volta error, which is the symptom reported in #6183. Volta
 // documents the same hazard from its own side in volta-cli/volta#579.
 //
-// So for a Volta alias we ask Volta itself for the concrete binary and pin that,
-// together with the Node platform directory it needs. Keeping the alias instead
-// and letting the shim dispatch would break the {path, version} invariant the
-// rest of the daemon relies on: the shim resolves per working directory, so the
-// version verified at registration would not be the version a task executes and
-// the minimum-version gate could be bypassed.
+// So for a Volta alias we ask Volta itself for the concrete binary and pin that
+// together with its execution context. Keeping the alias instead and letting the
+// shim dispatch would break the {path, version} invariant the rest of the daemon
+// relies on: the shim resolves per working directory, so the version verified at
+// registration would not be the version a task executes.
 //
 // Failing to resolve is deliberate: we return the shim path, version detection
-// fails as before, and the provider stays unregistered rather than being
-// launched through an ungated path. MULTICA_*_PATH remains the manual override.
+// fails as before, and the provider stays unregistered rather than being launched
+// through a path whose environment we could not reproduce. MULTICA_*_PATH remains
+// the manual override.
 func canonicalExecutable(path string) resolvedExecutable {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -797,7 +799,7 @@ func canonicalExecutable(path string) resolvedExecutable {
 		return resolvedExecutable{Path: abs}
 	}
 	if isVoltaShimPath(real) && !isVoltaShimPath(abs) {
-		if resolved, ok := voltaResolve(real, filepath.Base(abs)); ok {
+		if resolved, ok := voltaResolve(abs, real, filepath.Base(abs)); ok {
 			return resolved
 		}
 	}
@@ -825,22 +827,112 @@ func isVoltaShimPath(path string) bool {
 	return false
 }
 
+// voltaHomeFromAlias derives $VOLTA_HOME from a shim alias path.
+//
+// This must not be read from the daemon's environment. A GUI-launched daemon does
+// not inherit the user's VOLTA_HOME, and Volta locates all package data relative
+// to it (falling back to ~/.volta), so an inherited-or-default value would make
+// `volta` report on a different installation than the alias we actually found.
+// The layout pins the answer instead: shims live in $VOLTA_HOME/bin
+// (volta-layout: `"bin": shim_dir`), so the parent of the directory holding the
+// alias is $VOLTA_HOME. Note this is the *home*, which for a Homebrew install is
+// a different tree from where the volta binaries live.
+//
+// The symlink chain is walked one hop at a time rather than fully resolved,
+// because only the link that points AT the shim is guaranteed to sit in
+// $VOLTA_HOME/bin; an unrelated wrapper earlier in the chain would not.
+func voltaHomeFromAlias(aliasPath string) (string, bool) {
+	const maxHops = 16
+	current := aliasPath
+	for i := 0; i < maxHops; i++ {
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		if isVoltaShimPath(target) {
+			shimDir := filepath.Dir(current)
+			home := filepath.Dir(shimDir)
+			if home == "" || home == shimDir {
+				return "", false
+			}
+			return home, true
+		}
+		current = target
+	}
+	return "", false
+}
+
+// voltaBinConfig is the subset of $VOLTA_HOME/tools/user/bins/<name>.json the
+// daemon needs. Volta records the platform a global package was installed
+// against and uses exactly that when launching it (binary.rs
+// DefaultBinary::from_config reads bin_config.platform.node), so the *current
+// default* Node is not a substitute: switching the default must not change which
+// Node a previously installed CLI runs under.
+type voltaBinConfig struct {
+	Platform struct {
+		Node string `json:"node"`
+	} `json:"platform"`
+}
+
+// voltaBoundNodeDir returns the bin directory of the Node that Volta bound to
+// command at install time.
+func voltaBoundNodeDir(voltaHome, command string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(voltaHome, "tools", "user", "bins", command+".json"))
+	if err != nil {
+		return "", false
+	}
+	var cfg voltaBinConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return "", false
+	}
+	version := strings.TrimSpace(cfg.Platform.Node)
+	if version == "" {
+		return "", false
+	}
+	imageDir := filepath.Join(voltaHome, "tools", "image", "node", version)
+	// Unix keeps the executables in <image>/bin; Windows puts them at the root of
+	// the image directory.
+	if binDir := filepath.Join(imageDir, "bin"); dirExists(binDir) {
+		return binDir, true
+	}
+	if dirExists(imageDir) {
+		return imageDir, true
+	}
+	return "", false
+}
+
+// voltaSharedLibDir is what Volta prefixes onto NODE_PATH so a global binary can
+// `require` other global libs (binary.rs shared_module_path ->
+// volta_home().shared_lib_root()).
+func voltaSharedLibDir(voltaHome string) string {
+	return filepath.Join(voltaHome, "tools", "shared")
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 type voltaInstallState struct {
 	tools    map[string]resolvedExecutable // command -> resolution
-	nodeDir  string                        // Node platform dir, "" if unknown
-	nodeDone bool
-	spent    time.Duration // cumulative cost, against voltaResolveBudget
-	failedAt time.Time     // last failure, for the cooldown
+	spent    time.Duration                 // cost inside the current breaker window
+	failedAt time.Time                     // last failure, for the cooldown
 }
 
 var (
 	voltaMu     sync.Mutex
 	voltaStates = map[string]*voltaInstallState{}
+	// voltaGroup coalesces concurrent resolutions. Without it two tasks healing
+	// the same provider could both pass the budget check and each pay a timeout.
+	voltaGroup singleflight.Group
 )
 
 // voltaExecutable returns the `volta` binary that belongs to shimPath. Both are
 // VoltaInstall entries, so they live in the same directory; we invoke it by
-// absolute path because the daemon may not have Volta's bin dir on PATH at all.
+// absolute path because the daemon may not have Volta's bin dir on PATH.
 func voltaExecutable(shimPath string) string {
 	voltaBin := filepath.Join(filepath.Dir(shimPath), "volta")
 	if runtime.GOOS == "windows" {
@@ -865,17 +957,23 @@ func voltaNonProjectDir(voltaBin string) string {
 	return string(os.PathSeparator)
 }
 
-// voltaResolve asks Volta for the concrete binary behind command, plus the Node
-// platform directory needed to run it, and caches the answer.
+// voltaResolve asks Volta for the concrete binary behind command and builds the
+// execution context it needs. It returns false unless BOTH are available: a path
+// without its environment is not reliably runnable, so a partial answer must
+// never be cached or launched.
 //
 // Answers are revalidated by existence rather than a TTL: probeAgentCLIs re-runs
 // on every discovery tick, and a steady-state daemon must not fork `volta`
-// forever. When Volta replaces the binary and the cached path disappears, the
-// entry is dropped and re-resolved, which dovetails with the MUL-4486 self-heal.
-func voltaResolve(shimPath, command string) (resolvedExecutable, bool) {
+// forever. When Volta replaces the binary or the Node image is removed, the entry
+// is dropped and re-resolved, which dovetails with the MUL-4486 self-heal.
+func voltaResolve(aliasPath, shimPath, command string) (resolvedExecutable, bool) {
 	// command comes from a filesystem basename; keep it to the same bare-name
 	// shape the shell resolver enforces so nothing flag-like reaches argv.
 	if !isSafeAgentName(command) {
+		return resolvedExecutable{}, false
+	}
+	voltaHome, ok := voltaHomeFromAlias(aliasPath)
+	if !ok {
 		return resolvedExecutable{}, false
 	}
 	voltaBin := voltaExecutable(shimPath)
@@ -887,25 +985,27 @@ func voltaResolve(shimPath, command string) (resolvedExecutable, bool) {
 		voltaStates[voltaBin] = state
 	}
 	if cached, ok := state.tools[command]; ok {
-		if isExecutableFile(cached.Path) {
+		if voltaResolutionUsable(cached) {
 			voltaMu.Unlock()
 			return cached, true
 		}
 		delete(state.tools, command)
 	}
-	// Circuit breaker: a wedged or broken install is asked once per cooldown,
-	// not once per command and not on every tick.
-	if !state.failedAt.IsZero() && time.Since(state.failedAt) < voltaFailureCooldown {
-		voltaMu.Unlock()
-		return resolvedExecutable{}, false
+	// Circuit breaker. A cooldown that has expired also resets the spend budget:
+	// the budget bounds one window, not the process lifetime, so a couple of slow
+	// failures can never disable Volta resolution for good.
+	if !state.failedAt.IsZero() {
+		if time.Since(state.failedAt) < voltaFailureCooldown {
+			voltaMu.Unlock()
+			return resolvedExecutable{}, false
+		}
+		state.failedAt = time.Time{}
+		state.spent = 0
 	}
 	if state.spent >= voltaResolveBudget {
 		voltaMu.Unlock()
 		return resolvedExecutable{}, false
 	}
-	nodeDir, nodeDone := state.nodeDir, state.nodeDone
-	// Released for the subprocess below: holding it would serialize every
-	// command behind one timeout and make the stall additive.
 	voltaMu.Unlock()
 
 	if !isExecutableFile(voltaBin) {
@@ -915,36 +1015,75 @@ func voltaResolve(shimPath, command string) (resolvedExecutable, bool) {
 		return resolvedExecutable{}, false
 	}
 
-	started := time.Now()
-	toolPath, toolOK := voltaWhich(voltaBin, command)
-	if toolOK && !nodeDone {
-		// One extra call per install, not per command: the Node platform dir is
-		// what makes an `env node` package script runnable.
-		nodeDir, _ = voltaNodeDir(voltaBin)
-		nodeDone = true
-	}
-	elapsed := time.Since(started)
+	// Coalesce concurrent work per (install, command): the first caller pays,
+	// the rest share its answer instead of each spawning a `volta`.
+	key := voltaBin + "\x00" + command
+	v, _, _ := voltaGroup.Do(key, func() (any, error) {
+		started := time.Now()
+		resolved, ok := voltaResolveUncached(voltaBin, voltaHome, command)
+		elapsed := time.Since(started)
 
-	voltaMu.Lock()
-	defer voltaMu.Unlock()
-	state.spent += elapsed
-	state.nodeDir, state.nodeDone = nodeDir, nodeDone
-	if !toolOK {
-		state.failedAt = time.Now()
+		voltaMu.Lock()
+		defer voltaMu.Unlock()
+		state.spent += elapsed
+		if !ok {
+			state.failedAt = time.Now()
+			return resolvedExecutable{}, nil
+		}
+		state.failedAt = time.Time{}
+		state.tools[command] = resolved
+		return resolved, nil
+	})
+	resolved, _ := v.(resolvedExecutable)
+	return resolved, resolved.Path != ""
+}
+
+// voltaResolveUncached performs the actual queries. Both halves must succeed.
+func voltaResolveUncached(voltaBin, voltaHome, command string) (resolvedExecutable, bool) {
+	toolPath, ok := voltaWhich(voltaBin, voltaHome, command)
+	if !ok {
 		return resolvedExecutable{}, false
 	}
-	state.failedAt = time.Time{}
-	resolved := resolvedExecutable{Path: toolPath}
-	if nodeDir != "" {
-		resolved.PathDirs = []string{nodeDir}
+	nodeDir, ok := voltaBoundNodeDir(voltaHome, command)
+	if !ok {
+		// Fail closed: without the bound Node we cannot reproduce the
+		// environment Volta itself would use, so the version we verify would not
+		// be the version that runs.
+		return resolvedExecutable{}, false
 	}
-	state.tools[command] = resolved
-	return resolved, true
+	return resolvedExecutable{
+		Path: toolPath,
+		Env: agent.ExecEnv{PrefixPaths: map[string][]string{
+			"PATH":      {nodeDir},
+			"NODE_PATH": {voltaSharedLibDir(voltaHome)},
+		}},
+	}, true
+}
+
+// voltaResolutionUsable reports whether a cached resolution is still runnable —
+// the tool AND every directory its environment depends on.
+func voltaResolutionUsable(resolved resolvedExecutable) bool {
+	if !isExecutableFile(resolved.Path) {
+		return false
+	}
+	for name, dirs := range resolved.Env.PrefixPaths {
+		if name != "PATH" {
+			// Only PATH entries have to exist to run; NODE_PATH is advisory and
+			// its shared dir is created lazily by Volta.
+			continue
+		}
+		for _, dir := range dirs {
+			if !dirExists(dir) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // voltaWhich runs `volta which <command>` and returns the concrete path.
-func voltaWhich(voltaBin, command string) (string, bool) {
-	out, ok := runVolta(voltaBin, "which", command)
+func voltaWhich(voltaBin, voltaHome, command string) (string, bool) {
+	out, ok := runVolta(voltaBin, voltaHome, "which", command)
 	if !ok {
 		return "", false
 	}
@@ -960,26 +1099,17 @@ func voltaWhich(voltaBin, command string) (string, bool) {
 	return out, true
 }
 
-// voltaNodeDir returns the directory of the Node that Volta runs package
-// binaries with. Resolved through the same public `volta which` interface (in
-// the same non-project directory) so it is the default toolchain's Node rather
-// than whatever a project pins.
-func voltaNodeDir(voltaBin string) (string, bool) {
-	nodePath, ok := voltaWhich(voltaBin, "node")
-	if !ok {
-		return "", false
-	}
-	return filepath.Dir(nodePath), true
-}
-
-// runVolta invokes the Volta CLI and returns its trimmed stdout. A var so tests
-// can exercise the caching/cooldown logic without a real subprocess, following
-// the same seam pattern as resolveAgentsViaLoginShell and detectAgentVersion.
-var runVolta = func(voltaBin string, args ...string) (string, bool) {
+// runVolta invokes the Volta CLI and returns its trimmed stdout. VOLTA_HOME is
+// set explicitly (never inherited) so the answer describes the installation the
+// alias belongs to. A var so tests can exercise the caching/cooldown logic
+// without a real subprocess, following the same seam pattern as
+// resolveAgentsViaLoginShell and detectAgentVersion.
+var runVolta = func(voltaBin, voltaHome string, args ...string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), voltaResolveTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, voltaBin, args...)
 	cmd.Dir = voltaNonProjectDir(voltaBin)
+	cmd.Env = envWithVoltaHome(os.Environ(), voltaHome)
 	// Volta prints results on stdout and diagnostics on stderr; Output()
 	// captures only stdout. WaitDelay keeps a hung child from outliving ctx.
 	cmd.WaitDelay = voltaResolveWaitDelay
@@ -988,6 +1118,18 @@ var runVolta = func(voltaBin string, args ...string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(string(out)), true
+}
+
+// envWithVoltaHome returns environ with VOLTA_HOME replaced by home.
+func envWithVoltaHome(environ []string, home string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if name, _, ok := strings.Cut(kv, "="); ok && name == "VOLTA_HOME" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "VOLTA_HOME="+home)
 }
 
 func isExecutableFile(path string) bool {

@@ -46,8 +46,12 @@ func requireRealVolta(t *testing.T) (voltaHome, binDir string) {
 	if _, err := os.Stat(filepath.Join(binDir, voltaShimName)); err != nil {
 		t.Fatalf("no %s in %s: %v", voltaShimName, binDir, err)
 	}
-	// The daemon inherits VOLTA_HOME; a default ~/.volta install needs nothing.
-	t.Setenv("VOLTA_HOME", voltaHome)
+	// Deliberately does NOT export VOLTA_HOME. A GUI-launched daemon never
+	// inherits it, and setting it here would bypass the very scenario the report
+	// describes: resolution has to derive the home from the alias path. For a
+	// non-default install (as used here) an unset VOLTA_HOME would otherwise send
+	// Volta looking in ~/.volta.
+	unsetEnvForTest(t, "VOLTA_HOME")
 	resetVoltaResolveCache(t)
 	return voltaHome, binDir
 }
@@ -83,13 +87,16 @@ func TestRealVolta_PlainSymlinkResolutionIsUnrunnable(t *testing.T) {
 // what Volta itself reports AND carries an environment that makes it runnable
 // from a PATH that has no node at all.
 func TestRealVolta_ResolvesConcreteBinaryWithEnvironment(t *testing.T) {
-	_, binDir := requireRealVolta(t)
+	voltaHome, binDir := requireRealVolta(t)
 	// Volta's own bin dir is on PATH only so LookPath can find the alias; the
 	// version probe's environment is what the resolution supplies.
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+systemOnlyPath())
 
 	for _, command := range []string{"claude", "codex"} {
-		out, err := exec.Command(filepath.Join(binDir, "volta"), "which", command).Output()
+		ground := exec.Command(filepath.Join(binDir, "volta"), "which", command)
+		ground.Dir = string(os.PathSeparator)
+		ground.Env = append(os.Environ(), "VOLTA_HOME="+voltaHome)
+		out, err := ground.Output()
 		if err != nil {
 			t.Fatalf("volta which %s: %v", command, err)
 		}
@@ -102,18 +109,18 @@ func TestRealVolta_ResolvesConcreteBinaryWithEnvironment(t *testing.T) {
 		if resolved.Path != want {
 			t.Errorf("%s path = %q, want the `volta which` answer %q", command, resolved.Path, want)
 		}
-		if len(resolved.PathDirs) == 0 {
+		if len(resolved.Env.PrefixPaths["PATH"]) == 0 {
 			t.Errorf("%s carries no PATH dirs; a node-script package bin would be unrunnable", command)
 		}
 
-		version, err := agent.DetectVersionWithPathDirs(context.Background(), resolved.Path, resolved.PathDirs)
+		version, err := agent.DetectVersionWithEnv(context.Background(), resolved.Path, resolved.Env)
 		if err != nil {
-			t.Fatalf("%s: DetectVersionWithPathDirs(%q): %v", command, resolved.Path, err)
+			t.Fatalf("%s: DetectVersionWithEnv(%q): %v", command, resolved.Path, err)
 		}
 		if err := agent.CheckMinVersion(command, version); err != nil {
 			t.Errorf("%s version %q failed the real min-version gate: %v", command, version, err)
 		}
-		t.Logf("%s -> %s (version %q, pathDirs %v)", command, resolved.Path, version, resolved.PathDirs)
+		t.Logf("%s -> %s (version %q, pathDirs %v)", command, resolved.Path, version, resolved.Env.PrefixPaths["PATH"])
 	}
 }
 
@@ -134,7 +141,7 @@ func TestRealVolta_ResolvedEnvironmentIsRequired(t *testing.T) {
 		// Bare PATH, no node, no Volta: what a GUI-launched daemon looks like.
 		t.Setenv("PATH", systemOnlyPath())
 		_, withoutEnv := agent.DetectVersion(context.Background(), resolved.Path)
-		_, withEnv := agent.DetectVersionWithPathDirs(context.Background(), resolved.Path, resolved.PathDirs)
+		_, withEnv := agent.DetectVersionWithEnv(context.Background(), resolved.Path, resolved.Env)
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+systemOnlyPath())
 
 		if withEnv != nil {
