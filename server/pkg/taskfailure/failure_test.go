@@ -147,6 +147,7 @@ func TestAllReasonsContents(t *testing.T) {
 		ReasonQueuedExpired, ReasonRuntimeOffline, ReasonRuntimeRecovery,
 		ReasonTimeout, ReasonIterationLimit, ReasonAgentBlocked,
 		ReasonAPIInvalidRequest, ReasonSkillBundleUnavailable,
+		ReasonMcpConfigDaemonOutdated,
 		ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit,
 		ReasonAgentProviderCapacityOrRateLimit, ReasonAgentProviderServerError,
 		ReasonAgentProviderNetwork, ReasonAgentProcessFailure,

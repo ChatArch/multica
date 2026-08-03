@@ -949,7 +949,7 @@ export interface DashboardRunTimeDaily {
 // One (date, failure_reason) bucket of terminal-task counts for the workspace
 // dashboard's Errors metric.
 //
-// `failure_reason` carries the backend's canonical failure taxonomy (the 21
+// `failure_reason` carries the backend's canonical failure taxonomy (the 23
 // `taskfailure.Reason` values, plus `"unclassified"` for failed rows with an
 // empty column) — EXCEPT for the empty string, which is the *succeeded*
 // bucket. Shipping successes in the same series is deliberate: the error rate

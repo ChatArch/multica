@@ -30,7 +30,7 @@ import (
 // to the canonical taskfailure values so the daemon and the in-flight
 // classifier (used by every other failure path) share a single source
 // of truth. agent_fallback_message and codex_semantic_inactivity are
-// pre-existing operational reasons not in the canonical 21 — kept as
+// pre-existing operational reasons not in the canonical 23 — kept as
 // string literals here until a follow-up PR migrates them or extends
 // the taxonomy.
 const (

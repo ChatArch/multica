@@ -585,7 +585,7 @@ function TaskRow({
 
   // Failure reason. The back-end emits "" on non-failed tasks (omitempty
   // strips it on the wire) so the truthy guard is the right shape.
-  // failureReasonLabel takes the raw open string — the taxonomy has 21
+  // failureReasonLabel takes the raw open string — the taxonomy has 23
   // values and grows, so there is no enum to cast to.
   const failureLabel =
     task.status === "failed" ? failureReasonLabel(task.failure_reason) : null;

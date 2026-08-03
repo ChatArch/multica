@@ -357,7 +357,8 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
     expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
   });
 
-  it("renders dedicated copy for a refined reason the map names", async () => {    renderFailure("agent_error.provider_network");
+  it("renders dedicated copy for a refined reason the map names", async () => {
+    renderFailure("agent_error.provider_network");
     expect(
       await screen.findByText(enChat.message_list.failure.provider_network),
     ).toBeInTheDocument();
