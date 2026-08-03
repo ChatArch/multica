@@ -312,7 +312,6 @@ export function createEnDict(allowSignup: boolean): LandingDict {
           "The license now says plainly that free public hosting still needs a commercial license.",
         ],
         fixes: [
-          "An agent's MCP servers are now exactly the ones you gave it, and nothing more.",
           "Agents with their own Codex instructions file now start their tasks correctly.",
           "Picking a schedule for an autopilot that had no triggers now saves it.",
           "Opening a Skill an agent imported no longer shows edits you never made.",

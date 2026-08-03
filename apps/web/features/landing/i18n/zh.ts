@@ -312,7 +312,6 @@ export function createZhDict(allowSignup: boolean): LandingDict {
           "许可证里写明了：免费的公开托管同样需要商业授权。",
         ],
         fixes: [
-          "给智能体配的 MCP 服务器，现在就是它能用的全部。",
           "自带 Codex 指令文件的智能体现在能正常开始任务。",
           "给原本没有触发器的 Autopilot 选好定时，现在能保存下来了。",
           "打开智能体导入的 Skill，不再显示你没做过的改动。",
