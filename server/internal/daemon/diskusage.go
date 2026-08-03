@@ -62,6 +62,13 @@ type DiskUsageReport struct {
 	TotalSizeBytes          int64                `json:"total_size_bytes"`
 	TotalArtifactSizeBytes  int64                `json:"total_artifact_size_bytes"`
 	TotalArtifactRatio      float64              `json:"total_artifact_ratio"`
+	// RepoCacheSizeBytes is the bare-repo cache (.repos) footprint. It is a
+	// sibling of the task directories, not one of them, so it is reported
+	// separately and deliberately excluded from Total*: those totals describe
+	// task dirs, and folding a shared cache into them would double-count it
+	// against per-task numbers that do not contain it.
+	RepoCacheSizeBytes int64 `json:"repo_cache_size_bytes"`
+	RepoCacheCount     int   `json:"repo_cache_count"`
 }
 
 // DiskUsageRoot pairs a workspaces root with the profile it was derived from
@@ -93,6 +100,8 @@ type AggregateDiskUsageReport struct {
 	TotalSizeBytes          int64           `json:"total_size_bytes"`
 	TotalArtifactSizeBytes  int64           `json:"total_artifact_size_bytes"`
 	TotalArtifactRatio      float64         `json:"total_artifact_ratio"`
+	TotalRepoCacheSizeBytes int64           `json:"total_repo_cache_size_bytes"`
+	TotalRepoCacheCount     int             `json:"total_repo_cache_count"`
 }
 
 // ScanDiskUsageRoots scans every root in order and returns the combined report.
@@ -116,6 +125,8 @@ func ScanDiskUsageRoots(roots []DiskUsageRoot, artifactPatterns []string) (Aggre
 		agg.TotalWorkspaceCount += report.TotalWorkspaceCount
 		agg.TotalSizeBytes += report.TotalSizeBytes
 		agg.TotalArtifactSizeBytes += report.TotalArtifactSizeBytes
+		agg.TotalRepoCacheSizeBytes += report.RepoCacheSizeBytes
+		agg.TotalRepoCacheCount += report.RepoCacheCount
 	}
 	agg.TotalArtifactRatio = ratio(agg.TotalArtifactSizeBytes, agg.TotalSizeBytes)
 	return agg, nil
@@ -162,10 +173,21 @@ func ScanDiskUsage(workspacesRoot string, artifactPatterns []string) (DiskUsageR
 	wsAgg := map[string]*WorkspaceDiskUsage{}
 
 	for _, wsEntry := range wsEntries {
-		// Skip the bare-repo cache and any non-directory entries; the GC loop
-		// applies the same exclusions, so the disk-usage report stays in sync
-		// with what the GC actually walks.
-		if !wsEntry.IsDir() || wsEntry.Name() == ".repos" {
+		if !wsEntry.IsDir() {
+			continue
+		}
+		// The bare-repo cache is not a workspace. Measure it separately rather
+		// than skipping it outright: it is reclaimed on its own schedule
+		// (GCRepoTTL) and used to be invisible here, which made the reported
+		// total disagree with the user's file manager for no stated reason.
+		if wsEntry.Name() == reposDirName {
+			report.RepoCacheSizeBytes, report.RepoCacheCount = repoCacheSize(filepath.Join(workspacesRoot, wsEntry.Name()))
+			continue
+		}
+		// Other dot-directories are daemon-internal caches (skill bundles and
+		// friends), never workspaces. Counting them as workspaces put rows like
+		// ".skillca" in the per-workspace table.
+		if strings.HasPrefix(wsEntry.Name(), ".") {
 			continue
 		}
 		wsID := wsEntry.Name()
@@ -220,6 +242,34 @@ func ScanDiskUsage(workspacesRoot string, artifactPatterns []string) (DiskUsageR
 	report.TotalArtifactRatio = ratio(report.TotalArtifactSizeBytes, report.TotalSizeBytes)
 
 	return report, nil
+}
+
+// repoCacheSize measures the bare-repo cache and counts the repos in it.
+// Layout is .repos/<workspace-id>/<repo-dir>, so the count is the number of
+// second-level directories — the unit the GC evicts.
+func repoCacheSize(reposRoot string) (sizeBytes int64, repoCount int) {
+	wsEntries, err := os.ReadDir(reposRoot)
+	if err != nil {
+		return 0, 0
+	}
+	for _, wsEntry := range wsEntries {
+		if !wsEntry.IsDir() {
+			continue
+		}
+		wsDir := filepath.Join(reposRoot, wsEntry.Name())
+		repoEntries, err := os.ReadDir(wsDir)
+		if err != nil {
+			continue
+		}
+		for _, repoEntry := range repoEntries {
+			if !repoEntry.IsDir() {
+				continue
+			}
+			repoCount++
+			sizeBytes += dirSize(filepath.Join(wsDir, repoEntry.Name()))
+		}
+	}
+	return sizeBytes, repoCount
 }
 
 // ratio returns numerator / denominator, mapping 0/0 (and any 0 denominator)
