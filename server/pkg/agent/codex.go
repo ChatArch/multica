@@ -108,6 +108,8 @@ func codexProcessWaitDelay() time.Duration {
 }
 
 type codexStderrClassification struct {
+	// modelRefreshFailure is the broad catalog failure bucket. It includes the
+	// narrower modelRefreshTimeout bucket, so the two counts are not additive.
 	modelRefreshFailure int
 	modelRefreshTimeout int
 	mcpInitTransport    int
@@ -129,6 +131,9 @@ func classifyCodexStartupStderr(stderr string, timedOut bool) codexStderrClassif
 			classification.mcpInitTransport++
 		}
 	}
+	// Any catalog refresh failure now owns the timeout classification, not only
+	// the narrower child-process timeout signal. This intentionally makes the
+	// existing bare-timeout bucket stricter across daemon versions.
 	if timedOut && classification.modelRefreshFailure == 0 && classification.mcpInitTransport == 0 {
 		classification.bareTimeout = 1
 	}
@@ -1596,6 +1601,8 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				"daemon_version", b.cfg.DaemonVersion,
 				"cleanup_confirmed", cleanupConfirmed,
 				"reaped", cleanupConfirmed,
+				// retry_safe describes the terminal attempt, not the measured wait
+				// interval. Successful samples therefore report false by design.
 				"retry_safe", startupRefreshRetrySafe,
 				"stderr_model_refresh_failure_count", classification.modelRefreshFailure,
 				"stderr_model_refresh_timeout_count", classification.modelRefreshTimeout,

@@ -3017,7 +3017,7 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 				t.Fatalf("entry[%s]=%v, want %v; entry=%v", key, got, want, entry)
 			}
 		}
-		if latency, ok := entry["latency_ms"].(float64); !ok || latency < 0 {
+		if latency, ok := entry["latency_ms"].(float64); !ok || latency <= 0 {
 			t.Fatalf("missing/invalid latency_ms: %v", entry)
 		}
 		if entry["stderr_model_refresh_failure_count"] != float64(0) ||
@@ -3046,6 +3046,11 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 			`sleep 2`+"\n")
 
 		var logs bytes.Buffer
+		// The helper budget owns the whole two-attempt retry chain, while
+		// ExecOptions.Timeout applies to each attempt. Leave enough headroom for
+		// race instrumentation and the retry backoff instead of racing the result
+		// channel against the helper's deadline.
+		const retryChainBudget = 20 * time.Second
 		result, _ := executeFakeCodexCollectingMessagesWithConfig(t, fakePath, Config{
 			Logger:        slog.New(slog.NewJSONHandler(&logs, nil)),
 			TaskID:        "task-first-item-timeout",
@@ -3055,7 +3060,7 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 		}, ExecOptions{
 			Timeout:                   5 * time.Second,
 			SemanticInactivityTimeout: 100 * time.Millisecond,
-		}, 5*time.Second)
+		}, retryChainBudget)
 		if result.Status != "timeout" {
 			t.Fatalf("expected timeout after the bounded retry, got %+v", result)
 		}
