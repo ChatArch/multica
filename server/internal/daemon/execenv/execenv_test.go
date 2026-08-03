@@ -1077,10 +1077,31 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 		"multica issue status <id> <status>",
 		"multica issue comment add <issue-id>",
 		"multica issue comment add --help",
-		"multica squad member set-role <squad-id>",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing core command/help text %q\n---\n%s", want, s)
+		}
+	}
+
+	// Squad maintenance is squad-leader surface and is gated on that (MUL-5442):
+	// an agent leading no squad has no squad whose roles it could change.
+	if strings.Contains(s, "### Squad maintenance") {
+		t.Errorf("non-leader brief must not carry the squad maintenance block\n---\n%s", s)
+	}
+	leaderDir := t.TempDir()
+	if _, err := InjectRuntimeConfig(leaderDir, "codex", TaskContextForEnv{IssueID: "issue-1", IsSquadLeader: true}); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	leader, err := os.ReadFile(filepath.Join(leaderDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("failed to read leader AGENTS.md: %v", err)
+	}
+	for _, want := range []string{
+		"### Squad maintenance",
+		"multica squad member set-role <squad-id>",
+	} {
+		if !strings.Contains(string(leader), want) {
+			t.Errorf("squad-leader AGENTS.md missing %q\n---\n%s", want, leader)
 		}
 	}
 

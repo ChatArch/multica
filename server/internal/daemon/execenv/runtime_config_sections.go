@@ -257,7 +257,7 @@ func sanitizeBriefCodeToken(s string) string {
 // The fold-aware `--full` flag from MUL-3555 is documented inline on the
 // comment-list bullet so the slim brief preserves the same agent
 // behaviour as the legacy brief on that path.
-func writeAvailableCommands(b *strings.Builder) {
+func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Available Commands\n\n")
 	b.WriteString("Prefer `--output json` for structured data. The default brief lists only the core agent loop and common issue create/update tasks; for everything else run `multica --help` or `multica <command> --help`.\n\n")
 	b.WriteString("### Core\n")
@@ -272,8 +272,15 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
 	b.WriteString("- `multica repo checkout <url> [--ref <branch-or-sha>]` — repository checkout on a dedicated branch.\n\n")
-	b.WriteString("### Squad maintenance\n")
-	b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — change role in place (use this instead of remove+add).\n\n")
+	// Squad maintenance is squad-leader surface: an agent that leads no squad
+	// has no squad to change roles in, so this shipped to every run as dead
+	// weight (MUL-5442). IsSquadLeader is agent configuration, not per-run
+	// state, so gating on it keeps the brief byte-stable across runs of one
+	// session (MUL-5377) — the same reason the workflow already branches on it.
+	if ctx.IsSquadLeader {
+		b.WriteString("### Squad maintenance\n")
+		b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — change role in place (use this instead of remove+add).\n\n")
+	}
 }
 
 // writeAvailableCommandsQuickCreate emits a minimal Available Commands
@@ -370,11 +377,19 @@ func writeIssueMetadata(b *strings.Builder) {
 
 // writeInstructionPrecedence emits the "Agent Identity wins over the issue
 // workflow below" guardrail. Caller gates on kind == kindIssue.
+//
+// This section owns the single enumeration of the actions Agent Identity can
+// forbid. It and workflow step 4 were added together in #3802 and each carried
+// its own list; the lists then disagreed — this one named status changes, the
+// step named issue create/update and delegation, and neither contained the
+// other. MUL-5442 merges them here so adding an action type is a one-place
+// edit. Step 4 keeps only what this section cannot express: the delegation-only
+// role's "stop once the delegation is delivered" rule.
 func writeInstructionPrecedence(b *strings.Builder) {
 	b.WriteString("## Instruction Precedence\n\n")
 	b.WriteString("Agent Identity instructions have priority over the issue workflow below. ")
 	b.WriteString("If a workflow step conflicts with Agent Identity, skip the conflicting action and continue with the remaining compatible steps. ")
-	b.WriteString("Never treat this runtime workflow as permission to change issue status, investigate, implement, or otherwise act beyond your Agent Identity.\n\n")
+	b.WriteString("Never treat this runtime workflow as permission to change issue status, investigate, implement, create issues, update issues, delegate, or otherwise act beyond your Agent Identity.\n\n")
 }
 
 // SessionContinuityNotice warns the agent — and, through it, the user — when a
@@ -501,7 +516,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
 	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. What to look for: `## Issue Metadata`.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional — in two bounded reads, never one bulk pull. Scan every thread cheaply with `multica issue comment list %s --roots-only --summary --output json`, then expand only the threads that matter with `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks (e.g. which repo to work in, the prior agent's findings, the reason the issue was reassigned to you). Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant. Flag semantics and pagination: `## Available Commands`.\n", ctx.IssueID, ctx.IssueID)
-	b.WriteString("4. Complete the task within your Agent Identity boundaries. Do not investigate, implement, create issues, update issues, or delegate if your Agent Identity forbids that action; if your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
+	b.WriteString("4. Complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {
 		fmt.Fprintf(b, "5. **Post your final results as a comment** (unless your outcome is `no_action` — in that case, calling `multica squad activity %s no_action --reason \"...\"` alone is sufficient; you MUST exit without posting any comment. DO NOT post a comment announcing no_action or saying you are exiting silently): post it with `multica issue comment add %s` using the platform-correct non-inline mode from ## Comment Formatting (never inline `--content`). Your results are only visible to the user if posted via this CLI call; text in your terminal or run logs is NOT delivered.\n", ctx.IssueID, ctx.IssueID)
 	} else {
@@ -609,7 +624,7 @@ func writeAttachments(b *strings.Builder) {
 	// just downloaded is the most tempting local path to echo back, because it
 	// came from the conversation and *feels* shared. It is not — the download
 	// landed in this run's private workdir.
-	b.WriteString("An attachment you download lands in your own workdir: that local path is a private working copy, not something the reader can open. Never echo it back into a deliverable as a link — deliver the file itself (`## Output`).\n\n")
+	b.WriteString("An attachment you download lands in your own workdir: that local path is a private working copy, not something the reader can open — the link rules in `## Output` apply to it too.\n\n")
 }
 
 // writeAlwaysUseCLI emits the "must go through the multica CLI" guardrail
@@ -724,7 +739,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	case kindQuickCreate:
 		writeAvailableCommandsQuickCreate(&b)
 	default:
-		writeAvailableCommands(&b)
+		writeAvailableCommands(&b, ctx)
 	}
 	writeIssueBodyFormatting(&b)
 
