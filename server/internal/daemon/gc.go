@@ -868,15 +868,20 @@ func (d *Daemon) evictRepoCacheLocked(barePath string, stats *gcStats) {
 		return
 	}
 
+	// Measure before the final check, not after. dirSize walks every file in
+	// the repo, which on a multi-GiB cache takes long enough for a workspace to
+	// re-attach underneath us — putting it between the check and the delete
+	// would reopen most of the window this check exists to close.
+	bytes := dirSize(barePath)
+
 	// Ask again immediately before deleting. The checks above run git and walk
 	// the filesystem, and a workspace can re-attach this repo while they do;
 	// re-reading in-memory state costs one mutex and no network, and shrinks
-	// the window from "the whole .repos walk" to these few statements.
+	// the window from "the whole .repos walk" to these two adjacent statements.
 	if d.repoBarePathIsLive(barePath) {
 		return
 	}
 
-	bytes := dirSize(barePath)
 	if err := os.RemoveAll(barePath); err != nil {
 		d.logger.Warn("gc: repo cache remove failed", "repo", barePath, "error", err)
 		return
