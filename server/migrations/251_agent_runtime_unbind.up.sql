@@ -1,4 +1,4 @@
--- Migration 248 (MUL-5559): deleting a runtime unbinds its agents instead of
+-- Migration 251 (MUL-5559): deleting a runtime unbinds its agents instead of
 -- destroying them.
 --
 -- Before this migration an agent physically could not exist without a runtime
