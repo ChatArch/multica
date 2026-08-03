@@ -81,14 +81,34 @@ describe("manual agent drafts", () => {
     expect(discarded.byOwner.blank).toBeUndefined();
   });
 
-  it("treats anything the user actually entered as content", () => {
-    expect(manualDraftEntryHasContent(entry({ name: "Release" }))).toBe(true);
+  // Every field the form can change, one at a time. An earlier version listed
+  // six of them by hand and silently dropped the rest: picking a model before
+  // typing a name, or setting access first, deleted the slot on the next save.
+  it.each([
+    ["name", { name: "Release" }],
+    ["description", { description: "Ships carefully" }],
+    ["instructions", { instructions: "Be careful" }],
+    ["avatar", { avatarUrl: "🚀" }],
+    ["model", { model: "gpt-5.6-sol" }],
+    ["thinking level", { thinkingLevel: "high" }],
+    ["service tier", { serviceTier: "priority" }],
+    ["access scope", { permissionScope: "workspace" as const }],
+    ["skills", { skillIds: new Set(["skill-1"]) }],
+    ["members", { memberIds: new Set(["member-1"]) }],
+    ["teams", { teamIds: new Set(["team-1"]) }],
+  ])("keeps a draft whose only edit is the %s", (_label, overrides) => {
+    expect(manualDraftEntryHasContent(entry(overrides))).toBe(true);
     expect(
-      manualDraftEntryHasContent(entry({ instructions: "Be careful" })),
-    ).toBe(true);
+      setManualDraftEntry({ byOwner: {} }, "blank", entry(overrides)).byOwner
+        .blank,
+    ).toBeDefined();
+  });
+
+  // The runtime is the one field that must not count: the form seeds it on
+  // every visit, so counting it would store a draft for a form nobody touched.
+  it("does not count the auto-seeded runtime", () => {
     expect(
-      manualDraftEntryHasContent(entry({ skillIds: new Set(["skill-1"]) })),
-    ).toBe(true);
-    expect(manualDraftEntryHasContent(entry({ avatarUrl: "🚀" }))).toBe(true);
+      manualDraftEntryHasContent({ ...entry(), runtimeId: "runtime-9" }),
+    ).toBe(false);
   });
 });

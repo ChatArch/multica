@@ -3,7 +3,7 @@
 import { createDraftStore } from "../drafts/create-draft-store";
 import type { StoredAgentDraft } from "../types";
 import { EMPTY_AGENT_DRAFT } from "./draft";
-import { toStoredAgentDraft } from "./stored-draft";
+import { storedAgentDraftsEqual, toStoredAgentDraft } from "./stored-draft";
 
 /**
  * The manual creation form, kept across navigation.
@@ -31,6 +31,11 @@ export interface ManualAgentDrafts {
   byOwner: Record<string, ManualDraftEntry>;
 }
 
+export const EMPTY_MANUAL_DRAFT_ENTRY: ManualDraftEntry = {
+  runtimeId: "",
+  draft: toStoredAgentDraft(EMPTY_AGENT_DRAFT, null),
+};
+
 export const MANUAL_DRAFT_BLANK_OWNER = "blank";
 
 export function manualDraftOwner(duplicateId: string | null): string {
@@ -38,21 +43,22 @@ export function manualDraftOwner(duplicateId: string | null): string {
 }
 
 /**
- * Whether an entry is worth keeping. A runtime alone does not count: it is
- * seeded automatically on every visit, so treating it as content would store a
- * draft for a form nobody touched — and make "you have unsaved work" true the
- * moment the page opened.
+ * Whether an entry is worth keeping: anything at all differs from a fresh form.
+ *
+ * Compared whole rather than field by field on purpose. An enumerated predicate
+ * silently stops covering each field added to the draft after it was written —
+ * and the failure is invisible, because the field saves fine as long as some
+ * *other* field is also set. The first version of this listed six fields and
+ * dropped a model-only or access-only edit on the floor.
+ *
+ * The runtime is the one thing that must not count, and it is already outside
+ * this comparison: the form seeds it on every visit, so counting it would store
+ * a draft for a form nobody touched and grow a dead slot for every agent ever
+ * opened for duplication. It lives on the entry, not in the draft, for exactly
+ * that reason.
  */
 export function manualDraftEntryHasContent(entry: ManualDraftEntry): boolean {
-  const { draft } = entry;
-  return (
-    draft.name.trim().length > 0 ||
-    draft.description.trim().length > 0 ||
-    draft.instructions.trim().length > 0 ||
-    draft.skill_ids.length > 0 ||
-    draft.member_ids.length > 0 ||
-    draft.avatar_url !== null
-  );
+  return !storedAgentDraftsEqual(entry.draft, EMPTY_MANUAL_DRAFT_ENTRY.draft);
 }
 
 /**
@@ -76,11 +82,6 @@ export function setManualDraftEntry(
 }
 
 const EMPTY_MANUAL_AGENT_DRAFTS: ManualAgentDrafts = { byOwner: {} };
-
-export const EMPTY_MANUAL_DRAFT_ENTRY: ManualDraftEntry = {
-  runtimeId: "",
-  draft: toStoredAgentDraft(EMPTY_AGENT_DRAFT, null),
-};
 
 export const useManualAgentDraftStore = createDraftStore<ManualAgentDrafts>({
   storageKey: "multica:agents:manual-draft",
