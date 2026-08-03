@@ -51,21 +51,36 @@ WHERE subject_type = $1
 -- reclaiming still-executing audit sources the moment PR3 enables dispatching
 -- (review point 5). The query lands in PR3 with the full terminal predicate.
 
--- name: PeekNextClaimableDomainEvent :one
--- Choose the next event the matcher would claim, taking NO lock (MUL-4332 review:
--- production lock order). The matcher locks that event's workspace FIRST and only
--- then claims the event, so its order is workspace -> domain_event, matching
--- DeleteWorkspace's. Claiming first — as the old single-shot claim did — inverted
--- that order against the delete and deadlocked under a real concurrent teardown.
+-- name: PeekClaimableDomainEvents :many
+-- A bounded WINDOW of the next claimable events, taking NO lock (MUL-4332 review:
+-- production lock order + cross-workspace progress). The matcher walks this window,
+-- and for each candidate locks the workspace FIRST and then reserves the event, so
+-- its order is workspace -> domain_event, matching DeleteWorkspace's.
 --
--- Being unlocked means the row may be taken by another matcher before the claim
--- lands; the claim below is a CAS that simply returns no rows in that case.
+-- It returns a WINDOW rather than one row on purpose. With a single row the matcher
+-- could only ever wait on the current head: a slow event held by another worker made
+-- every replica queue behind it (a convoy), destroying the cross-workspace parallel
+-- drain the original FOR UPDATE SKIP LOCKED provided. Walking a window lets a worker
+-- skip a reserved candidate and make progress on a different workspace.
 SELECT id, workspace_id FROM domain_event
 WHERE available_at <= now()
   AND (dispatch_status = 'pending'
        OR (dispatch_status = 'dispatching' AND lease_expires_at < now()))
 ORDER BY seq ASC
-LIMIT 1;
+LIMIT @max_candidates::int;
+
+-- name: ReserveDomainEventForClaim :one
+-- Reserve ONE specific candidate with FOR UPDATE SKIP LOCKED, after its workspace is
+-- already locked. This restores the skip-locked parallelism the original claim had,
+-- but in the correct lock order: a candidate another worker is already processing is
+-- SKIPPED (no rows) so this worker moves to the next candidate instead of convoying
+-- behind it. Re-checks claimability under this statement's snapshot.
+SELECT id FROM domain_event
+WHERE domain_event.id = $1
+  AND domain_event.available_at <= now()
+  AND (domain_event.dispatch_status = 'pending'
+       OR (domain_event.dispatch_status = 'dispatching' AND domain_event.lease_expires_at < now()))
+FOR UPDATE SKIP LOCKED;
 
 -- name: MarkOrphanedDomainEventFailed :execrows
 -- Terminal state for an event whose workspace no longer exists. Self-guarding: the

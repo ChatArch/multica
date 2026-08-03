@@ -499,17 +499,17 @@ func (q *Queries) MarkOrphanedDomainEventFailed(ctx context.Context, id pgtype.U
 	return result.RowsAffected(), nil
 }
 
-const peekNextClaimableDomainEvent = `-- name: PeekNextClaimableDomainEvent :one
+const peekClaimableDomainEvents = `-- name: PeekClaimableDomainEvents :many
 
 SELECT id, workspace_id FROM domain_event
 WHERE available_at <= now()
   AND (dispatch_status = 'pending'
        OR (dispatch_status = 'dispatching' AND lease_expires_at < now()))
 ORDER BY seq ASC
-LIMIT 1
+LIMIT $1::int
 `
 
-type PeekNextClaimableDomainEventRow struct {
+type PeekClaimableDomainEventsRow struct {
 	ID          pgtype.UUID `json:"id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
@@ -520,17 +520,53 @@ type PeekNextClaimableDomainEventRow struct {
 // exist until PR3. Shipping a weaker "dispatched + TTL" delete now would risk
 // reclaiming still-executing audit sources the moment PR3 enables dispatching
 // (review point 5). The query lands in PR3 with the full terminal predicate.
-// Choose the next event the matcher would claim, taking NO lock (MUL-4332 review:
-// production lock order). The matcher locks that event's workspace FIRST and only
-// then claims the event, so its order is workspace -> domain_event, matching
-// DeleteWorkspace's. Claiming first — as the old single-shot claim did — inverted
-// that order against the delete and deadlocked under a real concurrent teardown.
+// A bounded WINDOW of the next claimable events, taking NO lock (MUL-4332 review:
+// production lock order + cross-workspace progress). The matcher walks this window,
+// and for each candidate locks the workspace FIRST and then reserves the event, so
+// its order is workspace -> domain_event, matching DeleteWorkspace's.
 //
-// Being unlocked means the row may be taken by another matcher before the claim
-// lands; the claim below is a CAS that simply returns no rows in that case.
-func (q *Queries) PeekNextClaimableDomainEvent(ctx context.Context) (PeekNextClaimableDomainEventRow, error) {
-	row := q.db.QueryRow(ctx, peekNextClaimableDomainEvent)
-	var i PeekNextClaimableDomainEventRow
-	err := row.Scan(&i.ID, &i.WorkspaceID)
-	return i, err
+// It returns a WINDOW rather than one row on purpose. With a single row the matcher
+// could only ever wait on the current head: a slow event held by another worker made
+// every replica queue behind it (a convoy), destroying the cross-workspace parallel
+// drain the original FOR UPDATE SKIP LOCKED provided. Walking a window lets a worker
+// skip a reserved candidate and make progress on a different workspace.
+func (q *Queries) PeekClaimableDomainEvents(ctx context.Context, maxCandidates int32) ([]PeekClaimableDomainEventsRow, error) {
+	rows, err := q.db.Query(ctx, peekClaimableDomainEvents, maxCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PeekClaimableDomainEventsRow{}
+	for rows.Next() {
+		var i PeekClaimableDomainEventsRow
+		if err := rows.Scan(&i.ID, &i.WorkspaceID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reserveDomainEventForClaim = `-- name: ReserveDomainEventForClaim :one
+SELECT id FROM domain_event
+WHERE domain_event.id = $1
+  AND domain_event.available_at <= now()
+  AND (domain_event.dispatch_status = 'pending'
+       OR (domain_event.dispatch_status = 'dispatching' AND domain_event.lease_expires_at < now()))
+FOR UPDATE SKIP LOCKED
+`
+
+// Reserve ONE specific candidate with FOR UPDATE SKIP LOCKED, after its workspace is
+// already locked. This restores the skip-locked parallelism the original claim had,
+// but in the correct lock order: a candidate another worker is already processing is
+// SKIPPED (no rows) so this worker moves to the next candidate instead of convoying
+// behind it. Re-checks claimability under this statement's snapshot.
+func (q *Queries) ReserveDomainEventForClaim(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, reserveDomainEventForClaim, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }

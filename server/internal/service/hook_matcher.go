@@ -74,6 +74,12 @@ const (
 	// MatcherBatchSize bounds how many events one matcher tick claims and decides.
 	MatcherBatchSize = 100
 
+	// matcherCandidateWindow bounds how far a worker looks past candidates other
+	// workers are already holding before giving up this attempt. It only needs to
+	// exceed the number of concurrent matchers for a busy workspace to stop blocking
+	// other workspaces.
+	matcherCandidateWindow = 32
+
 	// matcherFailureBackoff delays an event that failed transiently, so it cannot sit
 	// at the head of the queue re-failing and starving everything behind it.
 	matcherFailureBackoff = 30 * time.Second
@@ -88,9 +94,6 @@ var MatcherLeaseTTL = 2 * time.Minute
 // transaction, so a non-owner commits nothing. It is an expected outcome, not a
 // failure, and never escapes ClaimAndMatch as an error.
 var errLeaseLost = errors.New("hook matcher: event lease lost")
-
-// errNoClaimableEvent ends a tick: the queue has nothing available right now.
-var errNoClaimableEvent = errors.New("hook matcher: no claimable event")
 
 // errClaimRaceLost means another matcher claimed the peeked event first. Expected
 // under concurrency; the tick simply moves on.
@@ -159,62 +162,79 @@ func (s *HookService) ClaimAndMatch(ctx context.Context, batchSize int32) (int, 
 // latch, and finalizes the event. It reports whether an event was claimed at all
 // and whether it was finalized as dispatched.
 func (s *HookService) claimAndDecideOne(ctx context.Context) (claimed bool, dispatched bool, err error) {
+	// A bounded window of candidates, read WITHOUT locks. Walking a window (rather
+	// than always retrying the single oldest row) is what preserves the
+	// cross-workspace parallel drain the original FOR UPDATE SKIP LOCKED gave: a
+	// candidate another worker already holds is skipped, not queued behind
+	// (MUL-4332 review: convoy).
+	candidates, err := s.Queries.PeekClaimableDomainEvents(ctx, matcherCandidateWindow)
+	if err != nil {
+		return false, false, err
+	}
+	for _, candidate := range candidates {
+		took, ok, err := s.tryClaimAndDecide(ctx, candidate)
+		if err != nil {
+			return took, false, err
+		}
+		if took {
+			return true, ok, nil
+		}
+		// Reserved by another worker, lost the claim race, or an orphan we
+		// finalized: move to the next candidate WITHOUT consuming a batch slot.
+	}
+	return false, false, nil
+}
+
+// tryClaimAndDecide attempts one candidate. It reports whether this worker actually
+// took the event (took=false means "skipped, try the next candidate", which must NOT
+// consume a batch slot) and whether it was finalized as dispatched.
+func (s *HookService) tryClaimAndDecide(ctx context.Context, candidate db.PeekClaimableDomainEventsRow) (took bool, dispatched bool, err error) {
 	lease := util.NewUUID()
 	var eventID, orphanEventID pgtype.UUID
 	err = s.inTxWith(ctx, func(tx pgx.Tx, qtx *db.Queries) error {
-		// WORKSPACE FIRST. Peek at the next claimable event WITHOUT locking it, lock
-		// its workspace, and only then claim. Claiming first (the old single-shot
-		// query) took the domain_event row lock before the workspace lock, the exact
-		// reverse of DeleteWorkspace's order, and deadlocked against a real concurrent
-		// teardown (MUL-4332 review: production lock order).
-		next, err := qtx.PeekNextClaimableDomainEvent(ctx)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return errNoClaimableEvent
-			}
-			return err
-		}
-		if err := lockWorkspaceForAutomationWrite(ctx, qtx, next.WorkspaceID); err != nil {
+		// WORKSPACE FIRST, then the event. This is the same order DeleteWorkspace
+		// takes; claiming the event first inverted it and deadlocked (MUL-4332).
+		if err := lockWorkspaceForAutomationWrite(ctx, qtx, candidate.WorkspaceID); err != nil {
 			if errors.Is(err, ErrWorkspaceGone) {
-				// The workspace is already gone, so this event is an orphan that can
-				// never produce a valid decision. Finalize it terminally — outside this
-				// transaction, since we return an error to roll it back — so the queue
-				// head advances instead of re-selecting it forever.
-				orphanEventID = next.ID
+				orphanEventID = candidate.ID
 				return errOrphanedEvent
 			}
 			return err
 		}
 
-		// Claim the peeked event. The id predicate is a CAS: another matcher may have
-		// taken it between the peek and here, in which case no rows come back.
+		// Reserve THIS candidate with SKIP LOCKED: if another worker already holds
+		// it we skip to the next candidate instead of convoying behind it.
+		if _, err := qtx.ReserveDomainEventForClaim(ctx, candidate.ID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errClaimRaceLost
+			}
+			return err
+		}
+
 		rows, err := qtx.ClaimOneEventWithCandidates(ctx, db.ClaimOneEventWithCandidatesParams{
 			LeaseToken:      lease,
 			LeaseTtlSeconds: MatcherLeaseTTL.Seconds(),
-			EventID:         next.ID,
+			EventID:         candidate.ID,
 		})
 		if err != nil {
 			return err
 		}
 		if len(rows) == 0 {
-			// Lost the race for this event; the tick continues with the next one.
 			return errClaimRaceLost
 		}
 		event := claimedEvent(rows[0])
-		claimed, eventID = true, event.ID
+		took, eventID = true, event.ID
 		ok, err := s.decideAndFinalize(ctx, tx, qtx, event, pinnedCandidates(rows), lease)
 		dispatched = ok
 		return err
 	})
 	switch {
-	case errors.Is(err, errNoClaimableEvent):
-		return false, false, nil
 	case errors.Is(err, errClaimRaceLost):
-		// Another matcher claimed it first. Nothing of ours is pending; keep draining.
-		return true, false, nil
+		// Another worker owns this candidate. Not ours; try the next one.
+		return false, false, nil
 	case errors.Is(err, errOrphanedEvent):
-		// Self-guarding: the query is a no-op if the workspace turns out to still
-		// exist, so this can never finalize a live event.
+		// Self-guarding: a no-op if the workspace turns out to still exist, so this
+		// can never finalize a live event.
 		if _, derr := s.Queries.MarkOrphanedDomainEventFailed(ctx, orphanEventID); derr != nil {
 			slog.Warn("hook matcher: could not finalize an orphaned event",
 				"event_id", util.UUIDToString(orphanEventID), "error", derr)
@@ -222,34 +242,31 @@ func (s *HookService) claimAndDecideOne(ctx context.Context) (claimed bool, disp
 		}
 		slog.Warn("hook matcher: event workspace is gone, marked failed",
 			"event_id", util.UUIDToString(orphanEventID))
-		return true, false, nil
+		// Handled, but it was not a real decision — keep walking the window.
+		return false, false, nil
 	case errors.Is(err, errLeaseLost):
-		if !claimed {
-			// We never took the event, so it is not ours to back off.
+		if !took {
 			return false, false, nil
 		}
-		// We DID claim it in this transaction and then lost ownership, which — with
-		// the claim and the decision in one transaction and the event row locked
-		// throughout — means our own fresh lease expired mid-decision. The rollback
-		// also undid the claim, restoring the original available_at, so without a
-		// backoff the next tick selects this same oldest event again and everything
-		// behind it starves. Back it off exactly like any other failed decision.
+		// Our own fresh lease expired mid-decision. The rollback undid the claim, so
+		// back the event off or it stays at the head of the queue and starves the
+		// rest.
 		if derr := s.deferFailedEvent(ctx, eventID); derr != nil {
 			slog.Warn("hook matcher: could not back off an expired-lease event",
 				"event_id", util.UUIDToString(eventID), "error", derr)
-			return false, false, nil // end the tick rather than spin on the same row
+			return false, false, nil
 		}
 		slog.Warn("hook matcher: lease expired mid-decision, event backed off",
 			"event_id", util.UUIDToString(eventID))
-		return true, false, nil // deferred — keep draining the rest of the queue
+		return true, false, nil
 	case err != nil:
 		if derr := s.deferFailedEvent(ctx, eventID); derr != nil {
 			slog.Warn("hook matcher: could not back off a failed event",
 				"event_id", util.UUIDToString(eventID), "error", derr)
 		}
-		return claimed, false, err
+		return took, false, err
 	}
-	return claimed, dispatched, nil
+	return took, dispatched, nil
 }
 
 // claimedEvent rebuilds the event envelope the decision needs from a claim row.

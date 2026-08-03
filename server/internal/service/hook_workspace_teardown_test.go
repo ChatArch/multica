@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/automation"
 	"github.com/multica-ai/multica/server/internal/domainevent"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -735,4 +736,184 @@ func TestClaimAndMatchAdvancesPastOrphanedWorkspaceEvent(t *testing.T) {
 		t.Errorf("healthy event behind the orphan = %q, want dispatched — the orphan is "+
 			"blocking the head of the global queue", healthyStatus)
 	}
+}
+
+// Two workers, two workspaces: a slow event in one workspace must NOT stop the other
+// workspace's event from being dispatched in the same window (MUL-4332 review:
+// convoy). The single-row unlocked peek regressed this — every worker retried the
+// same head row and queued behind it, losing the cross-workspace parallel drain the
+// original FOR UPDATE SKIP LOCKED provided.
+func TestClaimAndMatchDoesNotConvoyBehindABusyWorkspace(t *testing.T) {
+	f := newTeardownFixture(t)
+	ctx := context.Background()
+
+	for i := 0; i < 60; i++ {
+		n, err := f.svc.ClaimAndMatch(ctx, 500)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	// Event A (older) in the busy workspace; event B (newer) in the neighbour.
+	var slowEventID, healthyEventID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO domain_event (workspace_id, type, schema_version, subject_type, subject_id, actor_type, actor_id, payload, correlation_id, hop_count)
+		VALUES ($1, 'issue.status_changed', 1, 'issue', $2, 'member', $3, '{"from":"todo","to":"done"}'::jsonb, gen_random_uuid(), 0)
+		RETURNING id`, f.ws, f.issueID, f.userID).Scan(&slowEventID); err != nil {
+		t.Fatalf("seed slow event: %v", err)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO domain_event (workspace_id, type, schema_version, subject_type, subject_id, actor_type, payload, correlation_id, hop_count)
+		VALUES ($1, 'issue.status_changed', 1, 'issue', gen_random_uuid(), 'system', '{"from":"todo","to":"done"}'::jsonb, gen_random_uuid(), 0)
+		RETURNING id`, f.neighbor).Scan(&healthyEventID); err != nil {
+		t.Fatalf("seed healthy event: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		f.pool.Exec(bg, `DELETE FROM domain_event WHERE id = ANY($1::uuid[])`, []string{slowEventID, healthyEventID})
+	})
+
+	var slowSeq, healthySeq int64
+	f.pool.QueryRow(ctx, `SELECT seq FROM domain_event WHERE id = $1`, slowEventID).Scan(&slowSeq)
+	f.pool.QueryRow(ctx, `SELECT seq FROM domain_event WHERE id = $1`, healthySeq).Scan(&healthySeq)
+	f.pool.QueryRow(ctx, `SELECT seq FROM domain_event WHERE id = $1`, healthyEventID).Scan(&healthySeq)
+	if slowSeq >= healthySeq {
+		t.Fatalf("fixture wrong: slow seq %d must precede healthy seq %d", slowSeq, healthySeq)
+	}
+
+	// Worker 1 holds the slow event for a while (a long decision).
+	f.sleepDuringEventClaim(t, slowEventID, 1.5)
+	worker1 := make(chan struct{})
+	go func() {
+		defer close(worker1)
+		f.svc.ClaimAndMatch(ctx, 5)
+	}()
+	time.Sleep(400 * time.Millisecond) // let worker 1 take the slow event
+
+	// Worker 2 must skip past it and dispatch the neighbour's event NOW, not wait.
+	done := make(chan int, 1)
+	go func() {
+		n, err := f.svc.ClaimAndMatch(ctx, 5)
+		if err != nil {
+			t.Errorf("worker 2: %v", err)
+		}
+		done <- n
+	}()
+
+	select {
+	case n := <-done:
+		if n == 0 {
+			t.Error("worker 2 dispatched nothing while worker 1 held an older event — " +
+				"it convoyed behind another workspace instead of skipping past it")
+		}
+	case <-time.After(1200 * time.Millisecond):
+		t.Fatal("worker 2 blocked behind worker 1's slow event (convoy): a busy workspace " +
+			"is stalling every other workspace's drain")
+	}
+
+	var healthyStatus string
+	f.pool.QueryRow(ctx, `SELECT dispatch_status FROM domain_event WHERE id = $1`, healthyEventID).Scan(&healthyStatus)
+	if healthyStatus != "dispatched" {
+		t.Errorf("neighbour event = %q, want dispatched while the busy workspace was still working", healthyStatus)
+	}
+	<-worker1
+}
+
+// A REAL terminal task transition racing a workspace delete must not deadlock.
+// CompleteTask writes task.completed through a DIRECT domainevent.Write, so fixing
+// WriteInTx alone did not cover it: it locked the task row first, giving
+// task -> workspace against the delete's workspace -> task (MUL-4332 review).
+func TestCompleteTaskRacingWorkspaceDeleteDoesNotDeadlock(t *testing.T) {
+	f := newTeardownFixture(t)
+	ctx := context.Background()
+
+	// A running task on the fixture's issue/agent.
+	var taskID, agentID string
+	if err := f.pool.QueryRow(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 LIMIT 1`, f.ws).Scan(&agentID); err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, originator_user_id, accountable_user_id, originator_source)
+		VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), $2, 'running', 0, $3, $3, 'delegation')
+		RETURNING id`, agentID, f.issueID, f.userID).Scan(&taskID); err != nil {
+		t.Fatalf("seed running task: %v", err)
+	}
+	t.Cleanup(func() {
+		f.pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+
+	taskSvc := &TaskService{Queries: db.New(f.pool), TxStarter: f.pool, Bus: events.New()}
+
+	// Hold the completion inside its transaction so the teardown starts while it is
+	// in flight — the interleaving in which a reverse-ordered writer deadlocks.
+	f.sleepDuringTaskUpdate(t, taskID, 1.0)
+
+	completed := make(chan error, 1)
+	go func() {
+		_, err := taskSvc.CompleteTask(ctx, util.MustParseUUID(taskID), []byte(`{}`), "", "", false, "")
+		completed <- err
+	}()
+	time.Sleep(300 * time.Millisecond)
+
+	deleteTx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteTx.Rollback(ctx)
+	dqtx := db.New(f.pool).WithTx(deleteTx)
+	if _, err := dqtx.LockWorkspaceForDelete(ctx, util.MustParseUUID(f.ws)); err != nil {
+		assertNoDeadlock(t, err, "the delete transaction")
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`,
+		`DELETE FROM member WHERE workspace_id = $1`,
+		`DELETE FROM issue WHERE workspace_id = $1`,
+	} {
+		_, err := deleteTx.Exec(ctx, stmt, f.ws)
+		assertNoDeadlock(t, err, "the delete transaction")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := deleteTx.Commit(ctx); err != nil {
+		assertNoDeadlock(t, err, "the delete commit")
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-completed:
+		// It may fail (its workspace is being torn down) but must NOT deadlock.
+		assertNoDeadlock(t, err, "CompleteTask")
+	case <-time.After(10 * time.Second):
+		t.Fatal("CompleteTask never returned")
+	}
+}
+
+// sleepDuringTaskUpdate pauses the terminal UPDATE of one task row, so a test can
+// start a teardown while the completion transaction holds that row.
+func (f teardownFixture) sleepDuringTaskUpdate(t *testing.T, taskID string, seconds float64) {
+	t.Helper()
+	ctx := context.Background()
+	name := fmt.Sprintf("task_term_sleep_%d", time.Now().UnixNano())
+	fn := name + "_fn"
+	if _, err := f.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_sleep(%f); RETURN NEW; END; $$;`, quoteIdent(fn), seconds)); err != nil {
+		t.Fatalf("create task sleep function: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TRIGGER %s BEFORE UPDATE OF status ON agent_task_queue
+		FOR EACH ROW WHEN (NEW.id = %s::uuid AND NEW.status = 'completed')
+		EXECUTE FUNCTION %s();`, quoteIdent(name), quoteLiteral(taskID), quoteIdent(fn))); err != nil {
+		t.Fatalf("create task sleep trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		f.pool.Exec(bg, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", quoteIdent(name)))
+		f.pool.Exec(bg, fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", quoteIdent(fn)))
+	})
 }

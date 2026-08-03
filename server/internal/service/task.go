@@ -2874,7 +2874,18 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	// Workspace FIRST, before the task row lock, so this transaction and
+	// DeleteWorkspace take their locks in the same order (MUL-4332 review).
+	completeWorkspaceID, completeAlreadyTerminal, err := s.resolveTaskWorkspaceBeforeTx(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("complete task: resolve workspace: %w", err)
+	}
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if !completeAlreadyTerminal {
+			if err := lockWorkspaceForAutomationWrite(ctx, qtx, completeWorkspaceID); err != nil {
+				return err
+			}
+		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
 			ID:                    taskID,
 			Result:                result,
@@ -3330,7 +3341,17 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	// Workspace FIRST, before the task row lock (MUL-4332 review).
+	failWorkspaceID, failAlreadyTerminal, err := s.resolveTaskWorkspaceBeforeTx(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("fail task: resolve workspace: %w", err)
+	}
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if !failAlreadyTerminal {
+			if err := lockWorkspaceForAutomationWrite(ctx, qtx, failWorkspaceID); err != nil {
+				return err
+			}
+		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
 			ID:                    taskID,
 			Error:                 pgtype.Text{String: errMsg, Valid: true},
@@ -4156,6 +4177,32 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 // resolver lacks. An invalid return means genuinely unresolvable; the caller
 // treats that as fail-closed (review point 4): it errors out and rolls the whole
 // terminal transition back rather than committing a fact with no event.
+// resolveTaskWorkspaceBeforeTx reads a task's workspace WITHOUT locking the task
+// row, so a terminal-transition transaction can take the workspace lock as its FIRST
+// lock (MUL-4332 review: production lock order). Locking the task first — as
+// CompleteTask/FailTask did — gives task -> workspace, the reverse of
+// DeleteWorkspace's workspace -> task, and deadlocks (40P01) under a real concurrent
+// teardown. The read is unlocked on purpose: a task never changes workspace, and if
+// the workspace disappears before the lock the transaction correctly fails closed.
+// It reports alreadyTerminal for a task that is already completed/cancelled/failed:
+// that transition is an idempotent no-op which writes nothing, so it needs no
+// workspace lock and the existing already-finalized path handles it.
+func (s *TaskService) resolveTaskWorkspaceBeforeTx(ctx context.Context, taskID pgtype.UUID) (ws pgtype.UUID, alreadyTerminal bool, err error) {
+	t, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return pgtype.UUID{}, false, err
+	}
+	switch t.Status {
+	case "completed", "cancelled", "failed":
+		return pgtype.UUID{}, true, nil
+	}
+	ws = s.resolveTaskWorkspaceForEvent(ctx, s.Queries, t)
+	if !ws.Valid {
+		return pgtype.UUID{}, false, fmt.Errorf("unresolvable workspace for task %s", util.UUIDToString(taskID))
+	}
+	return ws, false, nil
+}
+
 func (s *TaskService) resolveTaskWorkspaceForEvent(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue) pgtype.UUID {
 	if task.IssueID.Valid {
 		if issue, err := qtx.GetIssue(ctx, task.IssueID); err == nil {
