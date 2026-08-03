@@ -2301,16 +2301,167 @@ type FailAgentTasksByIDsParams struct {
 }
 
 // Fails a specific, already-resolved set of tasks by id — the terminal half of
-// the MUL-4332 poison-isolated bulk fail (review point 2). The caller has just
-// selected these ids with SelectStaleTasksToFail / SelectExpiredQueuedTasks /
-// SelectTasksForOfflineRuntimes / SelectOrphanedTasksForRuntime FOR UPDATE in
-// the SAME transaction, so the rows are locked and cannot have transitioned;
-// the status guard is a defensive backstop that keeps this idempotent if the id
-// set is ever reused. @error / @failure_reason are supplied per sweeper. Both
-// wait_reason and prepare_lease_expires_at are cleared (clearing a NULL is a
-// no-op) so this one query serves every bulk-fail caller.
+// the MUL-4332 poison-isolated bulk fail (review point 2).
+//
+// Used ONLY by the callers whose entire eligibility predicate lives on the task row
+// itself: the queued-TTL sweeper and per-runtime orphan recovery. Those rows are
+// already locked by this transaction's re-lock query, so nothing can move them
+// between the check and this UPDATE, and the status guard is just a defensive
+// backstop that keeps this idempotent if the id set is ever reused.
+//
+// The stale and offline-runtime sweepers must NOT use this: their predicates also
+// read agent_runtime, a row the task lock does not cover, so they need the runtime
+// condition inside the statement that changes the status. They use
+// FailStaleTasksByIDs / FailOfflineRuntimeTasksByIDs instead.
+//
+// @error / @failure_reason are supplied per sweeper. Both wait_reason and
+// prepare_lease_expires_at are cleared (clearing a NULL is a no-op).
 func (q *Queries) FailAgentTasksByIDs(ctx context.Context, arg FailAgentTasksByIDsParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, failAgentTasksByIDs, arg.Error, arg.FailureReason, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const failStaleTasksByIDs = `-- name: FailStaleTasksByIDs :many
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    error = $1,
+    failure_reason = $2,
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = ANY($3::uuid[])
+  AND (
+        (
+          status = 'dispatched'
+          AND dispatched_at < now() - make_interval(secs => $4::double precision)
+          AND (prepare_lease_expires_at IS NULL OR prepare_lease_expires_at < now())
+        )
+     OR (
+          status = 'running'
+          AND started_at < now() - make_interval(secs => $5::double precision)
+          AND NOT EXISTS (
+              SELECT 1 FROM (
+                  SELECT r.status, r.last_seen_at
+                  FROM agent_runtime r
+                  WHERE r.id = agent_task_queue.runtime_id
+                  FOR SHARE
+                  OFFSET 0
+              ) locked_runtime
+              WHERE locked_runtime.status = 'online'
+                AND locked_runtime.last_seen_at > now() - make_interval(secs => $6::double precision)
+          )
+        )
+      )
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for
+`
+
+type FailStaleTasksByIDsParams struct {
+	Error                 pgtype.Text   `json:"error"`
+	FailureReason         pgtype.Text   `json:"failure_reason"`
+	Ids                   []pgtype.UUID `json:"ids"`
+	DispatchedTimeoutSecs float64       `json:"dispatched_timeout_secs"`
+	RunningTimeoutSecs    float64       `json:"running_timeout_secs"`
+	RuntimeStaleSecs      float64       `json:"runtime_stale_secs"`
+}
+
+// The stale sweeper's terminal statement, and the ONE atomic boundary for its
+// eligibility (MUL-4332 review: runtime condition vs task fail).
+//
+// LockStaleTasksByIDsForFail locks the TASK rows, but the running branch's liveness
+// signal lives on a DIFFERENT row — agent_runtime.status / last_seen_at — which that
+// lock does not protect. A daemon calling TouchAgentRuntimeLastSeen after the lock
+// returned and before this UPDATE would still have its live task killed. So the full
+// predicate is repeated HERE, in the same statement that changes the status, and the
+// runtime row is taken FOR SHARE so a heartbeat cannot commit between our decision
+// and our commit: it either lands before this statement's snapshot (we see it and
+// skip the task) or it waits behind this lock (serialized after our decision).
+//
+// Lock order is workspace -> agent_task_queue -> agent_runtime, matching the existing
+// task-then-runtime order in the workspace revoke transaction
+// (CancelAgentTasksByRuntimeOrAgent then ForceOfflineRuntimesByIDs); nothing in the
+// codebase takes agent_runtime before agent_task_queue, so this adds no cycle.
+//
+// The `OFFSET 0` is a deliberate optimization fence, NOT cosmetic: without it the
+// planner pushes the online/last_seen_at test down into the locked scan, so a STALE
+// runtime matches nothing and its row is never locked — leaving exactly the window
+// this query exists to close. The fence keeps the lock on "this task's runtime row,
+// whatever its state" and applies the liveness test afterwards.
+func (q *Queries) FailStaleTasksByIDs(ctx context.Context, arg FailStaleTasksByIDsParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, failStaleTasksByIDs,
+		arg.Error,
+		arg.FailureReason,
+		arg.Ids,
+		arg.DispatchedTimeoutSecs,
+		arg.RunningTimeoutSecs,
+		arg.RuntimeStaleSecs,
+	)
 	if err != nil {
 		return nil, err
 	}

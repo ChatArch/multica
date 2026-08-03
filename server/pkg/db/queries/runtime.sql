@@ -428,3 +428,36 @@ WHERE id = ANY(@ids::uuid[])
   )
 ORDER BY created_at ASC
 FOR UPDATE SKIP LOCKED;
+
+
+-- name: FailOfflineRuntimeTasksByIDs :many
+-- The offline-runtime sweeper's terminal statement, and the ONE atomic boundary for
+-- its eligibility. Same reasoning as FailStaleTasksByIDs in agent.sql: the task row
+-- lock says nothing about agent_runtime.status, so a daemon that re-registers via
+-- MarkAgentRuntimeOnline after the re-lock returned would still have its running task
+-- failed with a `runtime_offline` event. The runtime condition is therefore repeated
+-- in this statement and its row is held FOR SHARE until the fact + event commit.
+--
+-- `OFFSET 0` fences the status test out of the locked scan so the row is locked
+-- whatever its state, matching FailStaleTasksByIDs and staying correct regardless of
+-- how the planner chooses to push predicates down.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    error = @error,
+    failure_reason = @failure_reason,
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = ANY(@ids::uuid[])
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND EXISTS (
+      SELECT 1 FROM (
+          SELECT r.status
+          FROM agent_runtime r
+          WHERE r.id = agent_task_queue.runtime_id
+          FOR SHARE
+          OFFSET 0
+      ) locked_runtime
+      WHERE locked_runtime.status = 'offline'
+  )
+RETURNING *;

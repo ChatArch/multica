@@ -299,11 +299,17 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 				RuntimeStaleSecs:      staleThresholdSeconds,
 			})
 		},
+		// The task row lock does NOT cover agent_runtime.last_seen_at, so the fail
+		// itself repeats the full predicate and holds the runtime row — otherwise a
+		// heartbeat landing after the re-lock would still lose its live task.
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
-			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
-				Ids:           ids,
-				Error:         pgtype.Text{String: "task timed out", Valid: true},
-				FailureReason: pgtype.Text{String: "timeout", Valid: true},
+			return qtx.FailStaleTasksByIDs(ctx, db.FailStaleTasksByIDsParams{
+				Ids:                   ids,
+				DispatchedTimeoutSecs: dispatchTimeoutSeconds,
+				RunningTimeoutSecs:    runningTimeoutSeconds,
+				RuntimeStaleSecs:      staleThresholdSeconds,
+				Error:                 pgtype.Text{String: "task timed out", Valid: true},
+				FailureReason:         pgtype.Text{String: "timeout", Valid: true},
 			})
 		})
 	// Partial success is real: err can be non-nil while OTHER workspaces committed
@@ -344,8 +350,11 @@ func sweepOfflineRuntimeTasks(ctx context.Context, taskSvc *service.TaskService)
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.LockOfflineRuntimeTasksByIDsForFail(ctx, ids)
 		},
+		// Same atomic boundary as the stale sweeper: the runtime's status is re-checked
+		// (and its row held) by the statement that actually fails the task, so a daemon
+		// coming back online after the re-lock cannot lose the task it is running.
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
-			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
+			return qtx.FailOfflineRuntimeTasksByIDs(ctx, db.FailOfflineRuntimeTasksByIDsParams{
 				Ids:           ids,
 				Error:         pgtype.Text{String: "runtime went offline", Valid: true},
 				FailureReason: pgtype.Text{String: "runtime_offline", Valid: true},

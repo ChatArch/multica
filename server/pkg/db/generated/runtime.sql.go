@@ -216,6 +216,117 @@ func (q *Queries) DeleteSystemAgentsByRuntime(ctx context.Context, runtimeID pgt
 	return err
 }
 
+const failOfflineRuntimeTasksByIDs = `-- name: FailOfflineRuntimeTasksByIDs :many
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    error = $1,
+    failure_reason = $2,
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = ANY($3::uuid[])
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND EXISTS (
+      SELECT 1 FROM (
+          SELECT r.status
+          FROM agent_runtime r
+          WHERE r.id = agent_task_queue.runtime_id
+          FOR SHARE
+          OFFSET 0
+      ) locked_runtime
+      WHERE locked_runtime.status = 'offline'
+  )
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for
+`
+
+type FailOfflineRuntimeTasksByIDsParams struct {
+	Error         pgtype.Text   `json:"error"`
+	FailureReason pgtype.Text   `json:"failure_reason"`
+	Ids           []pgtype.UUID `json:"ids"`
+}
+
+// The offline-runtime sweeper's terminal statement, and the ONE atomic boundary for
+// its eligibility. Same reasoning as FailStaleTasksByIDs in agent.sql: the task row
+// lock says nothing about agent_runtime.status, so a daemon that re-registers via
+// MarkAgentRuntimeOnline after the re-lock returned would still have its running task
+// failed with a `runtime_offline` event. The runtime condition is therefore repeated
+// in this statement and its row is held FOR SHARE until the fact + event commit.
+//
+// `OFFSET 0` fences the status test out of the locked scan so the row is locked
+// whatever its state, matching FailStaleTasksByIDs and staying correct regardless of
+// how the planner chooses to push predicates down.
+func (q *Queries) FailOfflineRuntimeTasksByIDs(ctx context.Context, arg FailOfflineRuntimeTasksByIDsParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, failOfflineRuntimeTasksByIDs, arg.Error, arg.FailureReason, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findLegacyRuntimesByDaemonID = `-- name: FindLegacyRuntimesByDaemonID :many
 SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name FROM agent_runtime
 WHERE workspace_id = $1
