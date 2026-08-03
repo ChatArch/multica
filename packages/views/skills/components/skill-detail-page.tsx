@@ -807,10 +807,27 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     baselineRef.current = seeded;
   }, []);
 
+  /**
+   * Adopt a server version wholesale: draft, baseline, seeded key and conflict
+   * flag all move together. Every path that accepts a server version goes
+   * through here — first load, silent refresh, Save, Discard — so the four
+   * pieces can never drift apart.
+   */
+  const adoptServerVersion = useCallback(
+    (s: Skill, resetSelection = false) => {
+      seededKeyRef.current = `${wsId}:${s.id}@${s.updated_at}`;
+      setConflictPending(false);
+      seedFromSkill(s);
+      if (resetSelection) setSelectedPath(SKILL_MD);
+    },
+    [wsId, seedFromSkill],
+  );
+
   useEffect(() => {
     if (!skill) return;
-    const key = `${wsId}:${skill.id}@${skill.updated_at}`;
-    if (seededKeyRef.current === key) return;
+    if (seededKeyRef.current === `${wsId}:${skill.id}@${skill.updated_at}`) {
+      return;
+    }
 
     const sameSkill =
       seededKeyRef.current !== null &&
@@ -820,16 +837,18 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     // the local draft alone: with no local edits the user is simply reading
     // the page, so pull the new version in silently instead of accusing them
     // of an edit they never made and freezing the editor on stale text.
+    //
+    // Re-run on draft changes, not just on new server versions: a conflict the
+    // user resolves by reverting their own edits has to release the page. The
+    // save bar is dirty-gated, so holding the conflict past that point would
+    // leave the banner above stale text with no Discard left to press.
     if (sameSkill && hasLocalEdits(draftRef.current, baselineRef.current)) {
       setConflictPending(true);
       return;
     }
 
-    seededKeyRef.current = key;
-    setConflictPending(false);
-    seedFromSkill(skill);
-    if (!sameSkill) setSelectedPath(SKILL_MD);
-  }, [skill, wsId, seedFromSkill]);
+    adoptServerVersion(skill, !sameSkill);
+  }, [skill, wsId, adoptServerVersion, name, description, content, files]);
 
   const creator = useMemo<MemberWithUser | null>(
     () =>
@@ -916,9 +935,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       };
       const updated = await api.updateSkill(skill.id, payload);
       qc.setQueryData(skillDetailOptions(wsId, skill.id).queryKey, updated);
-      seedFromSkill(updated);
-      seededKeyRef.current = `${wsId}:${updated.id}@${updated.updated_at}`;
-      setConflictPending(false);
+      adoptServerVersion(updated);
       qc.invalidateQueries({
         queryKey: workspaceKeys.skills(wsId),
         exact: true,
@@ -934,9 +951,7 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
 
   const handleDiscard = () => {
     if (!skill) return;
-    seedFromSkill(skill);
-    seededKeyRef.current = `${wsId}:${skill.id}@${skill.updated_at}`;
-    setConflictPending(false);
+    adoptServerVersion(skill);
   };
 
   const handleDelete = async () => {

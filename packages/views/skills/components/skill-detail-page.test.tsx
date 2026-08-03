@@ -327,6 +327,25 @@ describe("SkillDetailPage draft baseline (MUL-5645)", () => {
     expect(screen.queryByText(/^Changed:/)).toBeNull();
   });
 
+  it("releases the conflict once the user reverts their own edits", async () => {
+    const { queryClient } = renderPage();
+    const field = (await screen.findByLabelText(
+      "Description",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: "my unsaved edit" } });
+
+    await remoteUpdate(queryClient, { description: "Rewritten by the agent" });
+    expect(await screen.findByText(CONFLICT_BANNER)).toBeTruthy();
+
+    // Reverting by hand leaves nothing to protect. The save bar is dirty-gated,
+    // so if the page held the conflict here the banner would sit above stale
+    // text with no Discard left to press — a dead end short of a reload.
+    fireEvent.change(field, { target: { value: LONG_DESCRIPTION } });
+
+    expect(await screen.findByDisplayValue("Rewritten by the agent")).toBeTruthy();
+    expect(screen.queryByText(CONFLICT_BANNER)).toBeNull();
+  });
+
   it("keeps the draft and warns when a remote edit lands on real local edits", async () => {
     const { queryClient } = renderPage();
     const field = (await screen.findByLabelText(
