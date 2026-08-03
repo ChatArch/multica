@@ -2,11 +2,6 @@
 
 import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useDefaultLayout } from "react-resizable-panels";
-import {
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@multica/ui/components/ui/resizable";
 import { agentBuilderSessionListOptions } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -61,10 +56,6 @@ export function AiCreateAgentPage() {
     [],
   );
 
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "multica_agent_builder_layout",
-  });
-
   const open = useCallback(
     (nextSessionId: string) =>
       navigation.replace(
@@ -104,44 +95,35 @@ export function AiCreateAgentPage() {
         </>
       }
     >
-      <ResizablePanelGroup
-        orientation="horizontal"
-        className="min-h-0 flex-1"
-        defaultLayout={defaultLayout}
-        onLayoutChanged={onLayoutChanged}
-      >
-        {sessionId ? (
-          <BuilderWorkspace
-            // Switching conversations remounts everything below: the draft,
-            // the applied-message marker and the composer all belong to one
-            // conversation, and a remount is the only reset that cannot forget
-            // a field.
-            key={sessionId}
-            sessionId={sessionId}
-            squadId={squadId}
-            session={openSession}
-            sessionSettled={sessionSettled}
-            fallbackRuntimeId={startedRuntimeId}
-            onDiscarded={closeSession}
-            onRuntimeLabel={setRuntimeLabel}
-          />
-        ) : (
-          <ResizablePanel id="setup">
-            <BuilderSetupPanel
-              sessions={sessions}
-              onResume={(nextSessionId) => {
-                setStartedRuntimeId("");
-                open(nextSessionId);
-              }}
-              onStarted={(nextSessionId, runtimeId) => {
-                setStartedRuntimeId(runtimeId);
-                open(nextSessionId);
-              }}
-              onRuntimeLabel={handleSetupRuntimeLabel}
-            />
-          </ResizablePanel>
-        )}
-      </ResizablePanelGroup>
+      {sessionId ? (
+        <BuilderWorkspace
+          // Switching conversations remounts everything below: the draft, the
+          // applied-message marker and the composer all belong to one
+          // conversation, and a remount is the only reset that cannot forget a
+          // field.
+          key={sessionId}
+          sessionId={sessionId}
+          squadId={squadId}
+          session={openSession}
+          sessionSettled={sessionSettled}
+          fallbackRuntimeId={startedRuntimeId}
+          onDiscarded={closeSession}
+          onRuntimeLabel={setRuntimeLabel}
+        />
+      ) : (
+        <BuilderSetupPanel
+          sessions={sessions}
+          onResume={(nextSessionId) => {
+            setStartedRuntimeId("");
+            open(nextSessionId);
+          }}
+          onStarted={(nextSessionId, runtimeId) => {
+            setStartedRuntimeId(runtimeId);
+            open(nextSessionId);
+          }}
+          onRuntimeLabel={handleSetupRuntimeLabel}
+        />
+      )}
     </AgentCreateShell>
   );
 }

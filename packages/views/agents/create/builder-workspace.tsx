@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useDefaultLayout } from "react-resizable-panels";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +16,7 @@ import {
 import {
   ResizableHandle,
   ResizablePanel,
+  ResizablePanelGroup,
 } from "@multica/ui/components/ui/resizable";
 import {
   applyDraftRuntimeChange,
@@ -73,6 +75,9 @@ export function BuilderWorkspace({
   onRuntimeLabel: (label: string | null) => void;
 }) {
   const { t } = useT("agents");
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "multica_agent_builder_layout",
+  });
 
   // Resuming: the conversation already runs somewhere, and only the server
   // knows where. Until it answers, the form seeds no runtime at all — falling
@@ -285,74 +290,86 @@ export function BuilderWorkspace({
 
   return (
     <>
-      <ResizablePanel id="conversation" minSize="30%">
-        <BuilderConversation
-          sessionId={sessionId}
-          messages={displayMessages}
-          loading={builder.messagesLoading}
-          pendingTask={builder.pendingTask}
-          runtimeOnline={selectedRuntime?.status === "online"}
-          onSend={builder.send}
-          onStop={() => void builder.stop()}
-          restoreDraftRequest={builder.restoreDraftRequest}
-          onRestoreDraftApplied={builder.handleRestoreDraftApplied}
-          error={builder.error}
-        />
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel
-        id="config"
-        defaultSize={420}
-        minSize={340}
-        groupResizeBehavior="preserve-pixel-size"
+      {/* The group lives here, not on the route, so its two panels are its
+          only children — the same shape the chat page uses. A group whose
+          children alternate between one and two panels (setup vs conversation)
+          cannot keep a single persisted layout straight, and a panel arriving
+          through a child component's fragment is not a child it can measure. */}
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
       >
-        <div className="flex h-full min-h-0 flex-col border-l bg-muted/10">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-2xl px-5 py-6">
-              <div className="mb-6">
-                <h2 className="text-title-sm font-semibold tracking-tight">
-                  {t(($) => $.creation_studio.live_draft)}
-                </h2>
-                <p className="mt-1 text-caption text-muted-foreground">
-                  {t(($) => $.creation_studio.live_draft_hint)}
-                </p>
-              </div>
-              <AgentConfigurationPanel
-                compact
-                draft={draft}
-                onChange={setDraft}
-                runtimes={form.runtimes}
-                runtimesLoading={form.runtimesLoading}
-                members={form.members}
-                currentUserId={form.currentUserId}
-                nameError={submit.nameError}
-                onNameChange={(name) => {
-                  submit.clearNameError();
-                  setDraft((current) => ({ ...current, name }));
-                }}
-                onRuntimeSelect={(runtimeId) => {
-                  void handleRuntimeSelect(runtimeId);
-                }}
-                runtimeSwitchPending={builder.pending}
-                // Also locked while the carrier's runtime is unknown, so the
-                // picker cannot offer a switch it would refuse to perform.
-                runtimeSwitchInFlight={
-                  builder.switchingRuntime || !runtimeKnown
-                }
-              />
-            </div>
-          </div>
-          <CreateAgentFooter
-            canCreate={canCreate}
-            creating={submit.creating}
-            squad={!!squadId}
-            error={submit.formError}
-            onCreate={() => void submit.create()}
-            onDiscard={() => setConfirmingDiscard(true)}
-            discarding={builder.closing}
+        <ResizablePanel id="conversation" minSize="30%">
+          <BuilderConversation
+            sessionId={sessionId}
+            messages={displayMessages}
+            loading={builder.messagesLoading}
+            pendingTask={builder.pendingTask}
+            runtimeOnline={selectedRuntime?.status === "online"}
+            onSend={builder.send}
+            onStop={() => void builder.stop()}
+            restoreDraftRequest={builder.restoreDraftRequest}
+            onRestoreDraftApplied={builder.handleRestoreDraftApplied}
+            error={builder.error}
           />
-        </div>
-      </ResizablePanel>
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel
+          id="config"
+          defaultSize={420}
+          minSize={340}
+          groupResizeBehavior="preserve-pixel-size"
+        >
+          <div className="flex h-full min-h-0 flex-col border-l bg-muted/10">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto max-w-2xl px-5 py-6">
+                <div className="mb-6">
+                  <h2 className="text-title-sm font-semibold tracking-tight">
+                    {t(($) => $.creation_studio.live_draft)}
+                  </h2>
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    {t(($) => $.creation_studio.live_draft_hint)}
+                  </p>
+                </div>
+                <AgentConfigurationPanel
+                  compact
+                  draft={draft}
+                  onChange={setDraft}
+                  runtimes={form.runtimes}
+                  runtimesLoading={form.runtimesLoading}
+                  members={form.members}
+                  currentUserId={form.currentUserId}
+                  nameError={submit.nameError}
+                  onNameChange={(name) => {
+                    submit.clearNameError();
+                    setDraft((current) => ({ ...current, name }));
+                  }}
+                  onRuntimeSelect={(runtimeId) => {
+                    void handleRuntimeSelect(runtimeId);
+                  }}
+                  runtimeSwitchPending={builder.pending}
+                  // Also locked while the carrier's runtime is unknown, so the
+                  // picker cannot offer a switch it would refuse to perform.
+                  runtimeSwitchInFlight={
+                    builder.switchingRuntime || !runtimeKnown
+                  }
+                />
+              </div>
+            </div>
+            <CreateAgentFooter
+              canCreate={canCreate}
+              creating={submit.creating}
+              squad={!!squadId}
+              error={submit.formError}
+              onCreate={() => void submit.create()}
+              onDiscard={() => setConfirmingDiscard(true)}
+              discarding={builder.closing}
+            />
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       <AlertDialog
         open={confirmingDiscard}
