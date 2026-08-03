@@ -201,9 +201,15 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 22 reasons. Order is
+// allReasons is the canonical ordered list of the 23 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
-// AllReasons) can build deterministic label sets across restarts.
+// AllReasons) can build deterministic label sets across restarts. New reasons
+// are APPENDED to their group so existing positions never shift.
+//
+// Membership is not cosmetic: metrics.NormalizeFailureReason only treats values
+// in AllReasons() as known, and falls back to free-text Classify() otherwise —
+// which silently relabels an unregistered platform-side reason as
+// `agent_error.unknown`. Every new Reason must be added here.
 //
 // Ordering:
 //  1. Platform-side reasons in the same order they tend to fire in a
@@ -220,6 +226,9 @@ var allReasons = []Reason{
 	ReasonAgentBlocked,
 	ReasonAPIInvalidRequest,
 	ReasonSkillBundleUnavailable,
+	// Fires at claim time — earlier than any of the above in lifecycle terms,
+	// but appended to keep the established label ordering stable.
+	ReasonMcpConfigDaemonOutdated,
 
 	// Agent process side: provider errors.
 	ReasonAgentProviderAuthOrAccess,

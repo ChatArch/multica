@@ -7,7 +7,7 @@
 // failed tasks no longer have a top-level workload state; failure context
 // is purely a detail-page concern now.
 //
-// Covers the canonical taxonomy in server/pkg/taskfailure — 7 platform-side
+// Covers the canonical taxonomy in server/pkg/taskfailure — 9 platform-side
 // reasons plus 14 `agent_error.*` sub-reasons — and the pre-MUL-1949 coarse
 // values still present on historical rows. This used to be a
 // `Record<TaskFailureReason, string>` indexed with a cast, which silently
@@ -24,6 +24,10 @@ const REASON_LABEL: Record<string, string> = {
   agent_blocked: "Waiting on human input",
   api_invalid_request: "Rejected by the model API",
   skill_bundle_unavailable: "Couldn't download the agent's skills",
+  // Names the operator action, not just the condition: this task did not run
+  // because the runtime's daemon is too old to enforce the agent's MCP
+  // allowlist (GitHub #6283).
+  mcp_config_daemon_outdated: "Daemon too old for this agent's MCP limits — upgrade it",
 
   // Agent process side — provider.
   "agent_error.provider_auth_or_access": "Provider auth failed",

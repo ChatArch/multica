@@ -15,15 +15,22 @@ import (
 // are acceptable for this agent).
 const mcpConfigDaemonOutdatedMessage = "this agent has a managed mcp_config, which requires a daemon that enforces it as an authoritative allowlist; upgrade the local daemon, or set runtime_config.mcp.inherit_runtime=true to accept the runtime host's MCP servers as well"
 
-// providersOldDaemonsMergedRuntimeMcp are the providers whose pre-#6283 daemon
-// merged the runtime host's own MCP servers into a managed mcp_config — i.e. the
-// only providers where an outdated daemon can widen the agent's tool surface.
+// providersOldDaemonsMergedRuntimeMcp is a FROZEN historical set: the providers
+// that daemons WITHOUT DaemonCapabilityAuthoritativeMcpV1 actually merged host
+// MCP servers for. It describes shipped behaviour of old binaries, so it is
+// finished — do NOT keep it in sync with the daemon's current provider switch.
 //
-// Mirrors the provider switch in daemon.loadRuntimeMcpServerConfigs. Providers
-// absent from that switch (notably qwen) were never merged and already had
-// strict semantics, so gating them would cancel tasks that carry no risk. Keep
-// the two lists in lockstep: adding runtime MCP discovery for a new provider
-// must add it here too.
+// Why the distinction matters. Runtime MCP discovery for a NEW provider can only
+// ship in a daemon that already advertises the capability, so such a daemon is
+// never gated in the first place. Adding that provider here would instead start
+// failing tasks on old daemons that never merged for it — re-creating exactly
+// the false-positive this list was introduced to fix (qwen was gated for a risk
+// that did not exist). A provider belongs here only if some released,
+// pre-capability daemon merged host MCP for it.
+//
+// Every provider in this set was present in loadRuntimeMcpServerConfigs at the
+// time the capability shipped; qwen was deliberately absent and already had
+// strict semantics.
 var providersOldDaemonsMergedRuntimeMcp = map[string]bool{
 	"claude":    true,
 	"codebuddy": true,

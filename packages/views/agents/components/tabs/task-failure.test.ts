@@ -42,3 +42,17 @@ describe("failureReasonLabel", () => {
     expect(failureReasonLabel(undefined)).toBeNull();
   });
 });
+
+// The agent activity list and the issue execution log surface failure_reason
+// directly, so an unmapped reason renders the raw machine value
+// `mcp_config_daemon_outdated` and the operator cannot tell what to do
+// (GitHub #6283).
+describe("failureReasonLabel for the MCP daemon-upgrade refusal", () => {
+  it("names the operator action instead of leaking the wire value", () => {
+    const label = failureReasonLabel("mcp_config_daemon_outdated");
+    expect(label).not.toBe("mcp_config_daemon_outdated");
+    expect(label).toBe("Daemon too old for this agent's MCP limits — upgrade it");
+    // The point of the label is that it says what to do.
+    expect(label).toMatch(/upgrade/i);
+  });
+});

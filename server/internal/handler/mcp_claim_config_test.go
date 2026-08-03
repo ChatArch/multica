@@ -128,6 +128,42 @@ func TestResolveClaimMcpConfigBadOverlayWithNoAgentConfigYieldsNil(t *testing.T)
 // the claim path must refuse rather than run the agent with tools the operator
 // scoped out (GitHub #6283).
 
+// The provider set is a FROZEN record of what pre-capability daemons actually
+// merged — not a mirror of the daemon's current provider switch. Pinning the
+// exact membership makes the difference explicit: growing this set because a new
+// provider gained runtime MCP discovery would start failing tasks on old daemons
+// that never merged for it, re-creating the qwen false-positive. Discovery for a
+// new provider can only ship in a daemon that already advertises the capability,
+// which is never gated.
+func TestProvidersOldDaemonsMergedRuntimeMcpIsFrozen(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]bool{
+		"claude":    true,
+		"codebuddy": true,
+		"codex":     true,
+		"cursor":    true,
+		"opencode":  true,
+		"openclaw":  true,
+	}
+	if len(providersOldDaemonsMergedRuntimeMcp) != len(want) {
+		t.Fatalf("frozen provider set has %d entries, want %d: %v",
+			len(providersOldDaemonsMergedRuntimeMcp), len(want), providersOldDaemonsMergedRuntimeMcp)
+	}
+	for provider := range want {
+		if !providersOldDaemonsMergedRuntimeMcp[provider] {
+			t.Errorf("provider %q merged host MCP before the capability and must stay in the set", provider)
+		}
+	}
+	// A provider that only gains runtime MCP discovery AFTER the capability
+	// shipped must not be added: no pre-capability daemon ever merged for it.
+	for _, provider := range []string{"qwen", "hermes"} {
+		if providersOldDaemonsMergedRuntimeMcp[provider] {
+			t.Errorf("provider %q was never merged by a pre-capability daemon; gating it would fail safe tasks", provider)
+		}
+	}
+}
+
 // The gate must only fire for providers whose pre-#6283 daemon actually merged
 // host MCP. qwen was never in that switch and already had strict semantics, so
 // gating it would cancel tasks that carry no risk at all.
