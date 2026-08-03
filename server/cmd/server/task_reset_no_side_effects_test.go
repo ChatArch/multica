@@ -31,7 +31,7 @@ func TestTaskResetPayloadTriggersNoDatabaseSideEffects(t *testing.T) {
 	// Every issue:updated DB-writing listener is live.
 	registerActivityListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
-	registerSubscriberListeners(bus, queries)
+	registerSubscriberListeners(bus, testPool)
 	registerAutopilotListeners(bus, autopilotSvc)
 
 	issueID := createTestIssue(t, testWorkspaceID, testUserID)

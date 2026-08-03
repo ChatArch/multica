@@ -353,9 +353,20 @@ var issueCancelTaskCmd = &cobra.Command{
 
 var issueSearchCmd = &cobra.Command{
 	Use:   "search <query>",
-	Short: "Search issues by title or description",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runIssueSearch,
+	Short: "Search issues by title, description, or comments",
+	Long: "Search issues in the current workspace. The query matches issue titles,\n" +
+		"descriptions, and comment bodies, so a conclusion that only lives in a\n" +
+		"comment thread is still findable.\n\n" +
+		"A bare number or an identifier-shaped query (\"412\", \"AGE-412\") matches\n" +
+		"the issue with that number. The prefix is not validated, and number\n" +
+		"matches rank first, so pasting an identifier from another tracker can\n" +
+		"put an unrelated local issue at the top of the results.\n\n" +
+		"The MATCH column (match_source in --output json) reports the strongest\n" +
+		"field that matched — title, description, or comment — and falls back to\n" +
+		"\"comment\" for a number-only hit. Treat it as a display hint, not a\n" +
+		"filter.",
+	Args: cobra.ExactArgs(1),
+	RunE: runIssueSearch,
 }
 
 var validIssueStatuses = []string{
@@ -1087,6 +1098,10 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if hasDesc {
+		if err := guardLocalPathLinks(desc, "issue description",
+			"Deliver the file itself with `multica issue create --attachment <path>` (repeatable) and drop the link."); err != nil {
+			return err
+		}
 		body["description"] = desc
 	}
 	if statusFlag != "" {
@@ -1259,6 +1274,13 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("description") || cmd.Flags().Changed("description-stdin") || cmd.Flags().Changed("description-file") {
 		desc, _, err := resolveTextFlag(cmd, "description")
 		if err != nil {
+			return err
+		}
+		// `issue update` has no --attachment flag, so the hint must point at the
+		// command that does. Telling the agent to "pass --attachment" here would
+		// name an argument this command rejects.
+		if err := guardLocalPathLinks(desc, "issue description",
+			"`multica issue update` cannot carry files — deliver the file with `multica issue comment add <issue-id> --attachment <path>` instead, and drop the link."); err != nil {
 			return err
 		}
 		body["description"] = desc
@@ -1913,6 +1935,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if !hasContent {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
+	}
+	if err := guardLocalPathLinks(content, "comment body",
+		"Deliver the file itself with `multica issue comment add <issue-id> --attachment <path>` (repeatable) and drop the link."); err != nil {
+		return err
 	}
 
 	client, err := newAPIClient(cmd)

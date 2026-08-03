@@ -21,11 +21,26 @@ var codexSymlinkedFiles = []string{
 }
 
 // Files to copy from the shared ~/.codex/ into the per-task CODEX_HOME.
-// Copies are isolated — changes don't affect the shared home.
+// Copies are isolated — task-local config and cache refreshes don't mutate
+// the shared home.
 var codexCopiedFiles = []string{
 	"config.json",
 	"config.toml",
 	"instructions.md",
+}
+
+const (
+	codexModelsCacheFile        = "models_cache.json"
+	codexModelsCacheBindingFile = ".models_cache_config.sha256"
+)
+
+// Files whose contents select the model provider/catalog used by Codex. The
+// task-local models cache is only reusable while this source configuration
+// remains unchanged. A model_catalog_json referenced by config.toml is folded
+// into the binding separately by codexModelsCacheConfigFingerprint.
+var codexModelsCacheConfigFiles = []string{
+	"config.json",
+	"config.toml",
 }
 
 // CodexHomeOptions carries optional inputs for prepareCodexHomeWithOpts that
@@ -62,20 +77,111 @@ type CodexHomeOptions struct {
 	// task with no issue), in which case sessions/ stays task-local. See
 	// codexSessionStoreDir and prepareCodexSessionsDir (MUL-4424).
 	SessionStoreKey string
-	// WritableRoots are extra absolute paths written into the config.toml
-	// `[sandbox_workspace_write] writable_roots` so the workspace-write sandbox
-	// (Linux) can write outside the task workdir — the per-task writable HOME.
-	// Only meaningful when the policy resolves to workspace-write; ignored on
-	// darwin danger-full-access. See task_home.go and MUL-4856.
-	WritableRoots []string
+	// CodexCustomArgs are the effective Codex CLI args this task will launch
+	// with (daemon defaults + profile-fixed + per-agent custom_args). Only the
+	// Windows sandbox decision reads them, to honor a `-c windows.sandbox=...`
+	// override that never lands in config.toml. See resolveWindowsSandboxState
+	// and MUL-4957.
+	CodexCustomArgs []string
 }
 
 // prepareCodexHome is a thin wrapper around prepareCodexHomeWithOpts kept for
-// tests that don't care about platform-aware sandbox configuration. It
-// assumes a Linux-like environment where workspace-write + network_access
-// works correctly.
+// tests that don't care about platform-aware sandbox configuration. It pins
+// GOOS to linux, which resolves to the danger-full-access default (MUL-5578),
+// so the sandbox block it writes is stable regardless of the host running the
+// test.
 func prepareCodexHome(codexHome string, logger *slog.Logger) error {
 	return prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger)
+}
+
+// sharedConfigPresence is the tri-state existence of the shared
+// ~/.codex/config.toml copy source. It is three-valued so a stat that fails for
+// a reason other than "not found" (permission/IO) never masquerades as a
+// confident "the user has no config" — which would let the daemon loosen to
+// danger-full-access on doubt. See resolveWindowsSandboxState (MUL-4957).
+type sharedConfigPresence int
+
+const (
+	// sharedConfigAbsent: the shared config.toml is confidently not present
+	// (os.IsNotExist), so an absent per-task copy is a genuine "unconfigured".
+	sharedConfigAbsent sharedConfigPresence = iota
+	// sharedConfigPresent: the shared config.toml exists.
+	sharedConfigPresent
+	// sharedConfigUndecidable: the stat failed for a reason other than
+	// not-found; the daemon cannot tell whether the user has a config.
+	sharedConfigUndecidable
+)
+
+// statSharedCodexConfig classifies the shared ~/.codex/config.toml (the copy
+// source) into the tri-state above, distinguishing a genuine absence from a
+// stat that could not complete.
+func statSharedCodexConfig(sharedHome string) sharedConfigPresence {
+	if sharedHome == "" {
+		return sharedConfigAbsent
+	}
+	_, err := os.Stat(filepath.Join(sharedHome, "config.toml"))
+	switch {
+	case err == nil:
+		return sharedConfigPresent
+	case os.IsNotExist(err):
+		return sharedConfigAbsent
+	default:
+		return sharedConfigUndecidable
+	}
+}
+
+// resolveWindowsSandboxState determines, for a Windows task, whether a native
+// Codex sandbox is configured — across the per-task config.toml and the
+// effective custom args — failing closed (Undecidable) when it cannot tell.
+//
+// Two signals it does NOT gather itself (the caller does) keep the fail-closed
+// logic unit-testable without faulting the filesystem, and close MUL-4957's
+// round-3 must-fix where a failed sync could be misread as "unconfigured":
+//
+//   - configSyncErr: the error (if any) from syncing the shared config.toml
+//     into this per-task home. Non-nil means the per-task config.toml is
+//     unreliable — stale from a prior run, or never (re)written — so neither its
+//     contents nor its absence reflect the user's intent. Fail closed.
+//   - sharedPresence: whether the shared config.toml source exists. Only a
+//     confident absence lets an absent per-task copy count as genuinely
+//     unconfigured; a present-or-undecidable source whose per-task copy is
+//     missing means the copy silently did not land, so fail closed.
+func resolveWindowsSandboxState(configFile string, configSyncErr error, sharedPresence sharedConfigPresence, customArgs []string, logger *slog.Logger) windowsSandboxConfig {
+	configState := classifyPerTaskWindowsSandbox(configFile, configSyncErr, sharedPresence)
+	state := resolveWindowsSandbox(configState, windowsSandboxFromCustomArgs(customArgs))
+	if state == windowsSandboxUndecidable && logger != nil {
+		logger.Error("codex sandbox: cannot determine Windows native sandbox config; keeping workspace-write and refusing to loosen to danger-full-access",
+			"config_file", configFile)
+	}
+	return state
+}
+
+// classifyPerTaskWindowsSandbox inspects the per-task config.toml given the
+// outcome of syncing it from the shared source, failing closed whenever the
+// file cannot be trusted or read.
+func classifyPerTaskWindowsSandbox(configFile string, configSyncErr error, sharedPresence sharedConfigPresence) windowsSandboxConfig {
+	// A failed shared→per-task sync leaves config.toml stale or missing; neither
+	// its contents nor its absence reflect the user's intent. Fail closed.
+	if configSyncErr != nil {
+		return windowsSandboxUndecidable
+	}
+	data, err := os.ReadFile(configFile)
+	switch {
+	case err == nil:
+		return windowsSandboxFromConfig(string(data))
+	case os.IsNotExist(err):
+		// Sync succeeded and the per-task config is absent. That is a genuine
+		// "no config" only when the shared source is confidently absent too; a
+		// present or undecidable source whose copy is missing means the copy
+		// did not land → fail closed rather than loosen.
+		if sharedPresence == sharedConfigAbsent {
+			return windowsSandboxAbsent
+		}
+		return windowsSandboxUndecidable
+	default:
+		// A read error (permission/IO) on a file the daemon just wrote.
+		return windowsSandboxUndecidable
+	}
 }
 
 // prepareCodexHomeWithOpts creates a per-task CODEX_HOME directory and seeds
@@ -84,6 +190,10 @@ func prepareCodexHome(codexHome string, logger *slog.Logger) error {
 // daemon-managed sandbox block picked by codexSandboxPolicyFor.
 func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *slog.Logger) error {
 	sharedHome := resolveSharedCodexHome()
+	freshHome := false
+	if _, err := os.Lstat(codexHome); os.IsNotExist(err) {
+		freshHome = true
+	}
 
 	if err := os.MkdirAll(codexHome, 0o755); err != nil {
 		return fmt.Errorf("create codex-home dir: %w", err)
@@ -111,15 +221,21 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// into a stale local copy.
 	logCodexAuthState(filepath.Join(codexHome, "auth.json"), logger)
 
-	// Sync config files from the shared source (isolated per task).
+	// Sync isolated files from the shared source. Track the config.toml sync
+	// outcome specifically: on Windows a failed sync makes the per-task config
+	// untrustworthy, so the sandbox decision must fail closed rather than read a
+	// stale or absent copy as "unconfigured" and loosen (MUL-4957).
+	var configSyncErr error
 	for _, name := range codexCopiedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
 		if err := syncCopiedFile(src, dst); err != nil {
 			logger.Warn("execenv: codex-home sync failed", "file", name, "error", err)
+			if name == "config.toml" {
+				configSyncErr = err
+			}
 		}
 	}
-
 	// Drop `[[skills.config]]` entries inherited from the user's
 	// ~/.codex/config.toml. Codex Desktop writes plugin-backed skills with a
 	// `name` and no `path`, which the CLI's stricter TOML parser rejects with
@@ -130,8 +246,20 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		logger.Warn("execenv: codex-home sanitize config failed", "error", err)
 	}
 
-	if err := syncCodexModelCatalog(codexHome, sharedHome); err != nil {
-		return fmt.Errorf("sync codex model_catalog_json: %w", err)
+	if err := syncCodexReferencedFiles(codexHome, sharedHome); err != nil {
+		return fmt.Errorf("sync codex config file references: %w", err)
+	}
+
+	// Seed the shared model cache only for a fresh task home. On reuse, keep a
+	// task-local cache that Codex may have refreshed, but only while the source
+	// provider/catalog configuration is still the one that cache was bound to.
+	// If binding fails, discard the optional cache so Codex refreshes it instead
+	// of potentially using models from the wrong provider.
+	if err := syncCodexModelsCache(codexHome, sharedHome, freshHome); err != nil {
+		logger.Warn("execenv: codex-home models cache sync failed; discarding cache", "error", err)
+		if removeErr := os.RemoveAll(filepath.Join(codexHome, codexModelsCacheFile)); removeErr != nil {
+			return fmt.Errorf("sync codex models cache: %v; discard unsafe cache: %w", err, removeErr)
+		}
 	}
 
 	if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
@@ -139,12 +267,28 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	}
 
 	// Write a daemon-managed sandbox block into config.toml. On macOS we may
-	// need to fall back to danger-full-access because of openai/codex#10390;
-	// see codex_sandbox.go for the full rationale.
-	policy := codexSandboxPolicyFor(opts.GOOS, opts.CodexVersion)
-	policy.WritableRoots = opts.WritableRoots
-	if err := ensureCodexSandboxConfig(filepath.Join(codexHome, "config.toml"), policy, opts.CodexVersion, logger); err != nil {
-		logger.Warn("execenv: codex-home ensure sandbox config failed", "error", err)
+	// need to fall back to danger-full-access because of openai/codex#10390,
+	// and on Windows the daemon defaults to danger-full-access unless the user
+	// opted into a native windows.sandbox; see codex_sandbox.go for the full
+	// rationale. On Windows, resolve the native-sandbox state across the copied
+	// config and the effective custom args so an explicit user opt-in is honored
+	// and an undecidable config fails closed instead of loosening.
+	configFile := filepath.Join(codexHome, "config.toml")
+	winState := windowsSandboxAbsent
+	if resolveGOOS(opts.GOOS) == "windows" {
+		winState = resolveWindowsSandboxState(configFile, configSyncErr, statSharedCodexConfig(sharedHome), opts.CodexCustomArgs, logger)
+	}
+	policy := codexSandboxPolicyForConfig(opts.GOOS, opts.CodexVersion, winState)
+	if err := ensureCodexSandboxConfig(configFile, policy, opts.CodexVersion, logger); err != nil {
+		// The managed block is the authoritative on-disk sandbox policy. If it
+		// can't be written, config.toml keeps whatever it already had — on a
+		// reused home that may be a stale danger-full-access from a prior run —
+		// so the fail-closed policy just computed above would only exist in
+		// memory while the effective config silently stays loose. Abort rather
+		// than launch Codex with an unenforced sandbox: on fresh Prepare this
+		// fails the task; on Reuse the caller leaves env.CodexHome unset, which
+		// configureCodexTaskShellEnvironment then refuses to start (MUL-4957).
+		return fmt.Errorf("ensure codex sandbox config: %w", err)
 	}
 
 	// Disable Codex native multi-agent inside daemon-managed task sessions
@@ -677,7 +821,21 @@ func linkCodexRollout(src, dst string) error {
 	return os.Symlink(src, dst)
 }
 
-func syncCodexModelCatalog(codexHome, sharedHome string) error {
+// syncCodexReferencedFiles materialises every file the copied config.toml
+// points at inside the per-task CODEX_HOME.
+//
+// config.toml is copied verbatim, so its path-valued keys survive the move to
+// the task home while the files they name do not. Codex resolves a relative
+// value against CODEX_HOME, which is now the task home, so an unmaterialised
+// reference makes Codex fail while loading its configuration — before the task
+// prompt is ever delivered (MUL-5623 / #6271: `failed to read model
+// instructions file <task-home>/gpt-unrestricted.md`).
+//
+// Only the keys listed below are followed. Copying every path a config could
+// mention would turn any user config into a channel for pulling arbitrary host
+// files into a task sandbox, and copying the whole shared home would drag
+// auth.json and the machine's session history along with it.
+func syncCodexReferencedFiles(codexHome, sharedHome string) error {
 	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
@@ -689,60 +847,374 @@ func syncCodexModelCatalog(codexHome, sharedHome string) error {
 
 	var cfg struct {
 		ModelCatalogJSON string `toml:"model_catalog_json"`
+		// Replacement for Codex's built-in instructions.
+		// experimental_instructions_file is the deprecated alias Codex still
+		// accepts, so configs written before the rename need it too.
+		ModelInstructionsFile        string `toml:"model_instructions_file"`
+		ExperimentalInstructionsFile string `toml:"experimental_instructions_file"`
 	}
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse %s: %w", configPath, err)
 	}
-	catalogPath := strings.TrimSpace(cfg.ModelCatalogJSON)
-	if catalogPath == "" {
-		return nil
-	}
 
-	src, err := resolveCodexConfigPath(catalogPath, sharedHome)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("model_catalog_json %q resolved to missing file %s: %w", catalogPath, src, err)
-	}
-
-	if filepath.IsAbs(catalogPath) || strings.HasPrefix(catalogPath, "~") {
-		return nil
-	}
-	cleanCatalogPath := filepath.Clean(catalogPath)
-	if !filepath.IsLocal(cleanCatalogPath) {
-		return fmt.Errorf("model_catalog_json %q must be a local relative path or an absolute path", catalogPath)
-	}
-	dst := filepath.Join(codexHome, cleanCatalogPath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create model catalog directory %s: %w", filepath.Dir(dst), err)
-	}
-	if _, err := os.Lstat(dst); err == nil {
-		if err := os.Remove(dst); err != nil {
-			return fmt.Errorf("remove stale model catalog %s: %w", dst, err)
+	for _, ref := range []struct{ key, path string }{
+		{"model_catalog_json", cfg.ModelCatalogJSON},
+		{"model_instructions_file", cfg.ModelInstructionsFile},
+		{"experimental_instructions_file", cfg.ExperimentalInstructionsFile},
+	} {
+		if err := syncCodexReferencedFile(codexHome, sharedHome, ref.key, ref.path); err != nil {
+			return err
 		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat model catalog %s: %w", dst, err)
-	}
-	if err := copyFile(src, dst); err != nil {
-		return fmt.Errorf("copy model_catalog_json %s to %s: %w", src, dst, err)
 	}
 	return nil
 }
 
-func resolveCodexConfigPath(configPath, sharedHome string) (string, error) {
+// syncCodexReferencedFile copies one config-referenced file from the shared
+// Codex home into the task home at the same relative location, so the copied
+// config.toml keeps resolving under the relocated CODEX_HOME.
+//
+// Absolute and ~-rooted values are left alone: they address the same host the
+// task runs on, so Codex reads them directly and copying would only risk
+// serving a stale snapshot.
+//
+// Destination writes are root-scoped to codexHome (see
+// materialiseInCodexHome): filepath.IsLocal only proves the config string has no
+// lexical `..`, and a reused task home is writable by the task that used it, so
+// nothing but a root-scoped mkdir/remove/write can guarantee the daemon stays
+// inside the task home.
+//
+// The source side deliberately keeps ordinary path semantics: the relative path
+// resolves inside the shared Codex home and symlinks there are followed. That
+// directory is the user's own configuration, the file is only ever read, and a
+// task on this host can already read anything the daemon user can — so a
+// symlink out of ~/.codex grants no access the task did not already have.
+//
+// The copy is refreshed on every prepare, so reusing a task home picks up an
+// edited source instead of keeping a stale instruction file. A copy whose key
+// was later removed or repointed stays behind unreferenced; Codex never reads it
+// because the config no longer names it.
+func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) error {
+	referencedPath := strings.TrimSpace(configValue)
+	if referencedPath == "" {
+		return nil
+	}
+
+	src, err := resolveCodexConfigPath(referencedPath, sharedHome, key)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%s %q resolved to missing file %s: %w", key, referencedPath, src, err)
+	}
+	if err != nil {
+		// Not a confident absence — a permission or IO failure must not be
+		// reported as "the file isn't there", which sends operators looking for
+		// the wrong problem.
+		return fmt.Errorf("%s %q: cannot stat source %s: %w", key, referencedPath, src, err)
+	}
+
+	if filepath.IsAbs(referencedPath) || strings.HasPrefix(referencedPath, "~") {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %q resolved to %s, which is not a regular file", key, referencedPath, src)
+	}
+	cleanReferencedPath := filepath.Clean(referencedPath)
+	if !filepath.IsLocal(cleanReferencedPath) {
+		return fmt.Errorf("%s %q must be a local relative path or an absolute path", key, referencedPath)
+	}
+	return materialiseInCodexHome(codexHome, cleanReferencedPath, src, key)
+}
+
+// openVerifiedCodexHomeRoot opens codexHome as a confinement root and only
+// returns it once the opened directory is proven to still BE codexHome.
+//
+// Checking the path first and opening it second is not enough: os.OpenRoot
+// resolves the path it is given, so a directory swapped for a link to somewhere
+// else between the check and the open yields a root that is happily confined —
+// to the wrong tree. Every subsequent root-scoped write would then land outside
+// the task home without ever "escaping" its root.
+//
+// That window is not hypothetical here. Task homes are reused, and on Windows
+// only the direct Codex process is terminated — descendant cleanup cannot be
+// confirmed (see server/pkg/agent/proc_windows.go) — so a leftover process that
+// knows its old CODEX_HOME can still act on it. Any local process can create the
+// same window on other platforms.
+//
+// So the identity check is bound to the handle instead of the path: compare the
+// opened directory against a no-follow stat of codexHome. A swap before the open
+// fails here (symlink, or a different directory at that path), and a swap after
+// it cannot matter, because everything downstream uses this handle rather than
+// the path.
+//
+// Scope: this covers the config-referenced copies below. The earlier steps of
+// prepareCodexHomeWithOpts still address the task home by path, so "the whole
+// prepare is safe against a symlinked task home" is not yet true — that
+// conversion is tracked in MUL-5647.
+func openVerifiedCodexHomeRoot(codexHome, key string) (*os.Root, error) {
+	root, err := os.OpenRoot(codexHome)
+	if err != nil {
+		return nil, fmt.Errorf("open codex home %s: %w", codexHome, err)
+	}
+	if err := verifyCodexHomeRoot(root, codexHome, key); err != nil {
+		root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+// verifyCodexHomeRoot proves that root is the directory codexHome names right
+// now: not reached through a symlink, and the same directory os.Lstat sees at
+// that path. It is separate from openVerifiedCodexHomeRoot so the swap case can
+// be tested deterministically instead of by racing.
+func verifyCodexHomeRoot(root *os.Root, codexHome, key string) error {
+	opened, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("stat opened codex home %s: %w", codexHome, err)
+	}
+	current, err := os.Lstat(codexHome)
+	if err != nil {
+		return fmt.Errorf("stat codex home %s: %w", codexHome, err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("codex home %s is a symlink; refusing to write %s through it", codexHome, key)
+	}
+	if !os.SameFile(opened, current) {
+		return fmt.Errorf("codex home %s was replaced while opening it; refusing to write %s through it", codexHome, key)
+	}
+	return nil
+}
+
+// materialiseInCodexHome writes src to relPath inside codexHome using
+// root-scoped operations, so no symlink below the task home can redirect the
+// daemon's mkdir, remove, or write outside it.
+//
+// This matters because a task home is reused: a prepare can run against a
+// directory a previous task already wrote to. Without the root, a task that
+// replaced an intermediate directory of its own home with a link to somewhere
+// else would have the daemon delete and overwrite the link target on the next
+// prepare. os.Root still allows links that stay inside the task home, which is
+// harmless, and rejects the ones that leave it. The root itself is
+// identity-checked by openVerifiedCodexHomeRoot.
+func materialiseInCodexHome(codexHome, relPath, src, key string) error {
+	root, err := openVerifiedCodexHomeRoot(codexHome, key)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	if dir := filepath.Dir(relPath); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create %s directory %s: %w", key, dir, err)
+		}
+	}
+	if _, err := root.Lstat(relPath); err == nil {
+		if err := root.Remove(relPath); err != nil {
+			return fmt.Errorf("remove stale %s copy %s: %w", key, relPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s copy %s: %w", key, relPath, err)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s %s: %w", key, src, err)
+	}
+	defer in.Close()
+
+	out, err := root.OpenFile(relPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("create %s copy %s: %w", key, relPath, err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy %s %s to %s: %w", key, src, relPath, err)
+	}
+	// Close explicitly so a deferred write-back failure cannot be swallowed; the
+	// deferred Close then no-ops.
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close %s copy %s: %w", key, relPath, err)
+	}
+	return nil
+}
+
+// syncCodexModelsCache seeds models_cache.json once for a fresh task home and
+// binds it to the shared provider/catalog configuration. Codex can replace the
+// task-local cache after startup, so an unchanged binding preserves whatever
+// the task last wrote rather than restoring a potentially stale shared copy.
+//
+// A changed or missing binding makes an existing cache unsafe: Codex's cache
+// format (as of 0.144.x) records the client version and fetch time but not the
+// provider identity. Reusing that cache after config.toml switches providers
+// can therefore pair provider B with provider A's model catalog. Drop it and
+// let Codex fetch a catalog for the new effective configuration. We
+// deliberately do not seed the shared cache in this case because it carries
+// the same provider-identity ambiguity.
+func syncCodexModelsCache(codexHome, sharedHome string, freshHome bool) error {
+	fingerprint, err := codexModelsCacheConfigFingerprint(sharedHome)
+	if err != nil {
+		return err
+	}
+
+	bindingPath := filepath.Join(codexHome, codexModelsCacheBindingFile)
+	previous, bound, err := readCodexModelsCacheBinding(bindingPath)
+	if err != nil {
+		return err
+	}
+
+	cachePath := filepath.Join(codexHome, codexModelsCacheFile)
+	cacheInfo, cacheErr := os.Lstat(cachePath)
+	cacheExists := cacheErr == nil
+	if cacheErr != nil && !os.IsNotExist(cacheErr) {
+		return fmt.Errorf("stat codex models cache %s: %w", cachePath, cacheErr)
+	}
+
+	if bound && previous == fingerprint {
+		// The cache belongs to the current config. Preserve both an existing
+		// task-refreshed cache and an intentional absence after a failed fetch;
+		// seeding on reuse could reintroduce an unbound shared snapshot.
+		if cacheExists && !cacheInfo.Mode().IsRegular() {
+			if err := os.RemoveAll(cachePath); err != nil {
+				return fmt.Errorf("remove non-regular codex models cache %s: %w", cachePath, err)
+			}
+		}
+		return nil
+	}
+
+	if cacheExists {
+		if err := os.RemoveAll(cachePath); err != nil {
+			return fmt.Errorf("remove unbound codex models cache %s: %w", cachePath, err)
+		}
+	}
+
+	if freshHome && !bound && !cacheExists {
+		// A shared snapshot is useful on the one path where the task home itself
+		// did not exist yet; subsequent task-local refreshes stay isolated. An
+		// existing legacy home without a binding never seeds because its prior
+		// effective configuration is unknown even when its cache is absent.
+		if err := seedCopiedFile(filepath.Join(sharedHome, codexModelsCacheFile), cachePath); err != nil {
+			return fmt.Errorf("seed codex models cache: %w", err)
+		}
+	}
+
+	if err := writeCodexModelsCacheBinding(bindingPath, fingerprint); err != nil {
+		return err
+	}
+	return nil
+}
+
+// codexModelsCacheConfigFingerprint hashes the shared config files plus the
+// contents of any model_catalog_json they reference. The digest is stored in
+// the isolated task home; no config contents or credentials are persisted.
+func codexModelsCacheConfigFingerprint(sharedHome string) (string, error) {
+	h := sha256.New()
+	var configTOML []byte
+
+	for _, name := range codexModelsCacheConfigFiles {
+		path := filepath.Join(sharedHome, name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			fmt.Fprintf(h, "%s\x00missing\x00", name)
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("read codex model cache config %s: %w", path, err)
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", name, len(data))
+		_, _ = h.Write(data)
+		if name == "config.toml" {
+			configTOML = data
+		}
+	}
+
+	if len(configTOML) > 0 {
+		var cfg struct {
+			ModelCatalogJSON string `toml:"model_catalog_json"`
+		}
+		if err := toml.Unmarshal(configTOML, &cfg); err != nil {
+			return "", fmt.Errorf("parse codex model cache config %s: %w", filepath.Join(sharedHome, "config.toml"), err)
+		}
+		catalogPath := strings.TrimSpace(cfg.ModelCatalogJSON)
+		if catalogPath != "" {
+			resolved, err := resolveCodexConfigPath(catalogPath, sharedHome, "model_catalog_json")
+			if err != nil {
+				return "", err
+			}
+			data, err := os.ReadFile(resolved)
+			if err != nil {
+				return "", fmt.Errorf("read model_catalog_json %s: %w", resolved, err)
+			}
+			fmt.Fprintf(h, "model_catalog_json\x00%d\x00", len(data))
+			_, _ = h.Write(data)
+		}
+	}
+
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// readCodexModelsCacheBinding returns bound=false for a missing or non-regular
+// marker. Non-regular paths are removed so a reused task cannot redirect the
+// later binding write outside its isolated CODEX_HOME.
+func readCodexModelsCacheBinding(path string) (fingerprint string, bound bool, err error) {
+	fi, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("stat codex models cache binding %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		if err := os.RemoveAll(path); err != nil {
+			return "", false, fmt.Errorf("remove non-regular codex models cache binding %s: %w", path, err)
+		}
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("read codex models cache binding %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)), true, nil
+}
+
+func writeCodexModelsCacheBinding(path, fingerprint string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove prior codex models cache binding %s: %w", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("create codex models cache binding %s: %w", path, err)
+	}
+	if _, err := io.WriteString(f, fingerprint+"\n"); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write codex models cache binding %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close codex models cache binding %s: %w", path, err)
+	}
+	return nil
+}
+
+// resolveCodexConfigPath maps a path-valued config.toml entry to its source
+// file on this host. key is the config key the path came from and only shapes
+// the diagnostics, so an operator reading a failure knows which setting to fix.
+// A relative path resolves against the shared Codex home — that is the
+// directory the config was copied from, and the base Codex itself would have
+// used before the per-task home relocated CODEX_HOME.
+func resolveCodexConfigPath(configPath, sharedHome, key string) (string, error) {
 	if filepath.IsAbs(configPath) {
 		return filepath.Clean(configPath), nil
 	}
 	if strings.HasPrefix(configPath, "~/") || strings.HasPrefix(configPath, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve model_catalog_json %q: user home: %w", configPath, err)
+			return "", fmt.Errorf("resolve %s %q: user home: %w", key, configPath, err)
 		}
 		return filepath.Join(home, configPath[2:]), nil
 	}
 	if strings.HasPrefix(configPath, "~") {
-		return "", fmt.Errorf("model_catalog_json %q uses unsupported ~user expansion", configPath)
+		return "", fmt.Errorf("%s %q uses unsupported ~user expansion", key, configPath)
 	}
 	return filepath.Join(sharedHome, filepath.Clean(configPath)), nil
 }
@@ -881,6 +1353,31 @@ func syncCopiedFile(src, dst string) error {
 
 	if srcMissing {
 		return nil
+	}
+	return copyFile(src, dst)
+}
+
+// seedCopiedFile copies src only when dst has no task-local regular file.
+// Unlike syncCopiedFile, it never overwrites or removes a cache refreshed by a
+// prior run. Non-regular destinations are removed defensively so a reused task
+// cannot turn the cache path into a link outside its isolated CODEX_HOME.
+func seedCopiedFile(src, dst string) error {
+	if fi, err := os.Lstat(dst); err == nil {
+		if fi.Mode().IsRegular() {
+			return nil
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return fmt.Errorf("remove non-regular dst %s: %w", dst, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat dst %s: %w", dst, err)
+	}
+
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat src %s: %w", src, err)
 	}
 	return copyFile(src, dst)
 }

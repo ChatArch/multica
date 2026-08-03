@@ -32,6 +32,9 @@ export interface Autopilot {
   assignee_type: AutopilotAssigneeType;
   assignee_id: string;
   status: AutopilotStatus;
+  // Additive machine-readable explanation for a system pause. Null for manual
+  // pauses and older servers.
+  pause_reason?: string | null;
   execution_mode: AutopilotExecutionMode;
   issue_title_template: string | null;
   created_by_type: string;
@@ -182,6 +185,14 @@ export interface UpdateAutopilotTriggerRequest {
   label?: string;
   // event_filters is only meaningful for webhook triggers.
   event_filters?: WebhookEventFilter[] | null;
+}
+
+export interface CronPreviewResponse {
+  // Next occurrences as RFC3339 UTC timestamps, ascending. An empty array
+  // means the expression never fires; `null` is the client-side sentinel for
+  // "the response could not be read" (schema drift), which callers must not
+  // present as "never fires".
+  next_runs: string[] | null;
 }
 
 export interface ListAutopilotsResponse {

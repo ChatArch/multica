@@ -126,7 +126,7 @@ func applyIssueStatusChangeInTx(ctx context.Context, qtx *db.Queries, prefix str
 	}
 	tr.After = after
 	tr.Changed = true
-	tr.Payload = issueevent.Build(before, after, issueToMap(after, prefix), true)
+	tr.Payload = issueevent.Build(before, after, IssueToMap(after, prefix), true)
 	tr.Payload.Automation = automation
 
 	evt := domainevent.IssueStatusChanged(ch.WorkspaceID, ch.IssueID, ch.Actor,

@@ -179,27 +179,35 @@ function Checkout() {
 
 Outside a `FeatureFlagsProvider` (Storybook, unit tests, error pages) `useFlag` / `useVariant` return the supplied default. You never have to mount the provider just to render a component in isolation.
 
-### v0.3.44 compatibility rollout
+### Completed v0.3.44 compatibility rollouts
 
-The following release flags default to `false` so the schema can ship before
-the new persisted states are visible to older server pods or a rollback:
+Resource Labels has completed its schema-first rollout and is now always
+available. Current clients always render agent- and skill-scoped labels, and
+the backend no longer gates their catalog or assignment endpoints.
+`/api/config` still reports `settings_resource_labels: true` so installed
+desktop clients from v0.4.0 through at least v0.4.15 (every release before this
+change) receive the permanently enabled behavior. Every client in that range
+fails closed to `false` when the key is absent, so this compatibility decision
+must remain until those clients are no longer supported; it is not an
+operator-controlled flag.
 
-```yaml
-# Enable only after every v0.3.43 server pod has drained and rollback reads
-# have been validated against the migrated database.
-agents_agent_builder:
-  default: true
-settings_resource_labels:
-  default: true
-```
+The rollback prerequisite that originally justified the flag is implemented by
+the down-migration chain: `174_legacy_label_index_rollback_prep.down.sql`
+deletes all agent- and skill-scoped label rows before
+`171_drop_legacy_label_namespace_index.down.sql` recreates the pre-162
+workspace-wide unique name index. The remaining down migrations then remove
+the resource-label junction tables and `resource_type` column.
 
-Keep both off for v0.3.44: it is a schema-only deployment for these
-features. A later rollout may enable them only after it ships and verifies a
-rollback normalizer for builder agents and resource-label rows. Do not rely on
-turning the flags off to make a database safe for an older binary; it prevents
-new writes but cannot remove states that already exist. Until that normalizer
-exists, rollbacks must target a version that understands these states or happen
-before either flag is enabled.
+Now that users can create resource-scoped labels, rollback to the pre-v0.3.44
+schema is no longer supported: migration 174 would delete user data. Roll back
+only to a release that understands resource-scoped labels.
+
+Agent Builder has completed this rollout and is now always available. Current
+clients always render the AI creation entry, and the backend no longer gates the
+session endpoint. `/api/config` still reports `agents_agent_builder: true` so
+installed desktop clients that still gate the entry on this config decision
+also receive the permanently enabled behavior; this is a client-compatibility
+decision, not an operator-controlled flag.
 
 Agent skill toggles have completed this rollout and are now always available.
 Current clients render the switch without a release flag, and the backend no

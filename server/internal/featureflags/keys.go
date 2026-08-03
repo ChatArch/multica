@@ -13,12 +13,16 @@ const (
 	// The access model exists to gate Composio sharing, so the two ship on the
 	// same switch.
 	ComposioMCPApps = "composio_mcp_apps"
-	// AgentBuilder controls writes of system builder agents. It stays disabled
-	// through the schema-only rollout so an older server cannot expose them.
-	AgentBuilder = "agents_agent_builder"
-	// ResourceLabels controls the agent- and skill-scoped label namespaces.
-	// Issue labels remain available while this release flag is off.
-	ResourceLabels = "settings_resource_labels"
+	// DesktopHangStackCapture gates reading a JS call stack out of a hung
+	// desktop renderer (MUL-5345). Capture holds a debugger channel open on
+	// every renderer, so the desktop client is fail-closed: it stays off unless
+	// this key arrives as an explicit true. That makes publishing the key here
+	// mandatory — a key the client never receives can never be turned on.
+	DesktopHangStackCapture = "desktop_hang_stack_capture"
+	// agentBuilderCompat is no longer a release flag. Keep publishing the key
+	// as enabled so installed desktop clients that still gate the AI creation
+	// entry on this config decision receive the permanently enabled behavior.
+	agentBuilderCompat = "agents_agent_builder"
 	// agentSkillTogglesCompat is no longer a release flag. Keep publishing the
 	// key as enabled so installed v0.4.0 desktop clients, which still gate the
 	// switch on this config decision, receive the permanently enabled behavior.
@@ -37,24 +41,26 @@ const (
 	// engine on for shadow evaluation can never start mutating data.
 	// Server-only, default off, and required IN ADDITION to EventHooks.
 	EventHookExecution = "automation_event_hook_execution"
+	// resourceLabelsCompat is no longer a release flag. Keep publishing the key
+	// as enabled for installed desktop clients from v0.4.0 through at least
+	// v0.4.15, every release shipped before this change. Unlike the skill-toggle
+	// gate above, which was removed client-side in v0.4.1, the resource-label
+	// gate remained in every such client and fails closed (default false) if
+	// the key stops being published.
+	resourceLabelsCompat = "settings_resource_labels"
 )
 
 var frontendPublicFlags = []string{
 	ComposioMCPApps,
-	AgentBuilder,
-	ResourceLabels,
+	DesktopHangStackCapture,
 }
 
 func ComposioMCPAppsEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, ComposioMCPApps, false)
 }
 
-func AgentBuilderEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, AgentBuilder, false)
-}
-
-func ResourceLabelsEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, ResourceLabels, false)
+func DesktopHangStackCaptureEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, DesktopHangStackCapture, false)
 }
 
 // EventHooksEnabled reports whether the Event Hooks engine may run reactions.
@@ -72,10 +78,12 @@ func EventHookExecutionEnabled(ctx context.Context, flags *featureflag.Service) 
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
-	out := make(map[string]bool, len(frontendPublicFlags)+1)
+	out := make(map[string]bool, len(frontendPublicFlags)+3)
 	for _, key := range frontendPublicFlags {
 		out[key] = flags.IsEnabled(ctx, key, false)
 	}
+	out[agentBuilderCompat] = true
 	out[agentSkillTogglesCompat] = true
+	out[resourceLabelsCompat] = true
 	return out
 }
