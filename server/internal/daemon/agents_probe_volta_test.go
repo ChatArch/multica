@@ -42,6 +42,9 @@ func (f voltaFixture) nodeDir(version string) string {
 	return filepath.Join(f.home, "tools", "image", "node", version, "bin")
 }
 func (f voltaFixture) boundNodeDir() string { return f.nodeDir(f.boundNode) }
+func (f voltaFixture) managerDir(tool, version string) string {
+	return filepath.Join(f.home, "tools", "image", tool, version, "bin")
+}
 func (f voltaFixture) sharedLibDir() string {
 	return filepath.Join(f.home, "tools", "shared")
 }
@@ -63,6 +66,13 @@ type voltaFixtureOpts struct {
 	// projectDir, when set, makes `volta which` answer with a project-local
 	// binary when invoked from inside that directory, as real Volta does.
 	projectDir string
+	// managers pins package-manager versions in the bin config, as
+	// `volta install` records them when the platform has custom ones.
+	managers map[string]string
+	// reuseInstall points the shims at an existing install dir instead of a new
+	// one, modelling a Homebrew setup where several VOLTA_HOMEs share one
+	// volta/volta-shim pair.
+	reuseInstall string
 }
 
 func newVoltaFixture(t *testing.T, opts voltaFixtureOpts) voltaFixture {
@@ -74,6 +84,9 @@ func newVoltaFixture(t *testing.T, opts voltaFixtureOpts) voltaFixture {
 		boundNode:  "20.11.0",
 		otherNode:  "24.18.1",
 	}
+	if opts.reuseInstall != "" {
+		f.installDir = opts.reuseInstall
+	}
 	mkdirs(t, f.binDir(), f.installDir, f.sharedLibDir(),
 		f.nodeDir(f.boundNode), f.nodeDir(f.otherNode),
 		filepath.Join(f.home, "tools", "user", "bins"))
@@ -81,6 +94,11 @@ func newVoltaFixture(t *testing.T, opts voltaFixtureOpts) voltaFixture {
 	// Only the bound Node carries a working `node`; the "default" one is a decoy
 	// that fails, so a resolution using it cannot pass unnoticed.
 	writeScript(t, filepath.Join(f.nodeDir(f.boundNode), "node"), "#!/bin/sh\nexit 0\n")
+	for tool, version := range opts.managers {
+		dir := f.managerDir(tool, version)
+		mkdirs(t, dir)
+		writeScript(t, filepath.Join(dir, tool), "#!/bin/sh\nexit 0\n")
+	}
 	writeScript(t, filepath.Join(f.nodeDir(f.otherNode), "node"),
 		"#!/bin/sh\necho 'wrong node: this is the current default, not the bound one' >&2\nexit 1\n")
 
@@ -98,9 +116,8 @@ node --check-marker >/dev/null 2>&1 || { echo "env: node: No such file or direct
 echo %q
 `, version))
 		if !opts.omitBinConfig {
-			writeVoltaConfigFile(t, filepath.Join(f.home, "tools", "user", "bins", cmd+".json"), fmt.Sprintf(
-				`{"name":%q,"package":%q,"version":"1.0.0","platform":{"node":%q,"npm":null,"pnpm":null,"yarn":null},"manager":"Npm"}`,
-				cmd, cmd, f.boundNode))
+			writeVoltaConfigFile(t, filepath.Join(f.home, "tools", "user", "bins", cmd+".json"),
+				voltaBinConfigJSON(cmd, f.boundNode, opts.managers))
 		}
 	}
 
@@ -156,6 +173,19 @@ if [ "$1" = "which" ] && [ -n "$2" ]; then
 fi
 exit 1
 `, project, f.otherNode)
+}
+
+// voltaBinConfigJSON renders a bin config, pinning package managers when given.
+func voltaBinConfigJSON(cmd, node string, managers map[string]string) string {
+	field := func(tool string) string {
+		if v, ok := managers[tool]; ok && v != "" {
+			return fmt.Sprintf("%q", v)
+		}
+		return "null"
+	}
+	return fmt.Sprintf(
+		`{"name":%q,"package":%q,"version":"1.0.0","platform":{"node":%q,"npm":%s,"pnpm":%s,"yarn":%s},"manager":"Npm"}`,
+		cmd, cmd, node, field("npm"), field("pnpm"), field("yarn"))
 }
 
 func mkdirs(t *testing.T, dirs ...string) {
@@ -923,5 +953,261 @@ func TestEnvWithVoltaHome(t *testing.T) {
 	}
 	if len(seen) != 1 || seen[0] != "VOLTA_HOME=/new" {
 		t.Errorf("VOLTA_HOME entries = %v, want exactly [VOLTA_HOME=/new]", seen)
+	}
+}
+
+// TestVoltaPlatformDirs_RestoresFullPlatform covers the whole bound platform, not
+// just Node. Volta puts npm, then pnpm, then yarn, and Node LAST, so a custom npm
+// wins over the one bundled with Node (upstream Image::bins).
+func TestVoltaPlatformDirs_RestoresFullPlatform(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+
+	managers := map[string]string{"npm": "10.2.0", "pnpm": "9.1.0", "yarn": "4.1.0"}
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}, managers: managers})
+
+	dirs, ok := voltaPlatformDirs(f.home, "claude")
+	if !ok {
+		t.Fatal("voltaPlatformDirs failed")
+	}
+	want := []string{
+		f.managerDir("npm", "10.2.0"),
+		f.managerDir("pnpm", "9.1.0"),
+		f.managerDir("yarn", "4.1.0"),
+		f.boundNodeDir(),
+	}
+	if len(dirs) != len(want) {
+		t.Fatalf("dirs = %v, want %v", dirs, want)
+	}
+	for i := range want {
+		if dirs[i] != want[i] {
+			t.Errorf("dirs[%d] = %q, want %q (Volta order is npm, pnpm, yarn, node-last)",
+				i, dirs[i], want[i])
+		}
+	}
+}
+
+// TestVoltaPlatformDirs_NodeOnlyWhenNoManagersPinned keeps the common case simple.
+func TestVoltaPlatformDirs_NodeOnlyWhenNoManagersPinned(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+
+	dirs, ok := voltaPlatformDirs(f.home, "claude")
+	if !ok {
+		t.Fatal("voltaPlatformDirs failed")
+	}
+	if len(dirs) != 1 || dirs[0] != f.boundNodeDir() {
+		t.Errorf("dirs = %v, want just the bound Node %q", dirs, f.boundNodeDir())
+	}
+}
+
+// TestVoltaResolve_StateIsolatedPerVoltaHome covers the Homebrew shape: several
+// VOLTA_HOMEs share one volta/volta-shim pair, so state keyed on the binary alone
+// let one home serve another's tool paths and environment.
+func TestVoltaResolve_StateIsolatedPerVoltaHome(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	homeA := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	// Same install dir, different home: exactly what `brew install volta` plus a
+	// per-user VOLTA_HOME produces.
+	homeB := newVoltaFixture(t, voltaFixtureOpts{
+		commands:     []string{"claude"},
+		reuseInstall: homeA.installDir,
+	})
+	if homeA.installDir != homeB.installDir {
+		t.Fatalf("fixtures do not share an install dir: %q vs %q", homeA.installDir, homeB.installDir)
+	}
+	if homeA.home == homeB.home {
+		t.Fatal("fixtures share a home; the test cannot distinguish them")
+	}
+
+	resolvedA, ok := voltaResolve(homeA.alias("claude"), homeA.shim(), "claude")
+	if !ok {
+		t.Fatal("home A resolution failed")
+	}
+	resolvedB, ok := voltaResolve(homeB.alias("claude"), homeB.shim(), "claude")
+	if !ok {
+		t.Fatal("home B resolution failed")
+	}
+
+	if resolvedB.Path == resolvedA.Path {
+		t.Errorf("home B reused home A's tool path %q; Volta state must be keyed by "+
+			"VOLTA_HOME, not just the shared volta binary", resolvedA.Path)
+	}
+	if want := homeB.concrete("claude"); resolvedB.Path != want {
+		t.Errorf("home B path = %q, want %q", resolvedB.Path, want)
+	}
+	if dirs := resolvedB.Env.PrefixPaths["PATH"]; len(dirs) == 0 || dirs[0] != homeB.boundNodeDir() {
+		t.Errorf("home B PATH dirs = %v, want its own bound Node %q", dirs, homeB.boundNodeDir())
+	}
+}
+
+// TestVoltaResolve_SlowSuccessesDoNotTripBreaker is the recovery case for the
+// budget: it must count only failures. Charging successful queries to it let a
+// couple of slow-but-working resolutions exhaust the budget, and because success
+// clears failedAt no cooldown could ever reset it — every later uncached command
+// was refused for the life of the process.
+func TestVoltaResolve_SlowSuccessesDoNotTripBreaker(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	origRun, origBudget := runVolta, voltaResolveBudget
+	t.Cleanup(func() { runVolta, voltaResolveBudget = origRun, origBudget })
+	voltaResolveBudget = 60 * time.Millisecond
+
+	commands := []string{"claude", "codex", "pi"}
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	// Every query succeeds but is slow enough that two exceed the budget.
+	runVolta = func(voltaBin, voltaHome string, args ...string) (string, bool) {
+		time.Sleep(40 * time.Millisecond)
+		return origRun(voltaBin, voltaHome, args...)
+	}
+
+	for i, cmd := range commands {
+		if _, ok := voltaResolve(f.alias(cmd), f.shim(), cmd); !ok {
+			t.Fatalf("%s (request %d) was refused; slow but SUCCESSFUL resolutions must not "+
+				"consume the failure budget, or the breaker latches permanently", cmd, i+1)
+		}
+	}
+}
+
+// TestVoltaResolve_InstallationLevelBudget checks the gate is per installation:
+// concurrent resolutions of *different* commands against a broken install must not
+// each pay a full timeout.
+func TestVoltaResolve_InstallationLevelBudget(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	origRun, origTimeout := runVolta, voltaResolveTimeout
+	t.Cleanup(func() { runVolta, voltaResolveTimeout = origRun, origTimeout })
+	voltaResolveTimeout = 80 * time.Millisecond
+
+	var mu sync.Mutex
+	calls := 0
+	runVolta = func(string, string, ...string) (string, bool) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		time.Sleep(voltaResolveTimeout)
+		return "", false
+	}
+
+	commands := []string{"claude", "codex", "pi"}
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: commands})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	var wg sync.WaitGroup
+	for _, cmd := range commands {
+		wg.Add(1)
+		go func(cmd string) {
+			defer wg.Done()
+			voltaResolve(f.alias(cmd), f.shim(), cmd)
+		}(cmd)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got > 1 {
+		t.Errorf("`volta` was invoked %d times for %d concurrent commands against a broken "+
+			"install, want 1; the budget must gate the installation, not each command",
+			got, len(commands))
+	}
+}
+
+// TestAgentEntryLaunchable_RequiresEnvironmentDirs covers the self-heal gap: a
+// Volta upgrade that prunes the old Node image leaves the CLI file in place, so
+// checking only the executable kept handing tasks a broken toolchain forever.
+func TestAgentEntryLaunchable_RequiresEnvironmentDirs(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	resolved, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("resolution failed")
+	}
+	if !agentEntryLaunchable(resolved.Path, resolved.Env) {
+		t.Fatal("fresh resolution reported not launchable")
+	}
+
+	// The CLI file survives; only its toolchain is pruned.
+	if err := os.RemoveAll(filepath.Dir(f.boundNodeDir())); err != nil {
+		t.Fatalf("remove node image: %v", err)
+	}
+	if !agentExecutablePresent(resolved.Path) {
+		t.Fatal("fixture removed the CLI too; the test would not prove anything")
+	}
+	if agentEntryLaunchable(resolved.Path, resolved.Env) {
+		t.Error("entry still considered launchable after its bound Node image was pruned; " +
+			"tasks would keep launching with a PATH that points nowhere")
+	}
+}
+
+// TestResolveAgentEntry_ReresolvesWhenEnvironmentGoesStale is the daemon-level
+// half of the same fix: resolveAgentEntry must not hand back a cached entry
+// whose environment no longer exists.
+func TestResolveAgentEntry_ReresolvesWhenEnvironmentGoesStale(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+	// A version that clears claude's real minimum, so the self-heal can complete
+	// and we observe the re-resolved environment rather than an aborted heal.
+	origDetect := detectAgentVersion
+	t.Cleanup(func() { detectAgentVersion = origDetect })
+	detectAgentVersion = func(_ context.Context, _ string, _ agent.ExecEnv) (string, error) {
+		return "2.1.0", nil
+	}
+
+	resolved, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("resolution failed")
+	}
+	staleEnv := agent.ExecEnv{PrefixPaths: map[string][]string{
+		"PATH": {filepath.Join(t.TempDir(), "pruned-node", "bin")},
+	}}
+
+	d := freshDaemon("")
+	entry := AgentEntry{Path: resolved.Path, Command: "claude", Env: staleEnv}
+	got, _ := d.resolveAgentEntry(context.Background(), "claude", entry)
+
+	if len(got.Env.PrefixPaths["PATH"]) > 0 &&
+		got.Env.PrefixPaths["PATH"][0] == staleEnv.PrefixPaths["PATH"][0] {
+		t.Error("resolveAgentEntry returned the entry with its stale environment; it must " +
+			"re-resolve when the environment's directories are gone")
+	}
+}
+
+// TestLayerTaskEnvironment_ResolvedEnvSurvivesCustomEnv is the ordering contract
+// for item 6. custom_env may set NODE_PATH (unlike PATH, it is not blocked), so
+// the resolved execution environment has to be applied afterwards or the Volta
+// shared-modules prefix is silently wiped and a package binary loses its modules.
+func TestLayerTaskEnvironment_ResolvedEnvSurvivesCustomEnv(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	execEnv := agent.ExecEnv{PrefixPaths: map[string][]string{
+		"PATH":      {"/volta/tools/image/node/20.11.0/bin"},
+		"NODE_PATH": {"/volta/tools/shared"},
+	}}
+	agentEnv := map[string]string{"PATH": "/usr/bin"}
+	customEnv := map[string]string{"NODE_PATH": "/user/modules"}
+
+	layerTaskEnvironment(agentEnv, customEnv, "", execEnv, nil)
+
+	wantNodePath := "/volta/tools/shared" + sep + "/user/modules"
+	if agentEnv["NODE_PATH"] != wantNodePath {
+		t.Errorf("NODE_PATH = %q, want %q; the resolved environment must be applied after "+
+			"custom_env so its prefix survives while the user's value is kept",
+			agentEnv["NODE_PATH"], wantNodePath)
+	}
+	wantPath := "/volta/tools/image/node/20.11.0/bin" + sep + "/usr/bin"
+	if agentEnv["PATH"] != wantPath {
+		t.Errorf("PATH = %q, want %q", agentEnv["PATH"], wantPath)
 	}
 }

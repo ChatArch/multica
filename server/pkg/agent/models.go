@@ -150,38 +150,38 @@ func ListModelsWithEnv(ctx context.Context, providerType, executablePath string,
 		// agy 1.0.6 added a `--model` flag plus an `agy models` catalog
 		// command (MUL-3125). Enumerate it on demand like the other
 		// dynamic-discovery backends.
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverAntigravityModels(ctx, executablePath, env))
 		})
 	case "traecli":
 		// Official TRAE CLI is ACP-native: it returns its model catalog from
 		// session/new. Enumerate it on demand like the other ACP backends
 		// (requires a logged-in traecli; falls back to manual entry on error).
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverTraecliModels(ctx, executablePath, env))
 		})
 	case "cursor":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discoverCursorModels(ctx, executablePath, env)
 		})
 	case "copilot":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discoverCopilotModels(ctx, executablePath, env)
 		})
 	case "hermes":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverHermesModels(ctx, executablePath, env))
 		})
 	case "kimi":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverKimiModels(ctx, executablePath, env))
 		})
 	case "kiro":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverKiroModels(ctx, executablePath, env))
 		})
 	case "qoder", "qoderclicn":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverQoderModels(ctx, executablePath, qoderDefaultBinary(providerType), env))
 		})
 	case "opencode":
@@ -193,18 +193,18 @@ func ListModelsWithEnv(ctx context.Context, providerType, executablePath string,
 			return discovered(discoverDevecoModels(ctx, executablePath, env))
 		})
 	case "pi":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverPiModels(ctx, executablePath, env))
 		})
 	case "openclaw":
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discovered(discoverOpenclawAgents(ctx, executablePath, env))
 		})
 	case "codebuddy":
 		// discoverCodebuddyModels owns the thinking annotation too, so the one
 		// `--help` capture feeds both catalogs. Annotating out here would run
 		// the command a second time (MUL-5549).
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discoverCodebuddyModels(ctx, executablePath, env)
 		})
 	case "qwen":
@@ -216,7 +216,7 @@ func ListModelsWithEnv(ctx context.Context, providerType, executablePath string,
 		// xAI Grok Build is ACP-native (`grok agent stdio`); model catalog
 		// comes from session/new. Falls back to a small static list so the
 		// UI picker stays usable offline / unauthenticated.
-		return cachedDiscovery(providerType, func() (Catalog, error) {
+		return cachedDiscovery(discoveryCacheKey(providerType, executablePath, env), func() (Catalog, error) {
 			return discoverGrokModels(ctx, executablePath, env)
 		})
 	default:
@@ -983,6 +983,16 @@ type acpDiscoveryProvider struct {
 // `models.availableModels` / `models.currentModelId`, or under the
 // newer `configOptions` list. Provider-specific `launchArgs` select
 // ACP mode (e.g. `acp` vs `--acp`).
+// acpChildEnv builds the environment for an ACP discovery subprocess: the
+// resolved execution environment first, then the provider's own additions on top.
+//
+// This used to assign os.Environ() outright, which discarded the ExecEnv the
+// command was built with — so a Volta-managed CLI lost the toolchain it needs and
+// ACP discovery failed while every other provider worked.
+func acpChildEnv(env ExecEnv, extra []string) []string {
+	return append(env.ApplyToEnviron(os.Environ()), extra...)
+}
+
 func discoverACPModels(ctx context.Context, executablePath string, p acpDiscoveryProvider, env ExecEnv) ([]Model, error) {
 	fail := func(stage string, err error) ([]Model, error) {
 		if p.strictErrors {
@@ -1005,7 +1015,7 @@ func discoverACPModels(ctx context.Context, executablePath string, p acpDiscover
 	}
 	cmd := env.command(runCtx, executablePath, cmdArgs...)
 	hideAgentWindow(cmd)
-	childEnv := append(os.Environ(), p.extraEnv...)
+	childEnv := acpChildEnv(env, p.extraEnv)
 	cmd.Env = childEnv
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

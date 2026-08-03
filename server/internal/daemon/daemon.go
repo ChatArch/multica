@@ -553,13 +553,13 @@ func (d *Daemon) resolveAgentEntry(ctx context.Context, provider string, entry A
 	d.resolvedPathsMu.RLock()
 	healed, ok := d.resolvedPaths[provider]
 	d.resolvedPathsMu.RUnlock()
-	if ok && agentExecutablePresent(healed.path) {
+	if ok && agentEntryLaunchable(healed.path, healed.env) {
 		entry.Path = healed.path
 		entry.Env = healed.env
 		return entry, healed.version
 	}
 
-	if agentExecutablePresent(entry.Path) {
+	if agentEntryLaunchable(entry.Path, entry.Env) {
 		return entry, d.agentVersion(provider)
 	}
 
@@ -5175,12 +5175,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		binDir := filepath.Dir(selfBin)
 		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
-	// Apply the PATH entries that came out of executable resolution, so the task
-	// runs the CLI in the same environment its version was verified under. For a
-	// Volta package binary this is the Node platform Volta bound to it; without
-	// it an `#!/usr/bin/env node` script would pick up whatever node the task's
-	// directory happens to resolve, or none at all.
-	entry.Env.ApplyToMap(agentEnv)
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {
@@ -5225,7 +5219,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentCustomEnv = task.Agent.CustomEnv
 	}
-	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	layerTaskEnvironment(agentEnv, agentCustomEnv, env.HermesHome, entry.Env, d.logger)
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -6613,6 +6607,21 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	return false
+}
+
+// layerTaskEnvironment assembles the task environment: the agent's custom_env
+// first, then the execution environment that came out of path resolution.
+//
+// The order is the contract. ExecEnv *prefixes* list-shaped variables, so applying
+// it last both guarantees the toolchain wins and preserves whatever the user set:
+// a custom NODE_PATH ends up after Volta's shared lib dir instead of replacing it.
+// Applied before custom_env, a user-supplied NODE_PATH would overwrite the prefix
+// outright and an `#!/usr/bin/env node` package binary would lose the modules
+// Volta puts there. (PATH is already blocked from custom_env, but NODE_PATH is
+// not, which is exactly the case this ordering protects.)
+func layerTaskEnvironment(agentEnv, customEnv map[string]string, overlayHome string, execEnv agent.ExecEnv, logger *slog.Logger) {
+	layerCustomEnvAndHermesHome(agentEnv, customEnv, overlayHome, logger)
+	execEnv.ApplyToMap(agentEnv)
 }
 
 // layerCustomEnvAndHermesHome applies the agent's custom_env onto the child env

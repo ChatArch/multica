@@ -208,24 +208,72 @@ func TestListModelsWithEnv_UsesEnvironment(t *testing.T) {
 	}
 }
 
-// TestValidatorsWithEnv_ThreadEnvironment covers the service-tier and thinking
-// validators. They fail open on discovery errors, so this asserts they reach the
-// CLI under the supplied environment rather than asserting a verdict.
-func TestValidatorsWithEnv_ThreadEnvironment(t *testing.T) {
+// TestValidatorsWithEnv_ReachListModelsWithEnv covers the service-tier and
+// thinking validators, which called the env-less ListModels and so silently
+// dropped the toolchain for every Volta-managed CLI.
+//
+// The verdict is not a usable signal (a provider may simply not support the
+// value), so this asserts on the discovery cache: the entry the validator
+// populates must be keyed with the environment's fingerprint. With the env-less
+// call it would land under a key that has no fingerprint at all.
+func TestValidatorsWithEnv_ReachListModelsWithEnv(t *testing.T) {
 	skipIfNoPOSIXShell(t)
-	cli, env := newEnvDependentCLI(t, "echo '{}'\n")
+	cli, env := newEnvDependentCLI(t, "echo 'anthropic claude-sonnet-4'\n")
 	t.Setenv("PATH", "/usr/bin:/bin")
 
-	// Exercised for plumbing, not verdict: the point is that passing an ExecEnv
-	// is possible and does not change the no-env behavior contract.
-	if _, err := ValidateServiceTierWithEnv(context.Background(), "codex", cli, "gpt-5", "flex", env); err != nil {
+	resetModelCacheForTest()
+	if _, err := ValidateThinkingLevelWithEnv(context.Background(), "pi", cli,
+		"anthropic/claude-sonnet-4", "high", env); err != nil {
+		t.Fatalf("ValidateThinkingLevelWithEnv: %v", err)
+	}
+	wantKey := discoveryCacheKey("pi", cli, env)
+	if !modelCacheHasKey(wantKey) {
+		t.Errorf("thinking validator did not populate the cache under the env-aware key %q "+
+			"(keys present: %v); it is still calling the env-less ListModels",
+			wantKey, modelCacheKeys())
+	}
+
+	// ValidateServiceTier only consults a catalog for codex (it short-circuits for
+	// every other provider), and a codex fallback catalog is deliberately not
+	// cached — so assert the negative instead: nothing may be cached under a key
+	// that lacks the environment fingerprint.
+	resetModelCacheForTest()
+	if _, err := ValidateServiceTierWithEnv(context.Background(), "codex", cli,
+		"gpt-5-codex", "flex", env); err != nil {
 		t.Logf("ValidateServiceTierWithEnv error (fails open by design): %v", err)
 	}
-	if _, err := ValidateThinkingLevelWithEnv(context.Background(), "codex", cli, "gpt-5", "high", env); err != nil {
-		t.Logf("ValidateThinkingLevelWithEnv error (fails open by design): %v", err)
+	for _, key := range modelCacheKeys() {
+		if !strings.Contains(key, env.CacheKey()) {
+			t.Errorf("service-tier validator cached %q, which lacks the environment "+
+				"fingerprint %q; it is still calling the env-less ListModels", key, env.CacheKey())
+		}
 	}
+
 	// The zero-env wrappers must remain callable for every existing caller.
 	if _, err := ValidateServiceTier(context.Background(), "codex", cli, "gpt-5", "flex"); err != nil {
 		t.Logf("ValidateServiceTier error (fails open by design): %v", err)
 	}
+}
+
+func resetModelCacheForTest() {
+	modelCacheMu.Lock()
+	defer modelCacheMu.Unlock()
+	modelCache = map[string]modelCacheEntry{}
+}
+
+func modelCacheHasKey(key string) bool {
+	modelCacheMu.Lock()
+	defer modelCacheMu.Unlock()
+	_, ok := modelCache[key]
+	return ok
+}
+
+func modelCacheKeys() []string {
+	modelCacheMu.Lock()
+	defer modelCacheMu.Unlock()
+	keys := make([]string, 0, len(modelCache))
+	for k := range modelCache {
+		keys = append(keys, k)
+	}
+	return keys
 }

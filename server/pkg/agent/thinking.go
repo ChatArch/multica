@@ -642,7 +642,7 @@ func ValidateThinkingLevelWithEnv(ctx context.Context, providerType, executableP
 	if model == "" && providerType == "codex" {
 		return false, nil
 	}
-	catalog, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModelsWithEnv(ctx, providerType, executablePath, env)
 	if err != nil {
 		return false, err
 	}
@@ -700,7 +700,7 @@ func ValidateServiceTierWithEnv(ctx context.Context, providerType, executablePat
 	if providerType != "codex" || model == "" {
 		return false, nil
 	}
-	catalog, err := ListModels(ctx, providerType, executablePath)
+	catalog, err := ListModelsWithEnv(ctx, providerType, executablePath, env)
 	if err != nil {
 		return false, err
 	}
