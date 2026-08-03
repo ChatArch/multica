@@ -705,15 +705,53 @@ func samePathDir(a, b string) bool {
 	return absA == absB
 }
 
+// voltaShimName is the basename of the single trampoline binary Volta installs
+// in ~/.volta/bin and symlinks EVERY managed command to (claude, codex, pi, ...).
+const voltaShimName = "volta-shim"
+
+// canonicalExecutablePath collapses path to the real file behind any symlinks,
+// so version-manager prefix dirs and other indirection settle onto one stable
+// path we can pin.
+//
+// Exception: argv[0]-dispatching trampolines. Volta points every command it
+// manages at one shared volta-shim and decides which tool to run from the name
+// it was invoked as, so resolving `~/.volta/bin/claude` to `volta-shim` throws
+// away the only input that selects the tool — the shim then exits 126 and the
+// runtime never registers (#6183). For those we keep the caller's alias path,
+// which is also the stable one: the alias survives `volta install` upgrades
+// that replace the versioned binary underneath it.
+//
+// This stays deliberately narrow. Skipping symlink resolution in general would
+// regress the PATH-drift pinning, the ~/.multica/hooks recursion guard, and the
+// MUL-4486 self-heal that all depend on collapsing to a real path.
 func canonicalExecutablePath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return path
 	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		return real
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
 	}
-	return abs
+	// Only when the alias name differs from the shim's own name is there a
+	// dispatch name to preserve; an explicit path straight at volta-shim has
+	// nothing to keep and stays canonicalized.
+	if isVoltaShimPath(real) && !isVoltaShimPath(abs) {
+		return abs
+	}
+	return real
+}
+
+// isVoltaShimPath reports whether path's basename is Volta's shared shim. The
+// extension is trimmed so volta-shim.exe matches on Windows, and the compare is
+// case-insensitive because macOS and Windows filesystems usually are.
+func isVoltaShimPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	base := filepath.Base(path)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return strings.EqualFold(base, voltaShimName)
 }
 
 func isExecutableFile(path string) bool {
