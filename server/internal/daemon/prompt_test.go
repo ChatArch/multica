@@ -841,9 +841,14 @@ func TestBuildCommentPromptCoalescedCrossThread(t *testing.T) {
 
 // TestBuildCommentPromptCoalescedIDsOnlyFallback pins the old-server fallback:
 // when only coalesced ids are shipped (no embedded detail), the prompt must
-// still NOT assume a shared thread and must point at an issue-wide fetch.
+// still NOT assume a shared thread, and must reach the ids through a BOUNDED
+// read rather than an issue-wide bulk pull (MUL-5442).
+//
+// The bulk pull is the regression this guards: `--recent N` caps threads, not
+// comments, so on a small issue it returns the whole history — and the brief's
+// own catch-up step forbids exactly that shape.
 func TestBuildCommentPromptCoalescedIDsOnlyFallback(t *testing.T) {
-	task := Task{
+	base := Task{
 		IssueID:               "issue-fallback-1",
 		TriggerCommentID:      "trigger-newest",
 		TriggerThreadID:       "thread-root-A",
@@ -851,13 +856,44 @@ func TestBuildCommentPromptCoalescedIDsOnlyFallback(t *testing.T) {
 		TriggerAuthorType:     "member",
 		CoalescedCommentIDs:   []string{"c-old-1", "c-old-2"},
 	}
-	out := BuildPrompt(task, "claude")
 
+	t.Run("with since anchor", func(t *testing.T) {
+		task := base
+		task.NewCommentsSince = "2026-08-03T06:00:00Z"
+		out := BuildPrompt(task, "claude")
+
+		want := "multica issue comment list issue-fallback-1 --since 2026-08-03T06:00:00Z --output json"
+		if !strings.Contains(out, want) {
+			t.Errorf("id-only fallback must fetch the delta with %q, got:\n%s", want, out)
+		}
+		assertBoundedIDOnlyFallback(t, out)
+	})
+
+	t.Run("without since anchor", func(t *testing.T) {
+		// No prior run on this issue, so the server sent no anchor. The fallback
+		// must still bound the read — scan roots, then expand named threads.
+		out := BuildPrompt(base, "claude")
+
+		for _, want := range []string{
+			"multica issue comment list issue-fallback-1 --roots-only --summary --output json",
+			"multica issue comment list issue-fallback-1 --thread <thread-id> --tail 30 --output json",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("anchorless id-only fallback missing bounded read %q, got:\n%s", want, out)
+			}
+		}
+		assertBoundedIDOnlyFallback(t, out)
+	})
+}
+
+// assertBoundedIDOnlyFallback holds the invariants both fallback shapes share.
+func assertBoundedIDOnlyFallback(t *testing.T, out string) {
+	t.Helper()
 	if strings.Contains(out, "they are in the triggering thread") {
 		t.Errorf("id-only fallback must not assume a shared thread, got:\n%s", out)
 	}
-	if !strings.Contains(out, "--recent 30") {
-		t.Errorf("id-only fallback must point at an issue-wide fetch (--recent 30), got:\n%s", out)
+	if strings.Contains(out, "--recent") {
+		t.Errorf("id-only fallback must not send the agent at an issue-wide --recent pull (MUL-5442), got:\n%s", out)
 	}
 	for _, id := range []string{"c-old-1", "c-old-2"} {
 		if !strings.Contains(out, id) {
