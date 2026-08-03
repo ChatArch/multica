@@ -211,6 +211,29 @@ func TestExtractServerMessagePrefersProseOverMachineCode(t *testing.T) {
 	}
 }
 
+// TestFormatErrorValidationPrefersProseOverMachineCode pins an intentional
+// behavior change that rides along with the conflict fix: the prose preference
+// lives in the shared extractor, so a 400/422 whose "error" holds a machine code
+// now shows its "message" instead of the code. Only the issue-table endpoints
+// are shaped this way and none of them is reachable from the CLI today, but the
+// change is deliberate and should fail loudly if someone reverts it by accident.
+func TestFormatErrorValidationPrefersProseOverMachineCode(t *testing.T) {
+	withLang(t, "en_US.UTF-8")
+	got := FormatError(&HTTPError{
+		StatusCode: 422,
+		Body:       `{"error":"unsupported_group","code":"group_kind_unsupported","message":"This group type is not supported."}`,
+	}, false)
+	if !strings.Contains(got, "This group type is not supported.") {
+		t.Errorf("expected the prose message, got %q", got)
+	}
+
+	// A validation body carrying only a code is unchanged.
+	only := FormatError(&HTTPError{StatusCode: 422, Body: `{"error":"title_is_required"}`}, false)
+	if !strings.Contains(only, "title_is_required") {
+		t.Errorf("code-only validation body should still surface the code, got %q", only)
+	}
+}
+
 func TestFormatErrorDebugIncludesRawChain(t *testing.T) {
 	withLang(t, "en_US.UTF-8")
 	httpErr := &HTTPError{Method: "GET", Path: "/api/issues/abc", StatusCode: 404, Body: `{"error":"not found"}`}
