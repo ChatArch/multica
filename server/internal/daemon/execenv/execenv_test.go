@@ -2842,9 +2842,15 @@ func TestVerifyCodexHomeRootRejectsSymlinkedHome(t *testing.T) {
 	}
 }
 
-// End to end: a task home that is already a link to an outside directory must
-// fail the copy instead of provisioning through the link.
-func TestPrepareCodexHomeRefusesSymlinkedCodexHome(t *testing.T) {
+// End to end, scoped to the write this change owns: when the task home is
+// already a link to an outside directory, the referenced-file copy must fail
+// instead of provisioning through the link.
+//
+// Deliberately not asserted: that nothing at all lands in the link target.
+// Earlier steps in prepareCodexHomeWithOpts (config.toml, sessions/, plugin
+// cache) still address codexHome by path and run before this check, so making
+// the whole prepare root-handle safe is a separate, larger change (MUL-5647).
+func TestPrepareCodexHomeRefusesReferencedFileWriteThroughSymlinkedCodexHome(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
 	sharedHome := t.TempDir()

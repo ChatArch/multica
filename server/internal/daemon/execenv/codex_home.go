@@ -947,6 +947,11 @@ func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) err
 // fails here (symlink, or a different directory at that path), and a swap after
 // it cannot matter, because everything downstream uses this handle rather than
 // the path.
+//
+// Scope: this covers the config-referenced copies below. The earlier steps of
+// prepareCodexHomeWithOpts still address the task home by path, so "the whole
+// prepare is safe against a symlinked task home" is not yet true — that
+// conversion is tracked in MUL-5647.
 func openVerifiedCodexHomeRoot(codexHome, key string) (*os.Root, error) {
 	root, err := os.OpenRoot(codexHome)
 	if err != nil {
