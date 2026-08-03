@@ -99,10 +99,10 @@ func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 	b.WriteString("Multica marks the task terminal the moment your top-level turn exits — any process, tool call, or subagent owned by this run that is still active is orphaned, its result lost, and the final comment you meant to post after it never sends. There is no background-completion wakeup here.\n\n")
 	b.WriteString("- Do NOT end your turn while background tasks or other work that still belongs to the current run is active, including async subagents, background shell commands, and detached tool calls. Never background-and-yield: no future notification or wakeup will arrive to resume you. A tool response that says to wait for a future notification/reminder, or that it is running in the background so you can keep working, does not change that — block before exiting. If you can't observe a result, run the work synchronously instead, and never end a turn with a \"standing by\" / \"I'll report back when X finishes\" message: that becomes your final output and the task ends.\n")
 	b.WriteString("- When a required result from run-owned work must be collected, wait synchronously inside one foreground tool call that blocks to completion (e.g. a blocking test or build command); never split \"start the wait\" and \"collect the result\" across turns.\n")
-	b.WriteString("- A user explicitly asking for a local development or test service to stay available after the turn is a persistent service handoff, not background-and-yield. Use it only when the running service itself is the requested deliverable, and hand off only once the service's lifecycle no longer depends on this run: stdio redirected to durable logs, an ownership and cleanup handle recorded (for example PID/profile). Then verify readiness before replying, and provide the URL, logs, and stop instructions. Leave no pending result or future wakeup. Without a supervisor, describe survival as best-effort, not guaranteed.\n")
+	b.WriteString("- A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded PID), verify readiness, and reply with the URL and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n")
 	b.WriteString("- The persistent-service exception does not cover tests, builds, CI polling, monitors, or any other work whose completion the agent still owes; those remain run-owned, and the CI-specific rules below still apply.\n")
 	b.WriteString("- External systems triggered by a completed action — for example GitHub Actions after a successful push — are not agent-owned background tasks. Do not wait for them by default; report them as pending and finish the handoff.\n")
-	b.WriteString("- Concretely, after a push or a PR create, unless the explicit exception below applies: do NOT run `gh pr checks --watch`, `gh run watch`, or any sleep / retry loop that polls check status. Enabling auto-merge (`gh pr merge --auto`) is fine — it returns immediately; waiting for it to land is not. Take at most ONE non-blocking status snapshot (`gh pr checks <pr>` or `multica issue pull-requests <issue-id>`) and deliver the evidence you already have: \"Local tests pass (`go test ./...` / `pnpm test`); CI running: <PR link>\". A PR whose CI is still in flight is a complete hand-off.\n")
+	b.WriteString("- Concretely, after a push or a PR create, unless the explicit exception below applies: do NOT run `gh pr checks --watch`, `gh run watch`, or any sleep / retry loop that polls check status (`gh pr merge --auto` is fine — it returns immediately). Take at most ONE non-blocking status snapshot (e.g. `gh pr checks <pr>`) and deliver the evidence you already have: \"Local tests pass; CI running: <PR link>\". A PR whose CI is still in flight is a complete hand-off.\n")
 	b.WriteString("- A repo's merge requirements — \"CI must be green before merge\", required reviews, branch protection — are GitHub's merge gate, NOT your delivery acceptance criteria, and do not license a wait.\n")
 	b.WriteString("- The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask you for the CI result, that result IS the deliverable — wait for it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn and report the outcome. Nothing else re-opens this door.\n\n")
 }
@@ -524,14 +524,14 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 	b.WriteString("6. Before exiting, pin or clear a metadata key via `multica issue metadata set`/`delete` only if it clears the bar in `## Issue Metadata`. Most runs write nothing here — that is the expected outcome, not a gap. When in doubt, do not write.\n\n")
 
-	b.WriteString("**Ownership mode only — you own the issue status this run**\n\n")
-	fmt.Fprintf(b, "- Before step 4, run `multica issue status %s in_progress` unless your Agent Identity forbids issue status changes; if it does, skip it.\n", ctx.IssueID)
+	b.WriteString("**Ownership mode only — you own the issue status this run** (skip any status call below that your Agent Identity forbids)\n\n")
+	fmt.Fprintf(b, "- Before step 4, run `multica issue status %s in_progress`.\n", ctx.IssueID)
 	if ctx.IsSquadLeader {
 		fmt.Fprintf(b, "- After this initial dispatch, leave the parent issue `in_progress` — do NOT run `multica issue status %s in_review` or `done` on this turn. Dispatching members is not completion. You will be re-triggered when members post updates or a stage closes; only then, if the overall goal is met, move the parent to `in_review`.\n", ctx.IssueID)
 	} else {
-		fmt.Fprintf(b, "- When done, run `multica issue status %s in_review` unless your Agent Identity forbids issue status changes; if it does, skip it.\n", ctx.IssueID)
+		fmt.Fprintf(b, "- When done, run `multica issue status %s in_review`.\n", ctx.IssueID)
 	}
-	fmt.Fprintf(b, "- If blocked, run `multica issue status %s blocked` unless your Agent Identity forbids issue status changes. Post a comment explaining the blocker unless your Agent Identity forbids issue comments.\n\n", ctx.IssueID)
+	fmt.Fprintf(b, "- If blocked, run `multica issue status %s blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.\n\n", ctx.IssueID)
 
 	b.WriteString("**Reply mode only — respond to the comment in the user message**\n\n")
 	b.WriteString("- Your primary job is to respond to THAT specific comment, even if you have handled similar requests before in this session. Do NOT confuse it with previous comments; take its id from the user message, never from this file or from an earlier turn.\n")
@@ -560,12 +560,16 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 }
 
-// writeSubIssueCreation emits the Sub-issue Creation section (compressed
-// to two short paragraphs).
+// writeSubIssueCreation emits the Sub-issue Creation section.
+//
+// MUL-5442 demotes the full todo/backlog/stage playbook to the
+// multica-working-on-issues built-in skill: the semantics are only needed at
+// the moment an agent is about to create sub-issues, and that moment is
+// exactly what triggers the skill. The brief keeps the one-line map so the
+// flags remain discoverable without the skill.
 func writeSubIssueCreation(b *strings.Builder) {
 	b.WriteString("## Sub-issue Creation\n\n")
-	b.WriteString("**Choosing `--status` when creating sub-issues.** `--status todo` = **start now** (default — agent assignees fire immediately). `--status backlog` = **wait**, then promote later with `multica issue status <child-id> todo`. Parallel children: all `--status todo`. Strict serial 1→2→3: only Step 1 `todo`, Steps 2/3 `--status backlog` from the start.\n\n")
-	b.WriteString("**Ordering with stages.** For phased plans, group children with `--stage <N>` (N ≥ 1) instead of hand-promoting the backlog chain — stage members run together, and the parent wakes once per stage. Use `--stage k --status backlog` for later stages, then `multica issue children <id>` to inspect groupings before promoting. Reach for stages whenever a plan has more than one step or a step must wait for a group.\n\n")
+	b.WriteString("`--status todo` starts an agent-assigned child immediately; `--status backlog` parks it for later promotion; `--stage <N>` groups children into ordered stages. Before creating sub-issues, read the `multica-working-on-issues` skill — it covers serial chains, promotion, and stage wake semantics.\n\n")
 }
 
 // writeSkills emits the Skills section: an index of invocable skill names.
@@ -618,8 +622,7 @@ func writeMentions(b *strings.Builder) {
 // writeAttachments emits the Attachments pointer.
 func writeAttachments(b *strings.Builder) {
 	b.WriteString("## Attachments\n\n")
-	b.WriteString("Issues and comments may include file attachments (images, documents, etc.).\n")
-	b.WriteString("When a task includes attachment IDs and you need the files, inspect `multica attachment --help` and use the authenticated CLI path. Do not open Multica resource URLs directly.\n")
+	b.WriteString("Fetch issue/comment attachments via the authenticated CLI (`multica attachment --help`); never open Multica resource URLs directly.\n")
 	// Closes the inbound half of the MUL-4899 loop: an attachment the agent
 	// just downloaded is the most tempting local path to echo back, because it
 	// came from the conversation and *feels* shared. It is not — the download
@@ -650,10 +653,7 @@ func writeAlwaysUseCLI(b *strings.Builder) {
 // deliver a file HERE". Keeping them apart stops a new task kind from silently
 // inheriting no invariant at all.
 func writeDeliveryInvariant(b *strings.Builder) {
-	b.WriteString("**Runtime-local paths are never deliverables.** Your working directory exists only on the machine running you. Readers do not have it, so a local path in a deliverable is dead for everyone but you.\n\n")
-	b.WriteString("- NEVER write an absolute path or a `file://` URL as a clickable link or an embedded image — not `[screenshot](/Users/you/shot.png)`, not `![chart](file:///tmp/chart.png)`. This is wrong on every surface, including when the file really does exist on your machine right now.\n")
-	b.WriteString("- To reference a code location, use inline code and never a link: `path/to/file.ts:42`.\n")
-	b.WriteString("- To deliver a file you produced, use this surface's mechanism (below). If this surface has no file mechanism, say so in words — never link the path and imply the file was delivered.\n\n")
+	b.WriteString("**Runtime-local paths are never deliverables.** Your working directory exists only on the machine running you, so a local path in a deliverable is dead for every reader — NEVER write an absolute path or a `file://` URL as a clickable link or an embedded image, even when the file really does exist on your machine right now. Reference code locations as inline code, never a link: `path/to/file.ts:42`. Deliver files through this surface's mechanism (above); if it has none, say so in words — never link the path and imply the file was delivered.\n\n")
 }
 
 // writeOutput emits the kind-specific Output section: the always-on delivery

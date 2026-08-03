@@ -244,9 +244,10 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		// exception and its readiness / cleanup / honesty requirements.
 		"persistent service handoff",
 		"running service itself is the requested deliverable",
-		"stdio redirected to durable logs",
-		"PID/profile",
-		"verify readiness before replying",
+		// MUL-5442: pin the handoff concepts, not the operational phrasing.
+		"durable logs",
+		"recorded PID",
+		"verify readiness",
 		"survival as best-effort, not guaranteed",
 		"does not cover tests, builds, CI polling",
 		"are not agent-owned background tasks",
