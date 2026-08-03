@@ -154,6 +154,26 @@ func TestMcpConfigNeedsAuthoritativeDaemonSkipsUnmanaged(t *testing.T) {
 	}
 }
 
+// A non-object cannot carry `mcpServers`, so it expresses no boundary — and an
+// old daemon does not widen it either, because mergeRuntimeAndAgentMcpConfig
+// fails to unmarshal it and falls back to the agent config alone. Gating these
+// blocked real tasks with no security benefit.
+func TestMcpConfigNeedsAuthoritativeDaemonSkipsNonObjectConfigs(t *testing.T) {
+	t.Parallel()
+
+	for _, agentCfg := range []json.RawMessage{
+		json.RawMessage(`[]`),
+		json.RawMessage(`[{"mcpServers":{}}]`),
+		json.RawMessage(`"mcpServers"`),
+		json.RawMessage(`7`),
+		json.RawMessage(`true`),
+	} {
+		if mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+			t.Fatalf("non-object config %q must not gate the claim", string(agentCfg))
+		}
+	}
+}
+
 // The inherit opt-in doubles as the documented escape hatch: the operator has
 // declared they accept the host's servers, so an old daemon already matches
 // intent and the task must keep running.

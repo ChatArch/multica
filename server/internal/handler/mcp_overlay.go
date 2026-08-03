@@ -11,22 +11,37 @@ import (
 // mcp_config to a daemon that predates DaemonCapabilityAuthoritativeMcpV1 would
 // widen the agent's tool surface beyond what the operator configured.
 //
-// True only when the agent itself saved a config AND has not opted into
-// inheriting the host's servers. In that case an old daemon merges the runtime
-// host's own MCP servers underneath the managed set — the GitHub #6283
-// vulnerability — so the claim must fail closed instead of running the agent
-// with tools the operator believes are excluded.
+// True only when the agent itself saved a managed config OBJECT and has not
+// opted into inheriting the host's servers. In that case an old daemon merges
+// the runtime host's own MCP servers underneath the managed set — the GitHub
+// #6283 vulnerability — so the claim must fail closed instead of running the
+// agent with tools the operator believes are excluded.
 //
-// False when the agent has no config of its own (nothing to widen; the host's
-// servers were always in scope) or when runtime_config.mcp.inherit_runtime is
-// set, because then the merge is exactly what the operator asked for and an old
-// daemon's behaviour already matches intent. That opt-in doubles as the
-// documented escape hatch for an operator who cannot upgrade yet.
+// False when:
+//
+//   - The agent has no config of its own: nothing to widen, the host's servers
+//     were always in scope.
+//   - runtime_config.mcp.inherit_runtime is set: the merge is exactly what the
+//     operator asked for, so an old daemon already matches intent. That opt-in
+//     doubles as the documented escape hatch for an operator who cannot upgrade
+//     the daemon yet.
+//   - The config is not a JSON object (an array or a primitive). Only an object
+//     can carry `mcpServers`, so a non-object expresses no boundary to protect.
+//     An old daemon does not widen it either: mergeRuntimeAndAgentMcpConfig
+//     fails to unmarshal it and falls back to the agent config alone. Gating
+//     these would block tasks with no security benefit.
 func mcpConfigNeedsAuthoritativeDaemon(agentMcpConfig, runtimeConfig json.RawMessage) bool {
-	if !hasManagedJSON(agentMcpConfig) {
+	if !isManagedMcpConfigObject(agentMcpConfig) {
 		return false
 	}
 	return !runtimeConfigInheritsRuntimeMcp(runtimeConfig)
+}
+
+// isManagedMcpConfigObject reports whether the raw value is a JSON object, the
+// only shape that can express a managed MCP server set.
+func isManagedMcpConfigObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
 // runtimeConfigInheritsRuntimeMcp mirrors the daemon's
