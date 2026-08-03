@@ -20,7 +20,7 @@ import { api } from "@multica/core/api";
 /** How long editing pauses before the configuration is written back. */
 const AUTOSAVE_DELAY_MS = 800;
 
-export interface BuilderDraftSync {
+interface BuilderDraftSync {
   /**
    * False until the stored configuration has been applied (or ruled out). The
    * page must not merge an assistant `<agent_draft>` before this flips, or the

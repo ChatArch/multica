@@ -13,19 +13,22 @@ import { toStoredAgentDraft } from "./stored-draft";
  * to hang a draft off, so it persists locally — which is enough for what it has
  * to survive: a tab switch, a route change, a reload (#6287).
  *
- * `owner` scopes the draft to what is being created. A blank agent and a copy of
- * agent X are different pieces of work, and a copy of X is not a copy of Y; a
- * single slot would silently hand one flow's answers to another. A draft whose
- * owner does not match the current route is ignored rather than deleted — the
- * user may well come back to it.
+ * Drafts are keyed by what is being created, not stored one at a time. A blank
+ * agent and a copy of agent X are different pieces of work, and a copy of X is
+ * not a copy of Y; a single slot destroys one the moment the user opens
+ * another, before they have typed anything. Same shape the chat composer uses
+ * for its per-session drafts.
  */
-export interface ManualAgentDraft {
-  /** `"blank"`, or `"duplicate:<agentId>"`. */
-  owner: string;
+export interface ManualDraftEntry {
   /** Runtime included here, unlike the AI route's draft: there is no carrier
    *  agent to be authoritative about it. */
   runtimeId: string;
   draft: StoredAgentDraft;
+}
+
+export interface ManualAgentDrafts {
+  /** Keyed by {@link manualDraftOwner}. */
+  byOwner: Record<string, ManualDraftEntry>;
 }
 
 export const MANUAL_DRAFT_BLANK_OWNER = "blank";
@@ -34,19 +37,14 @@ export function manualDraftOwner(duplicateId: string | null): string {
   return duplicateId ? `duplicate:${duplicateId}` : MANUAL_DRAFT_BLANK_OWNER;
 }
 
-const EMPTY_MANUAL_AGENT_DRAFT: ManualAgentDraft = {
-  owner: MANUAL_DRAFT_BLANK_OWNER,
-  runtimeId: "",
-  draft: toStoredAgentDraft(EMPTY_AGENT_DRAFT, null),
-};
-
 /**
- * Whether this draft is worth restoring. A runtime alone does not count: it is
- * seeded automatically for every visit, so treating it as content would make
- * "you have unsaved work" true the moment the page opened.
+ * Whether an entry is worth keeping. A runtime alone does not count: it is
+ * seeded automatically on every visit, so treating it as content would store a
+ * draft for a form nobody touched — and make "you have unsaved work" true the
+ * moment the page opened.
  */
-export function hasMeaningfulManualDraft(value: ManualAgentDraft): boolean {
-  const { draft } = value;
+export function manualDraftEntryHasContent(entry: ManualDraftEntry): boolean {
+  const { draft } = entry;
   return (
     draft.name.trim().length > 0 ||
     draft.description.trim().length > 0 ||
@@ -57,8 +55,36 @@ export function hasMeaningfulManualDraft(value: ManualAgentDraft): boolean {
   );
 }
 
-export const useManualAgentDraftStore = createDraftStore<ManualAgentDraft>({
+/**
+ * Writes one owner's entry without touching the others, and drops it entirely
+ * when it holds nothing. Emptying the form therefore removes its slot rather
+ * than parking a blank one, which is also what keeps the map from growing a
+ * dead key per agent ever opened for duplication.
+ */
+export function setManualDraftEntry(
+  drafts: ManualAgentDrafts,
+  owner: string,
+  entry: ManualDraftEntry | null,
+): ManualAgentDrafts {
+  const byOwner = { ...drafts.byOwner };
+  if (entry && manualDraftEntryHasContent(entry)) {
+    byOwner[owner] = entry;
+  } else {
+    delete byOwner[owner];
+  }
+  return { byOwner };
+}
+
+const EMPTY_MANUAL_AGENT_DRAFTS: ManualAgentDrafts = { byOwner: {} };
+
+export const EMPTY_MANUAL_DRAFT_ENTRY: ManualDraftEntry = {
+  runtimeId: "",
+  draft: toStoredAgentDraft(EMPTY_AGENT_DRAFT, null),
+};
+
+export const useManualAgentDraftStore = createDraftStore<ManualAgentDrafts>({
   storageKey: "multica:agents:manual-draft",
-  emptyData: EMPTY_MANUAL_AGENT_DRAFT,
-  hasMeaningful: hasMeaningfulManualDraft,
+  emptyData: EMPTY_MANUAL_AGENT_DRAFTS,
+  hasMeaningful: (drafts) =>
+    Object.values(drafts.byOwner).some(manualDraftEntryHasContent),
 });

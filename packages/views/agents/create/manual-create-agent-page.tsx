@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useManualAgentDraftStore } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
@@ -15,7 +14,10 @@ import { AgentCreateChip, AgentCreateShell } from "./create-shell";
 import { useCreateAgentForm } from "./use-create-agent-form";
 import { useCreateAgentSubmit } from "./use-create-agent-submit";
 import { useDuplicateDraftSeed } from "./use-duplicate-draft-seed";
-import { useManualDraftSync } from "./use-manual-draft-sync";
+import {
+  clearManualDraftForOwner,
+  useManualDraftSync,
+} from "./use-manual-draft-sync";
 
 /**
  * Manual agent creation: every field filled in by hand.
@@ -75,15 +77,15 @@ export function ManualCreateAgentPage() {
     ready: !duplicateId || duplicateSeeded,
   });
 
-  const clearManualDraft = useManualAgentDraftStore((state) => state.clearDraft);
   const submit = useCreateAgentSubmit({
     draft: form.draft,
     runtimeId: form.selectedRuntime?.id ?? null,
     squadId,
     duplicateSource: duplicateAgent,
     // The work is committed; leaving it stored would hand the finished agent's
-    // fields to whoever opens this form next.
-    onCreated: () => clearManualDraft(),
+    // fields to whoever opens this form next. Only this flow's slot — another
+    // half-finished copy is still someone's unfinished work.
+    onCreated: () => clearManualDraftForOwner(duplicateId),
   });
 
   const canCreate =

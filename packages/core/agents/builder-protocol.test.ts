@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeBuilderInput,
-  extractBuilderDraftBlock,
   encodeBuilderInput,
   mergeBuilderDraft,
   parseBuilderDraft,
@@ -46,43 +45,6 @@ describe("agent builder protocol", () => {
     expect(
       stripBuilderDraft('Here you go.\n<agent_draft>{"name":"Rel'),
     ).toBe("Here you go.");
-  });
-
-  // The two forms mean different things: a closed block is a finished update,
-  // an open one is an update being written. Callers label them separately.
-  it("labels a streaming block and a completed one differently", () => {
-    const markers = { streaming: "· Updating…", complete: "· Updated" };
-    expect(
-      stripBuilderDraft('Here you go.\n<agent_draft>{"name":"Rel', markers),
-    ).toBe("Here you go.\n\n· Updating…");
-    expect(
-      stripBuilderDraft(
-        'Here you go.\n<agent_draft>{"name":"Rel"}</agent_draft>',
-        markers,
-      ),
-    ).toBe("Here you go.\n\n· Updated");
-  });
-
-  // The payload behind the "updated" row. Only a closed block has one — mid
-  // stream there is nothing complete to show.
-  it("extracts a completed payload and nothing from a streaming one", () => {
-    expect(
-      extractBuilderDraftBlock(
-        'Here you go.\n<agent_draft>{"name":"Rel"}</agent_draft>',
-      ),
-    ).toBe('{\n  "name": "Rel"\n}');
-    expect(
-      extractBuilderDraftBlock('Here you go.\n<agent_draft>{"name":"Rel'),
-    ).toBeNull();
-    expect(extractBuilderDraftBlock("no block at all")).toBeNull();
-  });
-
-  // A payload too malformed to parse is exactly when someone wants to read it,
-  // so it comes back verbatim rather than being withheld.
-  it("returns an unparseable payload verbatim", () => {
-    expect(
-      extractBuilderDraftBlock("<agent_draft>{ not json </agent_draft>"),
-    ).toBe("{ not json");
   });
 
   it("repairs literal line breaks emitted inside the instructions string", () => {

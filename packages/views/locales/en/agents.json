@@ -346,11 +346,7 @@
       "prompt_assistant": "Help our team plan and write projects",
       "thinking": "Updating the draft…",
       "placeholder": "Describe the agent you need…",
-      "send": "Send message",
-      "draft_updated": "Configuration updated",
-      "draft_updating": "· Updating configuration…",
-      "draft_json_title": "Configuration update",
-      "draft_json_hint": "The exact payload this reply applied to the form."
+      "send": "Send message"
     },
     "live_draft": "Agent configuration",
     "live_draft_hint": "Conversation updates appear here, and you can adjust any field directly.",

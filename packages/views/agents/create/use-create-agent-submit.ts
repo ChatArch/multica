@@ -12,7 +12,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 
-export interface AgentCreateErrors {
+interface AgentCreateErrors {
   nameError: string | null;
   formError: string | null;
 }

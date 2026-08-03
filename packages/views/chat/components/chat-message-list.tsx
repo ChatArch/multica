@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components } from "react-virtuoso";
@@ -75,15 +67,6 @@ interface ChatMessageListProps {
   onLoadOlderMessages?: () => void;
   /** Transform assistant task text for embedded chat protocols before render/copy. */
   transformContent?: (content: string) => string;
-  /**
-   * Extra element rendered under a settled assistant reply, given that reply's
-   * raw content. Opt-in per surface, and undefined everywhere but the agent
-   * builder: it exists so a surface with its own embedded protocol can render
-   * that protocol as UI instead of leaving `transformContent` to flatten it
-   * into a line of prose. Not offered for the streaming form — there is no
-   * complete payload to act on until the reply lands.
-   */
-  renderAssistantAddon?: (message: ChatMessage) => ReactNode;
   /** Send the full hidden prompt behind an assistant follow-up chip. */
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled?: boolean;
@@ -192,7 +175,6 @@ export function ChatMessageList({
   isFetchingOlderMessages = false,
   onLoadOlderMessages,
   transformContent,
-  renderAssistantAddon,
   onQuickAction,
   quickActionsDisabled = false,
   onRegenerateQuickActions,
@@ -324,7 +306,6 @@ export function ChatMessageList({
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
               transformContent={transformContent}
-              renderAssistantAddon={renderAssistantAddon}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
               onRegenerateQuickActions={onRegenerateQuickActions}
@@ -388,7 +369,6 @@ const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
   transformContent,
-  renderAssistantAddon,
   onQuickAction,
   quickActionsDisabled,
   onRegenerateQuickActions,
@@ -398,7 +378,6 @@ const MessageBubble = memo(function MessageBubble({
   item: ChatRenderItem;
   isPending: boolean;
   transformContent?: (content: string) => string;
-  renderAssistantAddon?: (message: ChatMessage) => ReactNode;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
@@ -453,7 +432,6 @@ const MessageBubble = memo(function MessageBubble({
       message={message}
       isPending={isPending}
       transformContent={transformContent}
-      renderAssistantAddon={renderAssistantAddon}
       onQuickAction={onQuickAction}
       quickActionsDisabled={quickActionsDisabled}
       onRegenerateQuickActions={onRegenerateQuickActions}
@@ -485,7 +463,6 @@ function AssistantMessage({
   message,
   isPending,
   transformContent,
-  renderAssistantAddon,
   onQuickAction,
   quickActionsDisabled,
   onRegenerateQuickActions,
@@ -496,7 +473,6 @@ function AssistantMessage({
   message?: ChatMessage;
   isPending: boolean;
   transformContent?: (content: string) => string;
-  renderAssistantAddon?: (message: ChatMessage) => ReactNode;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
@@ -568,7 +544,6 @@ function AssistantMessage({
       ) : null}
       {message && (
         <>
-          {renderAssistantAddon?.(message)}
           <AttachmentList
             attachments={message.attachments}
             content={message.content}

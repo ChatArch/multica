@@ -1,8 +1,6 @@
-export { ChooseCreateMethodPage, CreateMethodChooser } from "./choose-create-method-page";
+// The three route entry points. Everything else in this folder is internal to
+// the flow and already imported by path — re-exporting it here only created a
+// second name for the same thing and a list to keep in sync.
+export { ChooseCreateMethodPage } from "./choose-create-method-page";
 export { ManualCreateAgentPage } from "./manual-create-agent-page";
 export { AiCreateAgentPage } from "./ai-create-agent-page";
-export { AgentConfigurationPanel, AgentNameField } from "./agent-configuration-panel";
-export { CreateAgentFooter } from "./create-agent-footer";
-export { UnfinishedDraftsBanner, draftPreview, draftTitle } from "./unfinished-drafts";
-export { classifyAgentCreateError } from "./use-create-agent-submit";
-export type { AgentCreateErrors } from "./use-create-agent-submit";

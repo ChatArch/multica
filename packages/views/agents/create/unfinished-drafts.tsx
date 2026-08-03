@@ -131,7 +131,7 @@ function DraftTimestamp({ at }: { at: string }) {
  * candidate — the server-side title is the same string on every row and would
  * make the list unreadable.
  */
-export function draftTitle(
+function draftTitle(
   session: Pick<AgentBuilderSessionSummary, "draft">,
 ): string {
   return session.draft?.name?.trim() ?? "";

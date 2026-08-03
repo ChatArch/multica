@@ -805,11 +805,7 @@
       "prompt_assistant": "チームのプロジェクト計画と文章作成を支援",
       "thinking": "下書きを更新中…",
       "placeholder": "必要なエージェントを説明…",
-      "send": "メッセージを送信",
-      "draft_updated": "設定を更新しました",
-      "draft_updating": "· 設定を更新中…",
-      "draft_json_title": "設定の更新内容",
-      "draft_json_hint": "この返信がフォームに適用した内容です。"
+      "send": "メッセージを送信"
     },
     "live_draft": "エージェント設定",
     "live_draft_hint": "会話内容がここに反映され、各項目を直接調整できます。",

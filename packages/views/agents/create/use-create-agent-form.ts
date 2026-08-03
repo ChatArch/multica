@@ -26,7 +26,7 @@ import {
   skillListOptions,
 } from "@multica/core/workspace/queries";
 
-export interface CreateAgentForm {
+interface CreateAgentForm {
   draft: AgentDraft;
   setDraft: Dispatch<SetStateAction<AgentDraft>>;
   runtimes: RuntimeDevice[];
@@ -43,7 +43,7 @@ export interface CreateAgentForm {
   draftReady: boolean;
 }
 
-export interface RuntimeSeed {
+interface RuntimeSeed {
   /**
    * False while the caller is still resolving which runtime this draft belongs
    * to. The form seeds nothing until it flips, so the list-order fallback can
@@ -60,9 +60,10 @@ const IMMEDIATE_RUNTIME_SEED: RuntimeSeed = { ready: true, runtimeId: "" };
  * The state every agent-creation route shares: one draft plus the workspace
  * catalogs the form renders from.
  *
- * The draft is deliberately per-route component state. It does not survive
- * navigation today — the same as before this flow was split into routes — and
- * making it durable is a separate change with its own storage decisions.
+ * The draft itself is plain component state here. Making it survive navigation
+ * is the caller's job, because the two routes answer it differently: the AI
+ * route's configuration belongs to a conversation and lives on the server, the
+ * manual route's has nothing to hang off and persists locally.
  */
 export function useCreateAgentForm(options?: {
   /**
