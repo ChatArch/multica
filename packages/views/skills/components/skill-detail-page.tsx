@@ -83,6 +83,72 @@ const SKILL_MD = "SKILL.md";
 
 type DraftFile = { id?: string; path: string; content: string };
 
+/** The four editable fields, as one snapshot. */
+type SkillDraft = {
+  name: string;
+  description: string;
+  content: string;
+  files: DraftFile[];
+};
+
+/**
+ * Server skill -> editable draft.
+ *
+ * `name` and `description` are trimmed here because Save trims them too:
+ * normalizing once, at the single seam where server data becomes a draft, is
+ * what lets every later comparison be plain equality. Trimming at comparison
+ * time instead is how the two sides drifted apart in the first place — the
+ * dirty check trimmed one operand and not the other, so a description ending
+ * in a newline (what `description: |` frontmatter yields) never compared equal
+ * to itself and the page opened permanently dirty.
+ *
+ * `content` and file bodies are deliberately NOT normalized: leading and
+ * trailing whitespace in a SKILL.md body is content, not formatting.
+ */
+function toDraft(s: Skill): SkillDraft {
+  return {
+    name: s.name.trim(),
+    description: s.description.trim(),
+    content: s.content,
+    files: (s.files ?? []).map((f: SkillFile) => ({
+      id: f.id,
+      path: f.path,
+      content: f.content,
+    })),
+  };
+}
+
+/**
+ * Order-insensitive snapshot of a file set. The two endpoints that return
+ * files disagree on order — GET sorts by path, PUT echoes request order — and
+ * an order difference is not a content difference.
+ */
+function fileSignature(files: DraftFile[]): string {
+  return JSON.stringify(
+    files
+      .map((f) => ({ path: f.path, content: f.content }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+  );
+}
+
+/**
+ * Did the USER change anything, measured against the draft we handed them?
+ *
+ * Deliberately not "does the draft differ from the latest server skill": that
+ * question conflates two independent causes — the user typed something, or the
+ * server moved underneath us — and answering it as if only the first existed
+ * is what made every remote update look like a local edit.
+ */
+function hasLocalEdits(draft: SkillDraft, baseline: SkillDraft | null): boolean {
+  if (!baseline) return false;
+  return (
+    draft.name.trim() !== baseline.name ||
+    draft.description.trim() !== baseline.description ||
+    draft.content !== baseline.content ||
+    fileSignature(draft.files) !== fileSignature(baseline.files)
+  );
+}
+
 /**
  * Two tabs, not three. A skill has no settings axis to speak of:
  * `UpdateSkillRequest` carries only name / description / content / config /
@@ -720,6 +786,27 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
 
   const seededKeyRef = useRef<string | null>(null);
 
+  /**
+   * The draft this page last handed the user, normalized by `toDraft`. Dirty
+   * state is measured against THIS, never against the latest server skill.
+   *
+   * INVARIANT: `seedFromSkill` is the only writer, and it always writes the
+   * same snapshot it pushes into state. `dirtySummary` is a `useMemo` keyed on
+   * those state values, so every baseline write is paired with the state
+   * change that recomputes it. Assigning this ref anywhere else breaks that
+   * pairing and silently re-opens MUL-5645.
+   */
+  const baselineRef = useRef<SkillDraft | null>(null);
+
+  const seedFromSkill = useCallback((s: Skill) => {
+    const seeded = toDraft(s);
+    setName(seeded.name);
+    setDescription(seeded.description);
+    setContent(seeded.content);
+    setFiles(seeded.files);
+    baselineRef.current = seeded;
+  }, []);
+
   useEffect(() => {
     if (!skill) return;
     const key = `${wsId}:${skill.id}@${skill.updated_at}`;
@@ -729,39 +816,20 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
       seededKeyRef.current !== null &&
       seededKeyRef.current.startsWith(`${wsId}:${skill.id}@`);
 
-    if (sameSkill) {
-      const d = draftRef.current;
-      const serverFilesJson = JSON.stringify(
-        (skill.files ?? []).map((f) => ({ path: f.path, content: f.content })),
-      );
-      const draftFilesJson = JSON.stringify(
-        d.files.map((f) => ({ path: f.path, content: f.content })),
-      );
-      const hasEdits =
-        d.name.trim() !== skill.name ||
-        d.description.trim() !== skill.description ||
-        d.content !== skill.content ||
-        draftFilesJson !== serverFilesJson;
-      if (hasEdits) {
-        setConflictPending(true);
-        return;
-      }
+    // Same skill, newer server version. Whether that is a conflict depends on
+    // the local draft alone: with no local edits the user is simply reading
+    // the page, so pull the new version in silently instead of accusing them
+    // of an edit they never made and freezing the editor on stale text.
+    if (sameSkill && hasLocalEdits(draftRef.current, baselineRef.current)) {
+      setConflictPending(true);
+      return;
     }
 
     seededKeyRef.current = key;
     setConflictPending(false);
-    setName(skill.name);
-    setDescription(skill.description);
-    setContent(skill.content);
-    setFiles(
-      (skill.files ?? []).map((f: SkillFile) => ({
-        id: f.id,
-        path: f.path,
-        content: f.content,
-      })),
-    );
+    seedFromSkill(skill);
     if (!sameSkill) setSelectedPath(SKILL_MD);
-  }, [skill, wsId]);
+  }, [skill, wsId, seedFromSkill]);
 
   const creator = useMemo<MemberWithUser | null>(
     () =>
@@ -798,48 +866,41 @@ export function SkillDetailPage({ skillId }: { skillId: string }) {
     }
   }, [fileMap, selectedPath]);
 
-  // Files are matched by id so a rename counts as one changed file, not a
-  // delete plus an add; SKILL.md is its own entry since it lives in `content`.
+  // Compared against the seeded baseline, not against the latest server skill,
+  // so a remote update can never read as a local edit. Files are matched by id
+  // so a rename counts as one changed file, not a delete plus an add; SKILL.md
+  // is its own entry since it lives in `content`.
   const dirtySummary = useMemo(() => {
-    if (!skill) return { nameChanged: false, descChanged: false, changedFileCount: 0 };
-    const serverFiles: SkillFile[] = skill.files ?? [];
-    const serverById = new Map(serverFiles.map((f) => [f.id, f]));
-    let changedFileCount = content !== skill.content ? 1 : 0;
+    const baseline = baselineRef.current;
+    if (!baseline) {
+      return { nameChanged: false, descChanged: false, changedFileCount: 0 };
+    }
+    const baselineById = new Map(
+      baseline.files.flatMap((f) => (f.id ? [[f.id, f] as const] : [])),
+    );
+    let changedFileCount = content !== baseline.content ? 1 : 0;
     const draftIds = new Set<string>();
     for (const f of files) {
       if (f.id) draftIds.add(f.id);
-      const server = f.id ? serverById.get(f.id) : undefined;
-      if (!server || server.path !== f.path || server.content !== f.content) {
+      const base = f.id ? baselineById.get(f.id) : undefined;
+      if (!base || base.path !== f.path || base.content !== f.content) {
         changedFileCount += 1;
       }
     }
-    for (const f of serverFiles) {
-      if (!draftIds.has(f.id)) changedFileCount += 1;
+    for (const f of baseline.files) {
+      if (f.id && !draftIds.has(f.id)) changedFileCount += 1;
     }
     return {
-      nameChanged: name.trim() !== skill.name,
-      descChanged: description.trim() !== skill.description,
+      nameChanged: name.trim() !== baseline.name,
+      descChanged: description.trim() !== baseline.description,
       changedFileCount,
     };
-  }, [skill, name, description, content, files]);
+  }, [name, description, content, files]);
 
   const isDirty =
     dirtySummary.nameChanged ||
     dirtySummary.descChanged ||
     dirtySummary.changedFileCount > 0;
-
-  const seedFromSkill = (s: Skill) => {
-    setName(s.name);
-    setDescription(s.description);
-    setContent(s.content);
-    setFiles(
-      (s.files ?? []).map((f: SkillFile) => ({
-        id: f.id,
-        path: f.path,
-        content: f.content,
-      })),
-    );
-  };
 
   const handleSave = async () => {
     if (!skill || !canEdit) return;

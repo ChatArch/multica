@@ -133,7 +133,18 @@ function renderPage(searchParams = new URLSearchParams()) {
       </NavigationProvider>
     </I18nProvider>,
   );
-  return { replace };
+  return { replace, queryClient };
+}
+
+/** Publishes a new server version of the skill, as a `skill:updated` event would. */
+async function remoteUpdate(queryClient: QueryClient, next: Partial<Skill>) {
+  skillRef.current = {
+    ...(skillRef.current as Skill),
+    updated_at: "2026-07-29T10:00:00Z",
+    ...next,
+  };
+  await queryClient.invalidateQueries({ queryKey: ["skill", "ws-1", "skill-1"] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 beforeEach(() => {
@@ -253,5 +264,81 @@ describe("SkillDetailPage properties", () => {
     expect(
       screen.getByText(`${LONG_DESCRIPTION.length} characters.`, { exact: false }),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * MUL-5645. Dirty state is measured against the seeded baseline, not against
+ * the latest server skill. The two failures that rule prevents:
+ *
+ * 1. A description carrying trailing whitespace — what `description: |`
+ *    frontmatter yields, so every imported skill — used to compare unequal to
+ *    itself because only one side of the check was trimmed. The page opened
+ *    permanently dirty and Discard reseeded the same value, so it never cleared.
+ * 2. A remote update read as a local edit, because the check compared the draft
+ *    against the NEW server skill. Any agent edit froze the editor on stale
+ *    text behind a conflict banner, whatever the description looked like.
+ */
+describe("SkillDetailPage draft baseline (MUL-5645)", () => {
+  const CONFLICT_BANNER = "Someone else updated this skill";
+
+  it("opens clean when the description carries a trailing newline", async () => {
+    skillRef.current = { ...baseSkill, description: `${LONG_DESCRIPTION}\n` };
+    renderPage();
+    await screen.findAllByRole("tab", { name: /Overview|Files/ });
+    expect(screen.queryByText(/^Changed:/)).toBeNull();
+  });
+
+  it("stays clean after Discard on a trailing-newline description", async () => {
+    skillRef.current = { ...baseSkill, description: `${LONG_DESCRIPTION}\n` };
+    renderPage();
+    const field = (await screen.findByLabelText(
+      "Description",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: "edited" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    expect(screen.queryByText(/^Changed:/)).toBeNull();
+  });
+
+  it("pulls a remote edit in silently while the draft is untouched", async () => {
+    const { queryClient } = renderPage();
+    await screen.findAllByRole("tab", { name: /Overview|Files/ });
+
+    await remoteUpdate(queryClient, { description: "Rewritten by the agent" });
+
+    // The new text reaching the field IS the fix: the old code left the editor
+    // frozen on the pre-update value behind a conflict banner.
+    expect(await screen.findByDisplayValue("Rewritten by the agent")).toBeTruthy();
+    expect(screen.queryByText(CONFLICT_BANNER)).toBeNull();
+    expect(screen.queryByText(/^Changed:/)).toBeNull();
+  });
+
+  it("pulls a remote SKILL.md edit in silently too", async () => {
+    const { queryClient } = renderPage(new URLSearchParams("view=files"));
+    await screen.findAllByRole("tab", { name: /Overview|Files/ });
+
+    await remoteUpdate(queryClient, {
+      content: `${baseSkill.content}\n## Added remotely\n`,
+    });
+
+    const preview = await screen.findByTestId("preview");
+    expect(preview.textContent).toContain("Added remotely");
+    expect(screen.queryByText(CONFLICT_BANNER)).toBeNull();
+    expect(screen.queryByText(/^Changed:/)).toBeNull();
+  });
+
+  it("keeps the draft and warns when a remote edit lands on real local edits", async () => {
+    const { queryClient } = renderPage();
+    const field = (await screen.findByLabelText(
+      "Description",
+    )) as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: "my unsaved edit" } });
+
+    await remoteUpdate(queryClient, { description: "Rewritten by the agent" });
+
+    expect(await screen.findByText(CONFLICT_BANNER)).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Description") as HTMLTextAreaElement).value,
+    ).toBe("my unsaved edit");
   });
 });
