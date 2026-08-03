@@ -706,20 +706,29 @@ func samePathDir(a, b string) bool {
 }
 
 // voltaShimName is the basename of the single trampoline binary Volta installs
-// in ~/.volta/bin and symlinks EVERY managed command to (claude, codex, pi, ...).
+// and symlinks EVERY managed command to (claude, codex, pi, ...). Upstream names
+// it "volta-shim[.exe]" (volta-layout/src/v1.rs, VoltaInstall.shim_executable),
+// and on Unix each shim in $VOLTA_HOME/bin is a symlink to it
+// (volta-core/src/shim.rs, unix create()).
 const voltaShimName = "volta-shim"
 
 // canonicalExecutablePath collapses path to the real file behind any symlinks,
 // so version-manager prefix dirs and other indirection settle onto one stable
 // path we can pin.
 //
-// Exception: argv[0]-dispatching trampolines. Volta points every command it
-// manages at one shared volta-shim and decides which tool to run from the name
-// it was invoked as, so resolving `~/.volta/bin/claude` to `volta-shim` throws
-// away the only input that selects the tool — the shim then exits 126 and the
-// runtime never registers (#6183). For those we keep the caller's alias path,
-// which is also the stable one: the alias survives `volta install` upgrades
-// that replace the versioned binary underneath it.
+// Exception: argv[0]-dispatching trampolines. Volta decides which tool to run
+// from the name it was invoked as — volta-core/src/run/mod.rs get_tool_name()
+// takes file_name() of argv[0] — so resolving `~/.volta/bin/claude` to
+// volta-shim throws away the only input that selects the tool. Upstream then
+// fails the call outright (get_executor: `Some("volta-shim") =>
+// Err(ErrorKind::RunShimDirectly)`), and volta-shim's main exits 126 for any
+// Volta error, which is the exact symptom reported in #6183. Volta itself
+// documents this hazard in volta-cli/volta#579: fully resolving the symlink
+// before exec "loses the information about what tool was actually called".
+//
+// For those we keep the caller's alias path, which is also the stable one: the
+// alias survives `volta install` upgrades that replace the versioned binary
+// underneath it.
 //
 // This stays deliberately narrow. Skipping symlink resolution in general would
 // regress the PATH-drift pinning, the ~/.multica/hooks recursion guard, and the
@@ -743,8 +752,10 @@ func canonicalExecutablePath(path string) string {
 }
 
 // isVoltaShimPath reports whether path's basename is Volta's shared shim. The
-// extension is trimmed so volta-shim.exe matches on Windows, and the compare is
-// case-insensitive because macOS and Windows filesystems usually are.
+// extension is trimmed and the compare is case-insensitive, mirroring Volta's
+// own normalization on Windows (run/mod.rs tool_name_from_file_name lowercases
+// and strips ".exe"). In practice only the Unix layout reaches here, since
+// Windows shims are .cmd scripts rather than symlinks.
 func isVoltaShimPath(path string) bool {
 	if path == "" {
 		return false
