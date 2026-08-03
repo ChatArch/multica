@@ -875,12 +875,24 @@ func syncCodexReferencedFiles(codexHome, sharedHome string) error {
 //
 // Absolute and ~-rooted values are left alone: they address the same host the
 // task runs on, so Codex reads them directly and copying would only risk
-// serving a stale snapshot. A relative value must stay inside the task home
-// (filepath.IsLocal) — a `..` escape would otherwise let config.toml name any
-// file on the host and have the daemon copy it into the task environment.
+// serving a stale snapshot.
+//
+// Destination writes are root-scoped to codexHome (see
+// materialiseInCodexHome): filepath.IsLocal only proves the config string has no
+// lexical `..`, and a reused task home is writable by the task that used it, so
+// nothing but a root-scoped mkdir/remove/write can guarantee the daemon stays
+// inside the task home.
+//
+// The source side deliberately keeps ordinary path semantics: the relative path
+// resolves inside the shared Codex home and symlinks there are followed. That
+// directory is the user's own configuration, the file is only ever read, and a
+// task on this host can already read anything the daemon user can — so a
+// symlink out of ~/.codex grants no access the task did not already have.
 //
 // The copy is refreshed on every prepare, so reusing a task home picks up an
-// edited source instead of keeping a stale instruction file.
+// edited source instead of keeping a stale instruction file. A copy whose key
+// was later removed or repointed stays behind unreferenced; Codex never reads it
+// because the config no longer names it.
 func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) error {
 	referencedPath := strings.TrimSpace(configValue)
 	if referencedPath == "" {
@@ -892,8 +904,14 @@ func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) err
 		return err
 	}
 	info, err := os.Stat(src)
-	if err != nil {
+	if os.IsNotExist(err) {
 		return fmt.Errorf("%s %q resolved to missing file %s: %w", key, referencedPath, src, err)
+	}
+	if err != nil {
+		// Not a confident absence — a permission or IO failure must not be
+		// reported as "the file isn't there", which sends operators looking for
+		// the wrong problem.
+		return fmt.Errorf("%s %q: cannot stat source %s: %w", key, referencedPath, src, err)
 	}
 
 	if filepath.IsAbs(referencedPath) || strings.HasPrefix(referencedPath, "~") {
@@ -906,19 +924,67 @@ func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) err
 	if !filepath.IsLocal(cleanReferencedPath) {
 		return fmt.Errorf("%s %q must be a local relative path or an absolute path", key, referencedPath)
 	}
-	dst := filepath.Join(codexHome, cleanReferencedPath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create %s directory %s: %w", key, filepath.Dir(dst), err)
+	return materialiseInCodexHome(codexHome, cleanReferencedPath, src, key)
+}
+
+// materialiseInCodexHome writes src to relPath inside codexHome using
+// root-scoped operations, so no symlink below the task home can redirect the
+// daemon's mkdir, remove, or write outside it.
+//
+// This matters because a task home is reused: a prepare can run against a
+// directory a previous task already wrote to. Without the root, a task that
+// replaced an intermediate directory of its own home with a link to somewhere
+// else would have the daemon delete and overwrite the link target on the next
+// prepare. os.Root still allows links that stay inside the task home, which is
+// harmless, and rejects the ones that leave it.
+func materialiseInCodexHome(codexHome, relPath, src, key string) error {
+	// os.OpenRoot resolves codexHome itself before confining anything below it,
+	// so a codexHome that is a link would silently move the root elsewhere.
+	homeInfo, err := os.Lstat(codexHome)
+	if err != nil {
+		return fmt.Errorf("stat codex home %s: %w", codexHome, err)
 	}
-	if _, err := os.Lstat(dst); err == nil {
-		if err := os.Remove(dst); err != nil {
-			return fmt.Errorf("remove stale %s copy %s: %w", key, dst, err)
+	if homeInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("codex home %s is a symlink; refusing to write %s through it", codexHome, key)
+	}
+	root, err := os.OpenRoot(codexHome)
+	if err != nil {
+		return fmt.Errorf("open codex home %s: %w", codexHome, err)
+	}
+	defer root.Close()
+
+	if dir := filepath.Dir(relPath); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create %s directory %s: %w", key, dir, err)
+		}
+	}
+	if _, err := root.Lstat(relPath); err == nil {
+		if err := root.Remove(relPath); err != nil {
+			return fmt.Errorf("remove stale %s copy %s: %w", key, relPath, err)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat %s copy %s: %w", key, dst, err)
+		return fmt.Errorf("stat %s copy %s: %w", key, relPath, err)
 	}
-	if err := copyFile(src, dst); err != nil {
-		return fmt.Errorf("copy %s %s to %s: %w", key, src, dst, err)
+
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s %s: %w", key, src, err)
+	}
+	defer in.Close()
+
+	out, err := root.OpenFile(relPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("create %s copy %s: %w", key, relPath, err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy %s %s to %s: %w", key, src, relPath, err)
+	}
+	// Close explicitly so a deferred write-back failure cannot be swallowed; the
+	// deferred Close then no-ops.
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close %s copy %s: %w", key, relPath, err)
 	}
 	return nil
 }

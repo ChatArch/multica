@@ -2609,6 +2609,121 @@ func TestPrepareCodexHomeRefreshesModelInstructionsFileOnReuse(t *testing.T) {
 	}
 }
 
+// A reused task home is writable by the task that ran in it, so an intermediate
+// directory of the copy destination can be a symlink by the time the next
+// prepare runs. Root-scoped writes must refuse to follow it out of the task
+// home instead of deleting and overwriting the link target.
+func TestPrepareCodexHomeRefusesSymlinkedInstructionsParentOnReuse(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	rel := filepath.Join("prompts", "unrestricted.md")
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(fmt.Sprintf("model_instructions_file = '%s'", rel)), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sharedHome, "prompts"), 0o755); err != nil {
+		t.Fatalf("create shared prompts dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, rel), []byte("from shared home"), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("first prepareCodexHome failed: %v", err)
+	}
+
+	// Stand in for what a task can do to its own home between prepares.
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "unrestricted.md")
+	if err := os.WriteFile(sentinel, []byte("outside the task home"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	taskParent := filepath.Join(codexHome, "prompts")
+	if err := os.RemoveAll(taskParent); err != nil {
+		t.Fatalf("remove task prompts dir: %v", err)
+	}
+	if err := os.Symlink(outside, taskParent); err != nil {
+		t.Skipf("symlinks unsupported on this host: %v", err)
+	}
+
+	err := prepareCodexHome(codexHome, testLogger())
+	if err == nil {
+		t.Fatal("expected prepareCodexHome to refuse writing through a symlinked parent")
+	}
+	if !strings.Contains(err.Error(), "model_instructions_file") {
+		t.Fatalf("error %q does not name the offending key", err)
+	}
+
+	data, readErr := os.ReadFile(sentinel)
+	if readErr != nil {
+		t.Fatalf("sentinel outside the task home was removed: %v", readErr)
+	}
+	if string(data) != "outside the task home" {
+		t.Errorf("sentinel outside the task home was overwritten: %q", data)
+	}
+}
+
+// The destination file itself can also be a symlink on reuse. Removing it must
+// unlink the symlink, never write through it into the link target.
+func TestPrepareCodexHomeReplacesSymlinkedInstructionsCopyOnReuse(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "gpt-unrestricted.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "gpt-unrestricted.md"), []byte("from shared home"), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("first prepareCodexHome failed: %v", err)
+	}
+
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel.md")
+	if err := os.WriteFile(sentinel, []byte("outside the task home"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	taskCopy := filepath.Join(codexHome, "gpt-unrestricted.md")
+	if err := os.Remove(taskCopy); err != nil {
+		t.Fatalf("remove task copy: %v", err)
+	}
+	if err := os.Symlink(sentinel, taskCopy); err != nil {
+		t.Skipf("symlinks unsupported on this host: %v", err)
+	}
+
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("second prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("sentinel outside the task home was removed: %v", err)
+	}
+	if string(data) != "outside the task home" {
+		t.Errorf("sentinel outside the task home was overwritten: %q", data)
+	}
+	info, err := os.Lstat(taskCopy)
+	if err != nil {
+		t.Fatalf("lstat task copy: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("task copy is still a symlink")
+	}
+	copied, err := os.ReadFile(taskCopy)
+	if err != nil {
+		t.Fatalf("read task copy: %v", err)
+	}
+	if string(copied) != "from shared home" {
+		t.Errorf("task copy = %q", copied)
+	}
+}
+
 // Regression test for #1753 — Codex Desktop writes plugin-backed
 // `[[skills.config]]` entries without a `path` field, and the CLI's TOML
 // parser rejects them with `missing field path`. prepareCodexHome must drop
