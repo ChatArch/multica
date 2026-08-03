@@ -658,3 +658,66 @@ func TestResolveParentStatuses_NoFetcherIsNoOp(t *testing.T) {
 		t.Fatalf("nil report should be a no-op, got %v", err)
 	}
 }
+
+// TestScanDiskUsage_ReportsRepoCacheSeparately pins the accounting split: the
+// bare-repo cache is measured (it used to be invisible, which made the reported
+// total silently disagree with the user's file manager) but kept out of the
+// task totals, since every task checks out from it and none contains it.
+func TestScanDiskUsage_ReportsRepoCacheSeparately(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	wsID := "11111111-1111-1111-1111-111111111111"
+	writeFile(t, filepath.Join(root, wsID, "aaaaaaaa", "workdir/main.go"), 1000)
+
+	// .repos/<workspace>/<repo>/... — the repo dir is the unit the GC evicts.
+	writeFile(t, filepath.Join(root, ".repos", wsID, "widgets.git", "objects/pack/x"), 4000)
+	writeFile(t, filepath.Join(root, ".repos", wsID, "gadgets.git", "objects/pack/y"), 2000)
+
+	report, err := ScanDiskUsage(root, nil)
+	if err != nil {
+		t.Fatalf("ScanDiskUsage: %v", err)
+	}
+
+	if report.RepoCacheSizeBytes != 6000 {
+		t.Errorf("repo_cache_size_bytes = %d, want 6000", report.RepoCacheSizeBytes)
+	}
+	if report.RepoCacheCount != 2 {
+		t.Errorf("repo_cache_count = %d, want 2", report.RepoCacheCount)
+	}
+	if report.TotalSizeBytes != 1000 {
+		t.Errorf("total_size_bytes = %d, want 1000 (task dirs only, cache excluded)", report.TotalSizeBytes)
+	}
+	if report.TotalWorkspaceCount != 1 {
+		t.Errorf("total_workspace_count = %d, want 1 (.repos is not a workspace)", report.TotalWorkspaceCount)
+	}
+}
+
+// TestScanDiskUsage_SkipsDaemonInternalDotDirs keeps caches like .skill-cache
+// out of the per-workspace table, where they used to surface as bogus
+// workspace rows alongside the real ones.
+func TestScanDiskUsage_SkipsDaemonInternalDotDirs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	wsID := "11111111-1111-1111-1111-111111111111"
+	writeFile(t, filepath.Join(root, wsID, "aaaaaaaa", "workdir/main.go"), 1000)
+	writeFile(t, filepath.Join(root, ".skill-cache", "v1", "bundle", "skill.md"), 500)
+
+	report, err := ScanDiskUsage(root, nil)
+	if err != nil {
+		t.Fatalf("ScanDiskUsage: %v", err)
+	}
+
+	if report.TotalWorkspaceCount != 1 {
+		t.Fatalf("total_workspace_count = %d, want 1", report.TotalWorkspaceCount)
+	}
+	for _, ws := range report.Workspaces {
+		if strings.HasPrefix(ws.WorkspaceID, ".") {
+			t.Errorf("dot-directory %q reported as a workspace", ws.WorkspaceID)
+		}
+	}
+	if report.TotalSizeBytes != 1000 {
+		t.Errorf("total_size_bytes = %d, want 1000 (skill cache excluded)", report.TotalSizeBytes)
+	}
+}

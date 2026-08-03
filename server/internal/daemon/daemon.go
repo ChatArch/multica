@@ -243,6 +243,7 @@ type workspaceState struct {
 
 type repoCacheBackend interface {
 	Lookup(workspaceID, url string) string
+	BarePath(workspaceID, url string) string
 	Sync(workspaceID string, repos []repocache.RepoInfo) error
 	WithRepoLock(barePath string, fn func() error) error
 	CreateWorktree(params repocache.WorktreeParams) (*repocache.WorktreeResult, error)
@@ -1911,6 +1912,37 @@ func (d *Daemon) workspaceRepoAllowed(workspaceID, repoURL string) bool {
 		return true
 	}
 	return false
+}
+
+// liveRepoBarePaths returns the bare cache directories that some watched
+// workspace still claims, so the GC can refuse to evict them.
+//
+// It mirrors workspaceRepoAllowed by unioning both sources: allowedRepoURLs
+// (workspace-level bindings) and taskRepoURLs (project repos the server
+// surfaced through a task claim, which never appear in GetWorkspaceRepos).
+// Missing the second set would make the GC evict repos that tasks actively
+// check out.
+//
+// Read from in-memory state on purpose. The alternative — asking the server
+// for each workspace's repo list during GC — would make a transient API
+// failure look like "nothing is attached", and this set is what protects
+// caches from deletion.
+func (d *Daemon) liveRepoBarePaths() map[string]struct{} {
+	live := map[string]struct{}{}
+	if d.repoCache == nil {
+		return live
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for workspaceID, ws := range d.workspaces {
+		for url := range ws.allowedRepoURLs {
+			live[d.repoCache.BarePath(workspaceID, url)] = struct{}{}
+		}
+		for url := range ws.taskRepoURLs {
+			live[d.repoCache.BarePath(workspaceID, url)] = struct{}{}
+		}
+	}
+	return live
 }
 
 func (d *Daemon) workspaceLastRepoSyncErr(workspaceID string) string {

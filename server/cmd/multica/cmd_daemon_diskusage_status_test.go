@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -288,5 +291,67 @@ func TestRunDaemonDiskUsageAllProfilesUsesPerProfileToken(t *testing.T) {
 	}
 	if got := rec.tokenByIssue["issue-second"]; got != "token-second" {
 		t.Errorf("second profile root resolved with token %q, want token-second", got)
+	}
+}
+
+// TestPrintRepoCacheLineAppearsInEveryView guards the branch this first shipped
+// wrong: both table renderers have a truncated (--top) path that returns early
+// and a full-total path, and the repo cache line has to survive all of them.
+// Otherwise the footprint that motivated the whole accounting change stays
+// invisible in exactly the view users run most.
+func TestPrintRepoCacheLineAppearsInEveryView(t *testing.T) {
+	t.Parallel()
+
+	const wantLine = "Repo cache (.repos): 4.0 KiB across 2 repo(s)"
+	report := daemon.DiskUsageReport{
+		WorkspacesRoot:     "/root",
+		Tasks:              []daemon.TaskDiskUsage{{WorkspaceShort: "ws0", TaskShort: "t0", SizeBytes: 100}},
+		Workspaces:         []daemon.WorkspaceDiskUsage{{WorkspaceShort: "ws0", TaskCount: 1, SizeBytes: 100}},
+		RepoCacheSizeBytes: 4096,
+		RepoCacheCount:     2,
+	}
+
+	cases := []struct {
+		name  string
+		print func(io.Writer, daemon.DiskUsageReport)
+		// truncated makes len(slice) < Total*Count, taking the --top branch.
+		truncated bool
+	}{
+		{"task table, full totals", printDiskUsageTaskTable, false},
+		{"task table, --top truncated", printDiskUsageTaskTable, true},
+		{"workspace table, full totals", printDiskUsageWorkspaceTable, false},
+		{"workspace table, --top truncated", printDiskUsageWorkspaceTable, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := report
+			r.TotalTaskCount = 1
+			r.TotalWorkspaceCount = 1
+			if tc.truncated {
+				r.TotalTaskCount = 50
+				r.TotalWorkspaceCount = 50
+			}
+			var buf bytes.Buffer
+			tc.print(&buf, r)
+			if !strings.Contains(buf.String(), wantLine) {
+				t.Errorf("missing %q in:\n%s", wantLine, buf.String())
+			}
+		})
+	}
+}
+
+// TestPrintRepoCacheLineSilentWhenEmpty keeps the line out of reports from
+// machines that have never cached a repo.
+func TestPrintRepoCacheLineSilentWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	printDiskUsageTaskTable(&buf, daemon.DiskUsageReport{
+		WorkspacesRoot: "/root",
+		Tasks:          []daemon.TaskDiskUsage{{WorkspaceShort: "ws0", TaskShort: "t0", SizeBytes: 100}},
+		TotalTaskCount: 1,
+	})
+	if strings.Contains(buf.String(), "Repo cache") {
+		t.Errorf("empty repo cache must not print a line:\n%s", buf.String())
 	}
 }

@@ -1558,12 +1558,17 @@ func printAggregateDiskUsage(w io.Writer, agg daemon.AggregateDiskUsageReport, b
 	fmt.Fprintf(w, "\nGrand total: %s across %d task(s) in %d root(s); %s reclaimable as artifacts (%.1f%%).\n",
 		formatBytes(agg.TotalSizeBytes), agg.TotalTaskCount, len(agg.Roots),
 		formatBytes(agg.TotalArtifactSizeBytes), agg.TotalArtifactRatio*100)
+	if agg.TotalRepoCacheCount > 0 || agg.TotalRepoCacheSizeBytes > 0 {
+		fmt.Fprintf(w, "Repo cache (.repos): %s across %d repo(s) in all roots, not included above.\n",
+			formatBytes(agg.TotalRepoCacheSizeBytes), agg.TotalRepoCacheCount)
+	}
 }
 
 func printDiskUsageTaskTable(w io.Writer, report daemon.DiskUsageReport) {
 	fmt.Fprintf(w, "Workspaces root: %s\n", report.WorkspacesRoot)
 	if report.TotalTaskCount == 0 {
 		fmt.Fprintln(w, "(no task directories)")
+		printRepoCacheLine(w, report)
 		return
 	}
 	rows := make([][]string, 0, len(report.Tasks))
@@ -1591,17 +1596,32 @@ func printDiskUsageTaskTable(w io.Writer, report daemon.DiskUsageReport) {
 			formatBytes(displayedSize), formatBytes(displayedArtifact),
 			formatBytes(report.TotalSizeBytes), formatBytes(report.TotalArtifactSizeBytes),
 			report.TotalArtifactRatio*100)
+	} else {
+		fmt.Fprintf(w, "\nTotal: %s across %d task(s); %s reclaimable as artifacts (%.1f%%).\n",
+			formatBytes(report.TotalSizeBytes), report.TotalTaskCount,
+			formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
+	}
+	printRepoCacheLine(w, report)
+}
+
+// printRepoCacheLine reports the bare-repo cache on its own line. Every task
+// directory in a workspace checks out from this shared cache, so folding it
+// into the task totals would attribute it to directories that do not contain
+// it. Omitting it entirely — the previous behaviour — is what made the
+// reported total silently disagree with the user's file manager.
+func printRepoCacheLine(w io.Writer, report daemon.DiskUsageReport) {
+	if report.RepoCacheCount == 0 && report.RepoCacheSizeBytes == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\nTotal: %s across %d task(s); %s reclaimable as artifacts (%.1f%%).\n",
-		formatBytes(report.TotalSizeBytes), report.TotalTaskCount,
-		formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
+	fmt.Fprintf(w, "Repo cache (.repos): %s across %d repo(s), not included above. Evicted once a repo is unused for MULTICA_GC_REPO_TTL and no longer attached to a workspace.\n",
+		formatBytes(report.RepoCacheSizeBytes), report.RepoCacheCount)
 }
 
 func printDiskUsageWorkspaceTable(w io.Writer, report daemon.DiskUsageReport) {
 	fmt.Fprintf(w, "Workspaces root: %s\n", report.WorkspacesRoot)
 	if report.TotalWorkspaceCount == 0 {
 		fmt.Fprintln(w, "(no workspaces)")
+		printRepoCacheLine(w, report)
 		return
 	}
 	rows := make([][]string, 0, len(report.Workspaces))
@@ -1626,11 +1646,12 @@ func printDiskUsageWorkspaceTable(w io.Writer, report daemon.DiskUsageReport) {
 			formatBytes(displayedSize), formatBytes(displayedArtifact),
 			formatBytes(report.TotalSizeBytes), formatBytes(report.TotalArtifactSizeBytes),
 			report.TotalArtifactRatio*100)
-		return
+	} else {
+		fmt.Fprintf(w, "\nTotal: %s across %d workspace(s); %s reclaimable as artifacts (%.1f%%).\n",
+			formatBytes(report.TotalSizeBytes), report.TotalWorkspaceCount,
+			formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
 	}
-	fmt.Fprintf(w, "\nTotal: %s across %d workspace(s); %s reclaimable as artifacts (%.1f%%).\n",
-		formatBytes(report.TotalSizeBytes), report.TotalWorkspaceCount,
-		formatBytes(report.TotalArtifactSizeBytes), report.TotalArtifactRatio*100)
+	printRepoCacheLine(w, report)
 }
 
 // printDiskUsageOtherRootsHint warns that workspace roots OTHER than the one
