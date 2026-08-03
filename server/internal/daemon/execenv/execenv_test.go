@@ -2775,6 +2775,114 @@ func TestPrepareCodexHomeLeavesRepointedInstructionsCopyBehind(t *testing.T) {
 	}
 }
 
+// The root of the copy — the task home itself — must be identity-checked too. A
+// path-based check followed by a path-based open leaves a window where the
+// directory is swapped for a link and every "confined" write lands in the wrong
+// tree. These two tests drive the check directly so the swap is deterministic
+// rather than raced.
+func TestVerifyCodexHomeRootRejectsSwappedDirectory(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	codexHome := filepath.Join(base, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatalf("create codex home: %v", err)
+	}
+	root, err := os.OpenRoot(codexHome)
+	if err != nil {
+		t.Fatalf("open codex home root: %v", err)
+	}
+	defer root.Close()
+
+	// Same path, different directory — what a swap looks like after the open.
+	if err := os.Rename(codexHome, filepath.Join(base, "moved-aside")); err != nil {
+		t.Fatalf("move original codex home: %v", err)
+	}
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatalf("recreate codex home: %v", err)
+	}
+
+	err = verifyCodexHomeRoot(root, codexHome, "model_instructions_file")
+	if err == nil {
+		t.Fatal("expected verifyCodexHomeRoot to reject a swapped codex home")
+	}
+	if !strings.Contains(err.Error(), "replaced") {
+		t.Fatalf("error %q does not report the replacement", err)
+	}
+}
+
+func TestVerifyCodexHomeRootRejectsSymlinkedHome(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	codexHome := filepath.Join(base, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatalf("create codex home: %v", err)
+	}
+	root, err := os.OpenRoot(codexHome)
+	if err != nil {
+		t.Fatalf("open codex home root: %v", err)
+	}
+	defer root.Close()
+
+	outside := t.TempDir()
+	if err := os.Rename(codexHome, filepath.Join(base, "moved-aside")); err != nil {
+		t.Fatalf("move original codex home: %v", err)
+	}
+	if err := os.Symlink(outside, codexHome); err != nil {
+		t.Skipf("symlinks unsupported on this host: %v", err)
+	}
+
+	err = verifyCodexHomeRoot(root, codexHome, "model_instructions_file")
+	if err == nil {
+		t.Fatal("expected verifyCodexHomeRoot to reject a symlinked codex home")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error %q does not report the symlink", err)
+	}
+}
+
+// End to end: a task home that is already a link to an outside directory must
+// fail the copy instead of provisioning through the link.
+func TestPrepareCodexHomeRefusesSymlinkedCodexHome(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(`model_instructions_file = "gpt-unrestricted.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "gpt-unrestricted.md"), []byte("from shared home"), 0o644); err != nil {
+		t.Fatalf("write shared instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "gpt-unrestricted.md")
+	if err := os.WriteFile(sentinel, []byte("outside the task home"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := os.Symlink(outside, codexHome); err != nil {
+		t.Skipf("symlinks unsupported on this host: %v", err)
+	}
+
+	err := prepareCodexHome(codexHome, testLogger())
+	if err == nil {
+		t.Fatal("expected prepareCodexHome to refuse a symlinked codex home")
+	}
+	if !strings.Contains(err.Error(), "model_instructions_file") {
+		t.Fatalf("error %q does not name the offending key", err)
+	}
+
+	data, readErr := os.ReadFile(sentinel)
+	if readErr != nil {
+		t.Fatalf("sentinel outside the task home was removed: %v", readErr)
+	}
+	if string(data) != "outside the task home" {
+		t.Errorf("sentinel outside the task home was overwritten: %q", data)
+	}
+}
+
 // Regression test for #1753 — Codex Desktop writes plugin-backed
 // `[[skills.config]]` entries without a `path` field, and the CLI's TOML
 // parser rejects them with `missing field path`. prepareCodexHome must drop

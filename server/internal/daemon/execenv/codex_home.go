@@ -927,6 +927,60 @@ func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) err
 	return materialiseInCodexHome(codexHome, cleanReferencedPath, src, key)
 }
 
+// openVerifiedCodexHomeRoot opens codexHome as a confinement root and only
+// returns it once the opened directory is proven to still BE codexHome.
+//
+// Checking the path first and opening it second is not enough: os.OpenRoot
+// resolves the path it is given, so a directory swapped for a link to somewhere
+// else between the check and the open yields a root that is happily confined —
+// to the wrong tree. Every subsequent root-scoped write would then land outside
+// the task home without ever "escaping" its root.
+//
+// That window is not hypothetical here. Task homes are reused, and on Windows
+// only the direct Codex process is terminated — descendant cleanup cannot be
+// confirmed (see server/pkg/agent/proc_windows.go) — so a leftover process that
+// knows its old CODEX_HOME can still act on it. Any local process can create the
+// same window on other platforms.
+//
+// So the identity check is bound to the handle instead of the path: compare the
+// opened directory against a no-follow stat of codexHome. A swap before the open
+// fails here (symlink, or a different directory at that path), and a swap after
+// it cannot matter, because everything downstream uses this handle rather than
+// the path.
+func openVerifiedCodexHomeRoot(codexHome, key string) (*os.Root, error) {
+	root, err := os.OpenRoot(codexHome)
+	if err != nil {
+		return nil, fmt.Errorf("open codex home %s: %w", codexHome, err)
+	}
+	if err := verifyCodexHomeRoot(root, codexHome, key); err != nil {
+		root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+// verifyCodexHomeRoot proves that root is the directory codexHome names right
+// now: not reached through a symlink, and the same directory os.Lstat sees at
+// that path. It is separate from openVerifiedCodexHomeRoot so the swap case can
+// be tested deterministically instead of by racing.
+func verifyCodexHomeRoot(root *os.Root, codexHome, key string) error {
+	opened, err := root.Stat(".")
+	if err != nil {
+		return fmt.Errorf("stat opened codex home %s: %w", codexHome, err)
+	}
+	current, err := os.Lstat(codexHome)
+	if err != nil {
+		return fmt.Errorf("stat codex home %s: %w", codexHome, err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("codex home %s is a symlink; refusing to write %s through it", codexHome, key)
+	}
+	if !os.SameFile(opened, current) {
+		return fmt.Errorf("codex home %s was replaced while opening it; refusing to write %s through it", codexHome, key)
+	}
+	return nil
+}
+
 // materialiseInCodexHome writes src to relPath inside codexHome using
 // root-scoped operations, so no symlink below the task home can redirect the
 // daemon's mkdir, remove, or write outside it.
@@ -936,20 +990,12 @@ func syncCodexReferencedFile(codexHome, sharedHome, key, configValue string) err
 // replaced an intermediate directory of its own home with a link to somewhere
 // else would have the daemon delete and overwrite the link target on the next
 // prepare. os.Root still allows links that stay inside the task home, which is
-// harmless, and rejects the ones that leave it.
+// harmless, and rejects the ones that leave it. The root itself is
+// identity-checked by openVerifiedCodexHomeRoot.
 func materialiseInCodexHome(codexHome, relPath, src, key string) error {
-	// os.OpenRoot resolves codexHome itself before confining anything below it,
-	// so a codexHome that is a link would silently move the root elsewhere.
-	homeInfo, err := os.Lstat(codexHome)
+	root, err := openVerifiedCodexHomeRoot(codexHome, key)
 	if err != nil {
-		return fmt.Errorf("stat codex home %s: %w", codexHome, err)
-	}
-	if homeInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("codex home %s is a symlink; refusing to write %s through it", codexHome, key)
-	}
-	root, err := os.OpenRoot(codexHome)
-	if err != nil {
-		return fmt.Errorf("open codex home %s: %w", codexHome, err)
+		return err
 	}
 	defer root.Close()
 
