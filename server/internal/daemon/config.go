@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-shellwords"
@@ -712,27 +714,36 @@ func samePathDir(a, b string) bool {
 // (volta-core/src/shim.rs, unix create()).
 const voltaShimName = "volta-shim"
 
+// voltaResolveTimeout bounds the `volta which` call below. Resolution runs on
+// the startup/discovery path, so a wedged Volta install must not stall the
+// daemon: on timeout we fail closed and the provider simply stays unregistered.
+var voltaResolveTimeout = 5 * time.Second
+
 // canonicalExecutablePath collapses path to the real file behind any symlinks,
 // so version-manager prefix dirs and other indirection settle onto one stable
 // path we can pin.
 //
-// Exception: argv[0]-dispatching trampolines. Volta decides which tool to run
-// from the name it was invoked as — volta-core/src/run/mod.rs get_tool_name()
-// takes file_name() of argv[0] — so resolving `~/.volta/bin/claude` to
-// volta-shim throws away the only input that selects the tool. Upstream then
-// fails the call outright (get_executor: `Some("volta-shim") =>
-// Err(ErrorKind::RunShimDirectly)`), and volta-shim's main exits 126 for any
-// Volta error, which is the exact symptom reported in #6183. Volta itself
-// documents this hazard in volta-cli/volta#579: fully resolving the symlink
-// before exec "loses the information about what tool was actually called".
+// Volta needs a detour. It points every command it manages at one shared
+// volta-shim and picks the tool from the name it was invoked as — upstream
+// get_tool_name() takes file_name() of argv[0] (volta-core/src/run/mod.rs) — so
+// resolving `~/.volta/bin/claude` to volta-shim throws away the only input that
+// selects the tool. Upstream then refuses the call outright (get_executor:
+// `Some("volta-shim") => Err(ErrorKind::RunShimDirectly)`) and volta-shim's main
+// exits 126 for any Volta error, which is the symptom reported in #6183. Volta
+// documents the same hazard from its own side in volta-cli/volta#579.
 //
-// For those we keep the caller's alias path, which is also the stable one: the
-// alias survives `volta install` upgrades that replace the versioned binary
-// underneath it.
+// So for a Volta alias we ask Volta itself for the concrete binary and pin that.
+// The tempting alternative — keep the alias path and let the shim dispatch —
+// breaks the {path, version} invariant the rest of the daemon relies on: the
+// shim resolves per current directory (`volta which` prefers a project-local
+// bin, src/command/which.rs), so the version verified at registration would not
+// be the version a task executes, and the minimum-version gate could be
+// bypassed. Pinning the concrete path keeps Volta installs on exactly the same
+// footing as every other install method.
 //
-// This stays deliberately narrow. Skipping symlink resolution in general would
-// regress the PATH-drift pinning, the ~/.multica/hooks recursion guard, and the
-// MUL-4486 self-heal that all depend on collapsing to a real path.
+// Failing to resolve is deliberate: we return the shim path, version detection
+// fails as before, and the provider stays unregistered rather than being
+// launched through an ungated path. MULTICA_*_PATH remains the manual override.
 func canonicalExecutablePath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -742,27 +753,92 @@ func canonicalExecutablePath(path string) string {
 	if err != nil {
 		return abs
 	}
-	// Only when the alias name differs from the shim's own name is there a
-	// dispatch name to preserve; an explicit path straight at volta-shim has
-	// nothing to keep and stays canonicalized.
 	if isVoltaShimPath(real) && !isVoltaShimPath(abs) {
-		return abs
+		if concrete, ok := voltaConcreteExecutable(real, filepath.Base(abs)); ok {
+			return concrete
+		}
 	}
 	return real
 }
 
-// isVoltaShimPath reports whether path's basename is Volta's shared shim. The
-// extension is trimmed and the compare is case-insensitive, mirroring Volta's
-// own normalization on Windows (run/mod.rs tool_name_from_file_name lowercases
-// and strips ".exe"). In practice only the Unix layout reaches here, since
-// Windows shims are .cmd scripts rather than symlinks.
+// isVoltaShimPath reports whether path is Volta's shared shim. The accepted
+// names are exact — an extension-insensitive match would also swallow
+// neighbours like volta-shim.bak or volta-shim.wrapper, and this exception
+// exists to be as narrow as possible.
 func isVoltaShimPath(path string) bool {
 	if path == "" {
 		return false
 	}
-	base := filepath.Base(path)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	return strings.EqualFold(base, voltaShimName)
+	switch filepath.Base(path) {
+	case voltaShimName, voltaShimName + ".exe":
+		return true
+	}
+	return false
+}
+
+var (
+	voltaResolveMu    sync.Mutex
+	voltaResolveCache = map[string]string{}
+)
+
+// voltaConcreteExecutable asks Volta for the real binary behind command and
+// returns it only when the answer is an absolute, currently runnable path.
+//
+// `volta` lives in the same directory as volta-shim (both are VoltaInstall
+// entries), so we invoke it by absolute path instead of trusting PATH — the
+// daemon may not have Volta's bin dir at all.
+//
+// Answers are cached process-wide and revalidated by existence rather than a
+// TTL: probeAgentCLIs re-runs on every discovery tick, and a steady-state
+// daemon must not fork `volta which` forever. When Volta replaces the binary
+// and the cached path disappears, the entry is dropped and re-resolved, which
+// dovetails with the MUL-4486 self-heal.
+func voltaConcreteExecutable(shimPath, command string) (string, bool) {
+	// command comes from a filesystem basename; keep it to the same bare-name
+	// shape the shell resolver enforces so nothing flag-like reaches argv.
+	if !isSafeAgentName(command) {
+		return "", false
+	}
+	voltaBin := filepath.Join(filepath.Dir(shimPath), "volta")
+	if runtime.GOOS == "windows" {
+		voltaBin += ".exe"
+	}
+	cacheKey := voltaBin + "\x00" + command
+
+	voltaResolveMu.Lock()
+	defer voltaResolveMu.Unlock()
+	if cached, ok := voltaResolveCache[cacheKey]; ok {
+		if isExecutableFile(cached) {
+			return cached, true
+		}
+		delete(voltaResolveCache, cacheKey)
+	}
+	if !isExecutableFile(voltaBin) {
+		return "", false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), voltaResolveTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, voltaBin, "which", command)
+	// Volta prints the path on stdout and diagnostics on stderr; Output()
+	// captures only stdout. WaitDelay keeps a hung child from outliving ctx.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	// `volta which` prints nothing and exits non-zero when it cannot find the
+	// binary, so anything that is not a single absolute runnable path is a miss
+	// rather than something we should pin.
+	resolved := strings.TrimSpace(string(out))
+	if resolved == "" || strings.ContainsAny(resolved, "\r\n") || !filepath.IsAbs(resolved) {
+		return "", false
+	}
+	if !isExecutableFile(resolved) {
+		return "", false
+	}
+	voltaResolveCache[cacheKey] = resolved
+	return resolved, true
 }
 
 func isExecutableFile(path string) bool {
