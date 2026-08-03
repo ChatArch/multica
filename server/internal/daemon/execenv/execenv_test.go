@@ -4505,9 +4505,12 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 	t.Run("workflow-carries-silence-as-exit-and-no-signoff-mention", func(t *testing.T) {
 		t.Parallel()
 		s := readClaudeMD(t, commentTriggerCtx)
-		// The anti-loop signal for CLAUDE.md lives in the numbered workflow
-		// steps (4 + 5), not in a dedicated preamble. Lock in the key phrases
-		// so the signal can't decay back into pure prose again.
+		// The anti-loop signal must reach the brief; lock in the key phrases so
+		// it can't decay back into pure prose again. The reply-warranted rules
+		// live in the Reply mode block, while the no-sign-off-mention rule is
+		// mention policy and lives in `## Mentions` (MUL-5442) — these
+		// assertions are file-wide on purpose, so the signal is pinned without
+		// pinning which section carries it.
 		for _, want := range []string{
 			"Decide whether a reply is warranted",
 			"Silence is a valid and preferred way",
@@ -5160,7 +5163,7 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			"high-signal scratchpad",
 			"**Read on entry.**",
 			"**Write on exit.**",
-			"See the `## Issue Metadata` section above",
+			"the bar in `## Issue Metadata`",
 		},
 	}
 
@@ -5189,7 +5192,11 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-1 --output json",
-				"See the `## Issue Metadata` section above",
+				// Both steps point at the section instead of restating its
+				// rules (MUL-5442); the entry step names what to look for,
+				// the exit step names the write bar.
+				"What to look for: `## Issue Metadata`",
+				"the bar in `## Issue Metadata`",
 				// Exit step must show both write and delete, not just
 				// "set" — stale-key cleanup is the half that keeps
 				// metadata from rotting.
@@ -5206,7 +5213,8 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-2 --output json",
-				"See the `## Issue Metadata` section above",
+				"What to look for: `## Issue Metadata`",
+				"the bar in `## Issue Metadata`",
 				"multica issue metadata set",
 				"multica issue metadata delete",
 				"Before exiting",
