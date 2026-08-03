@@ -81,7 +81,12 @@ var daemonDiskUsageCmd = &cobra.Command{
 		"applies within each root and --workspaces-root is not allowed.\n\n" +
 		"Bytes are split into total and the artifact-cleanable subset (node_modules, .next, .turbo by default,\n" +
 		"overridable via MULTICA_GC_ARTIFACT_PATTERNS) so the report stays in sync with what the GC reclaims.\n" +
-		"The walk skips .git and never follows symlinks. The daemon does not need to be running.",
+		"A .git directory counts toward the total but never toward the artifact subset — the GC frees it only\n" +
+		"when it removes the whole task directory. Symlinks are never followed.\n\n" +
+		"The STATUS column shows the current status of the issue each directory belongs to, which requires\n" +
+		"contacting the server. When the machine is offline, logged out, or the request fails, the column is\n" +
+		"left blank and the rest of the report still prints. --by-workspace has no STATUS column and therefore\n" +
+		"makes no network request unless --output json is also set. The daemon does not need to be running.",
 	RunE: runDaemonDiskUsage,
 }
 
@@ -1348,7 +1353,9 @@ func runDaemonDiskUsage(cmd *cobra.Command, _ []string) error {
 	}
 	// Resolve before --top trims the slice: the batch endpoint costs the same
 	// either way, and the JSON consumer sees statuses for everything it gets.
-	fillDiskUsageParentStatuses(cmd, profile, &report)
+	if diskUsageNeedsParentStatus(byWorkspace, output) {
+		fillDiskUsageParentStatuses(cmd, profile, &report)
+	}
 
 	if top > 0 {
 		if byWorkspace {
@@ -1372,6 +1379,16 @@ func runDaemonDiskUsage(cmd *cobra.Command, _ []string) error {
 	printDiskUsageTaskTable(os.Stdout, report)
 	printDiskUsageOtherRootsHint(os.Stdout, report, profile, rootOverride)
 	return nil
+}
+
+// diskUsageNeedsParentStatus reports whether this invocation renders per-task
+// rows at all. The --by-workspace table has no STATUS column, so resolving
+// statuses for it would spend a network round trip — and, against an
+// unreachable server, a full timeout — on data nothing displays, turning a
+// local diagnostic into a command that hangs offline. JSON output always
+// carries the task array, so it still needs them even with --by-workspace.
+func diskUsageNeedsParentStatus(byWorkspace bool, output string) bool {
+	return !byWorkspace || output == "json"
 }
 
 // fillDiskUsageParentStatuses populates the report's STATUS column in place.
@@ -1446,8 +1463,13 @@ func runDaemonDiskUsageAggregate(cmd *cobra.Command, byWorkspace bool, top int, 
 		return err
 	}
 	// Each root belongs to its own profile, so it needs that profile's token.
-	for i := range agg.Roots {
-		fillDiskUsageParentStatuses(cmd, agg.Roots[i].Profile, &agg.Roots[i].Report)
+	// Skipping the whole loop when nothing renders task rows matters most
+	// here: an unreachable server would otherwise burn one full timeout per
+	// root, serially.
+	if diskUsageNeedsParentStatus(byWorkspace, output) {
+		for i := range agg.Roots {
+			fillDiskUsageParentStatuses(cmd, agg.Roots[i].Profile, &agg.Roots[i].Report)
+		}
 	}
 
 	// --top trims each root's table independently — the grand total in the

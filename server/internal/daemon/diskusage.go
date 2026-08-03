@@ -127,13 +127,16 @@ func ScanDiskUsageRoots(roots []DiskUsageRoot, artifactPatterns []string) (Aggre
 const DiskUsageKindUnknown = "unknown"
 
 // ScanDiskUsage walks workspacesRoot and returns the disk-usage report. The
-// walk is read-only and follows the same safety contract as the GC artifact
-// cleaner: it never enters .git, never follows symlinks, and counts only
-// regular files. artifactPatterns is filtered through the basename-only check
-// used by cleanTaskArtifacts, and exact daemon-managed artifact paths are
-// included, so the reported "artifact" footprint matches the bytes the GC
-// would actually reclaim. Missing roots return an empty report
+// walk is read-only, never follows symlinks, and counts only regular files.
+// artifactPatterns is filtered through the basename-only check used by
+// cleanTaskArtifacts, and exact daemon-managed artifact paths are included, so
+// the reported "artifact" footprint matches the bytes the GC would actually
+// reclaim. A .git subtree counts toward the total but never toward that
+// artifact footprint — see taskSize. Missing roots return an empty report
 // (not an error) — a daemon that's never run yet has no directory to walk.
+//
+// The scan is purely local. ParentStatus is left empty; callers that want the
+// STATUS column populated run ResolveParentStatuses afterwards.
 func ScanDiskUsage(workspacesRoot string, artifactPatterns []string) (DiskUsageReport, error) {
 	report := DiskUsageReport{
 		WorkspacesRoot:   workspacesRoot,
