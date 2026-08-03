@@ -2724,6 +2724,57 @@ func TestPrepareCodexHomeReplacesSymlinkedInstructionsCopyOnReuse(t *testing.T) 
 	}
 }
 
+// Repointing the key provisions the new target; the previous copy stays behind
+// unreferenced. Codex never reads it because the copied config no longer names
+// it — this test pins that documented contract so a future change to it is
+// deliberate.
+func TestPrepareCodexHomeLeavesRepointedInstructionsCopyBehind(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	sharedConfig := filepath.Join(sharedHome, "config.toml")
+	if err := os.WriteFile(sharedConfig, []byte(`model_instructions_file = "old.md"`), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "old.md"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old instructions: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("first prepareCodexHome failed: %v", err)
+	}
+
+	if err := os.WriteFile(sharedConfig, []byte(`model_instructions_file = "new.md"`), 0o644); err != nil {
+		t.Fatalf("repoint shared config.toml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedHome, "new.md"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("write new instructions: %v", err)
+	}
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("second prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "new.md"))
+	if err != nil {
+		t.Fatalf("read repointed instructions: %v", err)
+	}
+	if string(data) != "new" {
+		t.Errorf("repointed instructions = %q", data)
+	}
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read per-task config.toml: %v", err)
+	}
+	if !strings.Contains(string(config), `model_instructions_file = "new.md"`) {
+		t.Errorf("per-task config.toml still points at the old target: %s", config)
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "old.md")); err != nil {
+		t.Errorf("unreferenced old copy unexpectedly cleaned up: %v", err)
+	}
+}
+
 // Regression test for #1753 — Codex Desktop writes plugin-backed
 // `[[skills.config]]` entries without a `path` field, and the CLI's TOML
 // parser rejects them with `missing field path`. prepareCodexHome must drop
