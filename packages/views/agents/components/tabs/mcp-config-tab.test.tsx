@@ -270,6 +270,60 @@ describe("McpConfigTab", () => {
     expect(await screen.findByText("linear")).toBeInTheDocument();
   });
 
+  // A managed mcp_config is an authoritative allowlist on the daemon side
+  // (GitHub #6283). The tab previously told every operator that managed servers
+  // are "merged with runtime servers", which is how an explicitly empty config
+  // came to look like a tightened tool scope while exposing the whole host.
+  it("marks runtime servers as not exposed when Multica manages a config", async () => {
+    mockRuntimeCapabilities.mockResolvedValue({
+      skills: [],
+      supported: true,
+      mcpServers: [
+        { name: "linear", transport: "http", source: "User config", enabled: true },
+      ],
+      mcpSupported: true,
+    });
+
+    renderTab({ mcp_config: { mcpServers: {} } }, undefined, onlineRuntime);
+
+    expect(await screen.findByText("linear")).toBeInTheDocument();
+    expect(screen.getByText("Not exposed")).toBeInTheDocument();
+    // The hint interpolates the runtime label, so match the part of the copy
+    // that carries the security-relevant claim.
+    expect(
+      screen.getByText(/so these servers are not exposed to it/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(enAgents.tab_body.mcp_config.managed_hint_authoritative),
+    ).toBeInTheDocument();
+  });
+
+  it("still describes runtime servers as merged when the agent opts back in", async () => {
+    mockRuntimeCapabilities.mockResolvedValue({
+      skills: [],
+      supported: true,
+      mcpServers: [
+        { name: "linear", transport: "http", source: "User config", enabled: true },
+      ],
+      mcpSupported: true,
+    });
+
+    renderTab(
+      {
+        mcp_config: { mcpServers: {} },
+        runtime_config: { mcp: { inherit_runtime: true } },
+      },
+      undefined,
+      onlineRuntime,
+    );
+
+    expect(await screen.findByText("linear")).toBeInTheDocument();
+    expect(screen.queryByText("Not exposed")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(enAgents.tab_body.mcp_config.managed_hint),
+    ).toBeInTheDocument();
+  });
+
   it("shows a permission notice when capability discovery is forbidden", async () => {
     mockRuntimeCapabilities.mockRejectedValue(
       new ApiError("insufficient permissions", 403, "Forbidden"),

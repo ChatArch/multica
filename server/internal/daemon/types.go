@@ -185,6 +185,17 @@ type AgentData struct {
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// McpConfigOverlayOnly is set by the server when McpConfig carries ONLY
+	// a per-task integration overlay (the initiator's Composio servers) and
+	// the agent itself has no saved mcp_config. Such an agent was inheriting
+	// the runtime's native MCP servers before the overlay existed, so the
+	// daemon keeps inheriting them instead of treating the overlay as an
+	// authoritative allowlist (GitHub #6283).
+	//
+	// Absent on pre-#6283 servers, which pre-merge the overlay into
+	// mcp_config the same way. A false value there is indistinguishable from
+	// "the agent authored this config", which is the fail-closed direction.
+	McpConfigOverlayOnly bool `json:"mcp_config_overlay_only,omitempty"`
 }
 
 // DisabledRuntimeSkillData is the task-wire identity of one runtime-local

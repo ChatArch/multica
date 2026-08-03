@@ -7,6 +7,32 @@ import (
 	"fmt"
 )
 
+// resolveClaimMcpConfig builds the `mcp_config` a claim response carries and
+// reports whether that payload came ONLY from the per-task overlay.
+//
+// The daemon treats a managed mcp_config as an authoritative allowlist and will
+// not merge the host's own MCP servers into it (GitHub #6283). That decision
+// needs one fact only the server has: whether the agent itself saved an
+// mcp_config, or whether the field is populated purely because the initiator
+// has an integration enabled. Without it, enabling a Composio integration on an
+// agent that never configured MCP would silently strip the runtime servers it
+// was already inheriting.
+//
+// On a malformed overlay the agent's own config is returned unchanged and
+// overlayOnly is false, matching the pre-existing "never surprise-disable the
+// agent's saved servers" failure mode. The error is returned for logging.
+func resolveClaimMcpConfig(agentMcpConfig, overlay json.RawMessage) (json.RawMessage, bool, error) {
+	agentAuthored := hasManagedJSON(agentMcpConfig)
+	if !hasManagedJSON(overlay) {
+		return passthroughAgentMcpConfig(agentMcpConfig), false, nil
+	}
+	merged, err := mergeMCPOverlay(agentMcpConfig, overlay)
+	if err != nil {
+		return passthroughAgentMcpConfig(agentMcpConfig), false, err
+	}
+	return merged, !agentAuthored && hasManagedJSON(merged), nil
+}
+
 // mergeMCPOverlay layers a per-task overlay on top of an agent's saved
 // mcp_config and returns the merged JSON for the daemon claim wire shape.
 //

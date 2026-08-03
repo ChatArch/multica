@@ -91,3 +91,33 @@ export function removeManagedMcpServer(
 
   return Object.keys(document).length > 0 ? document : null;
 }
+
+/**
+ * True when Multica manages an MCP config for this agent — including an
+ * explicitly empty one, and including a config the viewer isn't allowed to
+ * read. A managed config is an authoritative allowlist on the daemon side
+ * (GitHub #6283), so this is what decides whether runtime servers reach the
+ * agent at all.
+ */
+export function hasManagedMcpConfig(
+  mcpConfig: unknown,
+  redacted?: boolean,
+): boolean {
+  if (redacted === true) return true;
+  return isRecord(mcpConfig);
+}
+
+/**
+ * True when the local runtime's own MCP servers are still exposed to this
+ * agent. That happens when Multica manages no config for it, or when the agent
+ * explicitly opted back in via `runtime_config.mcp.inherit_runtime`.
+ */
+export function inheritsRuntimeMcp(
+  mcpConfig: unknown,
+  redacted: boolean | undefined,
+  runtimeConfig: Record<string, unknown> | undefined,
+): boolean {
+  if (!hasManagedMcpConfig(mcpConfig, redacted)) return true;
+  const mcp = runtimeConfig?.mcp;
+  return isRecord(mcp) && mcp.inherit_runtime === true;
+}

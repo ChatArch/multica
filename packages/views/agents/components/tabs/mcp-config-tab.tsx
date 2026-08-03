@@ -32,6 +32,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { toast } from "sonner";
 import { useT } from "../../../i18n";
 import {
+  inheritsRuntimeMcp,
   listManagedMcpServers,
   removeManagedMcpServer,
   upsertManagedMcpServer,
@@ -57,6 +58,20 @@ export function McpConfigTab({
       : null;
   const runtimeQuery = useQuery(runtimeCapabilitiesOptions(runtimeId));
   const redacted = agent.mcp_config_redacted === true;
+  // A managed mcp_config is an authoritative allowlist on the daemon side, so
+  // the runtime's own servers are only exposed when Multica manages nothing for
+  // this agent or it explicitly opted back in (GitHub #6283). The copy below
+  // has to say which of the two is in effect — an operator who believes the
+  // wrong one mis-scopes the agent's tool access.
+  const inheritsRuntime = useMemo(
+    () =>
+      inheritsRuntimeMcp(
+        agent.mcp_config,
+        agent.mcp_config_redacted,
+        agent.runtime_config,
+      ),
+    [agent.mcp_config, agent.mcp_config_redacted, agent.runtime_config],
+  );
   const managedServers = useMemo(
     () => listManagedMcpServers(agent.mcp_config),
     [agent.mcp_config],
@@ -145,7 +160,9 @@ export function McpConfigTab({
               {t(($) => $.tab_body.mcp_config.managed_title)}
             </h3>
             <p className="mt-1 max-w-2xl text-caption leading-5 text-muted-foreground">
-              {t(($) => $.tab_body.mcp_config.managed_hint)}
+              {inheritsRuntime
+                ? t(($) => $.tab_body.mcp_config.managed_hint)
+                : t(($) => $.tab_body.mcp_config.managed_hint_authoritative)}
             </p>
           </div>
           {!redacted && (
@@ -192,9 +209,13 @@ export function McpConfigTab({
               {t(($) => $.tab_body.mcp_config.runtime_title)}
             </h3>
             <p className="mt-1 max-w-2xl text-caption leading-5 text-muted-foreground">
-              {t(($) => $.tab_body.mcp_config.runtime_hint, {
-                runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
-              })}
+              {inheritsRuntime
+                ? t(($) => $.tab_body.mcp_config.runtime_hint, {
+                    runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
+                  })
+                : t(($) => $.tab_body.mcp_config.runtime_hint_excluded, {
+                    runtime: runtime ? runtimeDisplayLabel(runtime) : "Runtime",
+                  })}
             </p>
           </div>
           {runtimeId && (
@@ -247,10 +268,18 @@ export function McpConfigTab({
               transport: server.transport || "unknown",
               enabled: server.enabled,
               source: server.source,
-              overridden: managedNames.has(server.name),
+              // Without inheritance every runtime server is out of scope, not
+              // just the ones a managed server shadows by name.
+              overridden: inheritsRuntime
+                ? managedNames.has(server.name)
+                : true,
             }))}
             disabledLabel={t(($) => $.tab_body.mcp_config.runtime_disabled_badge)}
-            overriddenLabel={t(($) => $.tab_body.mcp_config.runtime_overridden_badge)}
+            overriddenLabel={
+              inheritsRuntime
+                ? t(($) => $.tab_body.mcp_config.runtime_overridden_badge)
+                : t(($) => $.tab_body.mcp_config.runtime_excluded_badge)
+            }
           />
         )}
       </section>

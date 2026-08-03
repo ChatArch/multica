@@ -4897,15 +4897,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var cursorMcpAuthSource string
 	if task.Agent != nil {
 		agentMcpConfig = task.Agent.McpConfig
-		effectiveMcpConfig = agentMcpConfig
-		if merged, mergeErr := mergeRuntimeAndAgentMcpConfig(provider, agentMcpConfig); mergeErr != nil {
-			taskLog.Warn("mcp_config: runtime merge failed; using agent configuration only",
-				"provider", provider,
-				"error", mergeErr,
-			)
-		} else {
-			effectiveMcpConfig = merged
-		}
+		// A managed mcp_config is an authoritative allowlist: it must NOT be
+		// silently widened with the host's own MCP servers (GitHub #6283).
+		// resolveEffectiveMcpConfig owns that decision, including the two
+		// explicit inherit paths (overlay-only tasks and the per-agent
+		// runtime_config.mcp.inherit_runtime opt-in).
+		effectiveMcpConfig = resolveEffectiveMcpConfig(
+			provider,
+			agentMcpConfig,
+			task.Agent.McpConfigOverlayOnly,
+			task.Agent.RuntimeConfig,
+			taskLog,
+		)
 		if provider == "cursor" {
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
 		}

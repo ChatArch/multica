@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasManagedMcpConfig,
+  inheritsRuntimeMcp,
   listManagedMcpServers,
   removeManagedMcpServer,
   upsertManagedMcpServer,
@@ -60,5 +62,75 @@ describe("mcp config compatibility model", () => {
     expect(removeManagedMcpServer(withMetadata, withMetadataFetch!)).toEqual({
       version: 1,
     });
+  });
+});
+
+// A managed mcp_config is an authoritative allowlist on the daemon side
+// (GitHub #6283), so the tab has to know which mode an agent is in before it
+// can describe the runtime servers honestly.
+describe("hasManagedMcpConfig", () => {
+  it("treats an absent config as unmanaged", () => {
+    expect(hasManagedMcpConfig(null)).toBe(false);
+    expect(hasManagedMcpConfig(undefined)).toBe(false);
+  });
+
+  it("treats an explicitly empty object as managed", () => {
+    expect(hasManagedMcpConfig({})).toBe(true);
+    expect(hasManagedMcpConfig({ mcpServers: {} })).toBe(true);
+  });
+
+  it("treats a redacted config as managed even though it is unreadable", () => {
+    expect(hasManagedMcpConfig(null, true)).toBe(true);
+  });
+});
+
+describe("inheritsRuntimeMcp", () => {
+  it("inherits when Multica manages nothing", () => {
+    expect(inheritsRuntimeMcp(null, false, undefined)).toBe(true);
+    expect(inheritsRuntimeMcp(null, false, {})).toBe(true);
+  });
+
+  it("does not inherit for an explicitly empty managed config", () => {
+    expect(inheritsRuntimeMcp({ mcpServers: {} }, false, undefined)).toBe(
+      false,
+    );
+  });
+
+  it("does not inherit for a managed allowlist", () => {
+    expect(
+      inheritsRuntimeMcp(
+        { mcpServers: { a: { command: "a" } } },
+        false,
+        undefined,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not inherit for a redacted config", () => {
+    expect(inheritsRuntimeMcp(null, true, undefined)).toBe(false);
+  });
+
+  it("inherits again when the agent explicitly opts back in", () => {
+    expect(
+      inheritsRuntimeMcp({ mcpServers: {} }, false, {
+        mcp: { inherit_runtime: true },
+      }),
+    ).toBe(true);
+  });
+
+  it("stays strict for a falsy or malformed opt-in", () => {
+    expect(
+      inheritsRuntimeMcp({ mcpServers: {} }, false, {
+        mcp: { inherit_runtime: false },
+      }),
+    ).toBe(false);
+    expect(
+      inheritsRuntimeMcp({ mcpServers: {} }, false, {
+        mcp: { inherit_runtime: "true" },
+      }),
+    ).toBe(false);
+    expect(inheritsRuntimeMcp({ mcpServers: {} }, false, { mcp: true })).toBe(
+      false,
+    );
   });
 });

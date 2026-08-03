@@ -1669,12 +1669,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// because it carries the live user-scoped session URL. Errors are
 		// logged but never fail the claim: a broken overlay must not prevent
 		// the agent from running with its base config.
+		//
+		// mcpConfigOverlayOnly tells the daemon the payload is purely the
+		// overlay so it keeps inheriting the runtime's MCP servers for an
+		// agent that never configured any (GitHub #6283).
+		var mcpConfigOverlayOnly bool
 		if composioMCPEnabled && len(task.RuntimeMcpOverlay) > 0 {
-			if merged, err := mergeMCPOverlay(mcpConfig, json.RawMessage(task.RuntimeMcpOverlay)); err != nil {
+			resolved, overlayOnly, err := resolveClaimMcpConfig(mcpConfig, json.RawMessage(task.RuntimeMcpOverlay))
+			if err != nil {
 				slog.Warn("daemon claim: merge runtime_mcp_overlay failed; falling back to agent mcp_config", "task_id", uuidToString(task.ID), "error", err)
-			} else {
-				mcpConfig = merged
 			}
+			mcpConfig, mcpConfigOverlayOnly = resolved, overlayOnly
 		}
 		// runtime_config is stored as JSONB and may legitimately be the
 		// empty object `{}` for agents that haven't opted into any
@@ -1691,6 +1696,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			CustomEnv:             customEnv,
 			CustomArgs:            customArgs,
 			McpConfig:             mcpConfig,
+			McpConfigOverlayOnly:  mcpConfigOverlayOnly,
 			Model:                 agent.Model.String,
 			ThinkingLevel:         agent.ThinkingLevel.String,
 			ServiceTier:           agent.ServiceTier.String,
