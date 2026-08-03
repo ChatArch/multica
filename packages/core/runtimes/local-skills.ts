@@ -50,6 +50,7 @@ export async function resolveRuntimeLocalSkills(
     supported: current.supported,
 	mcpServers: current.mcp_servers ?? [],
 	mcpSupported: current.mcp_supported === true,
+	authoritativeMcp: current.authoritative_mcp === true,
   };
 }
 

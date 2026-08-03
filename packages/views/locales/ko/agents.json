@@ -445,12 +445,20 @@
       "dialog_add_action": "Server 추가",
       "dialog_update_action": "변경 저장",
       "delete_dialog_title": "MCP Server를 삭제할까요?",
-      "delete_dialog_description": "{{name}}은 더 이상 이 에이전트에서 사용할 수 없습니다. Runtime Server에는 영향을 주지 않습니다.",
+      "delete_dialog_description": "{{name}}은(는) 이 에이전트에서 더 이상 사용할 수 없습니다. 여기에서 관리하는 다른 Server는 변경되지 않으며 Runtime 자체 MCP Server도 계속 노출되지 않습니다.",
       "delete_action": "Server 삭제",
       "invalid_json": "잘못된 JSON: {{error}}",
       "save_failed_toast": "MCP config를 저장하지 못했습니다",
       "redacted_title": "설정됨 - 현재 보기에서는 숨김",
-      "redacted_hint": "에이전트 소유자 또는 워크스페이스 관리자만 이 config를 읽을 수 있습니다."
+      "redacted_hint": "에이전트 소유자 또는 워크스페이스 관리자만 이 config를 읽을 수 있습니다.",
+      "managed_empty_strict": "MCP Server가 없습니다. 이 에이전트는 Runtime 자체 Server를 포함해 MCP에 전혀 접근할 수 없습니다.",
+      "clear_action": "MCP 관리 중단",
+      "clear_dialog_title": "이 에이전트의 MCP 관리를 중단할까요?",
+      "clear_dialog_description": "관리 설정을 제거하고 {{runtime}}의 모든 MCP Server를 이 에이전트가 다시 사용할 수 있게 됩니다. 접근 가능한 도구 범위가 **확대**됩니다. MCP 접근을 완전히 차단하려면 개별 Server를 삭제하세요.",
+      "clear_confirm_action": "관리 중단하고 상속",
+      "cleared_toast": "관리 MCP 설정을 제거했습니다 — Runtime Server를 다시 상속합니다",
+      "daemon_upgrade_required": "이 Runtime의 daemon은 여전히 자체 MCP Server를 관리 설정에 병합합니다. 이 설정이 허용 목록으로 적용되려면 daemon을 업그레이드하세요.",
+      "runtime_hint_needs_upgrade": "{{runtime}}에서 자동으로 탐색합니다. 이 daemon은 배타적 MCP 설정을 지원하지 않아 이 Server들은 현재도 이 에이전트에서 접근 가능합니다. 제외하려면 daemon을 업그레이드하세요."
     },
     "composio_mcp": {
       "subtitle": "툴킷을 선택하면, 본인(이 에이전트의 생성자)이 직접 또는 하위 에이전트 체인을 통해 이 에이전트를 트리거할 때만 MCP 서버로 마운트됩니다.",

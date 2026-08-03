@@ -75,21 +75,41 @@ export function upsertManagedMcpServer(
   return document;
 }
 
+/**
+ * Remove one managed server.
+ *
+ * Deleting the LAST managed server deliberately leaves an explicitly empty
+ * `{"mcpServers":{}}` rather than clearing the config to `null`. `null` means
+ * "inherit the runtime host's servers" on the daemon side, so collapsing to it
+ * here would turn a delete into a privilege *widening* — the agent would go
+ * from one allowed server to every server on the host (GitHub #6283).
+ *
+ * Use `clearManagedMcpConfig` for the separate, explicit "stop managing MCP and
+ * inherit the host's servers again" action.
+ */
 export function removeManagedMcpServer(
   value: unknown,
   server: ManagedMcpServer,
-): Record<string, unknown> | null {
-  if (!isRecord(value)) return null;
-  const document = { ...value };
+): Record<string, unknown> {
+  const document = isRecord(value) ? { ...value } : {};
   const container = isRecord(document[server.container])
     ? { ...(document[server.container] as Record<string, unknown>) }
     : {};
   delete container[server.name];
 
-  if (Object.keys(container).length > 0) document[server.container] = container;
-  else delete document[server.container];
+  document[server.container] = container;
+  return document;
+}
 
-  return Object.keys(document).length > 0 ? document : null;
+/**
+ * Clear the managed MCP config entirely, handing MCP scope back to the runtime
+ * host. Returns `null`, which the daemon reads as "inherit natively".
+ *
+ * This WIDENS the agent's tool surface, so it must stay a deliberate action
+ * with its own confirmation — never the incidental result of deleting a server.
+ */
+export function clearManagedMcpConfig(): null {
+  return null;
 }
 
 /**

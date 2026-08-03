@@ -7,6 +7,46 @@ import (
 	"fmt"
 )
 
+// mcpConfigNeedsAuthoritativeDaemon reports whether handing this agent's
+// mcp_config to a daemon that predates DaemonCapabilityAuthoritativeMcpV1 would
+// widen the agent's tool surface beyond what the operator configured.
+//
+// True only when the agent itself saved a config AND has not opted into
+// inheriting the host's servers. In that case an old daemon merges the runtime
+// host's own MCP servers underneath the managed set — the GitHub #6283
+// vulnerability — so the claim must fail closed instead of running the agent
+// with tools the operator believes are excluded.
+//
+// False when the agent has no config of its own (nothing to widen; the host's
+// servers were always in scope) or when runtime_config.mcp.inherit_runtime is
+// set, because then the merge is exactly what the operator asked for and an old
+// daemon's behaviour already matches intent. That opt-in doubles as the
+// documented escape hatch for an operator who cannot upgrade yet.
+func mcpConfigNeedsAuthoritativeDaemon(agentMcpConfig, runtimeConfig json.RawMessage) bool {
+	if !hasManagedJSON(agentMcpConfig) {
+		return false
+	}
+	return !runtimeConfigInheritsRuntimeMcp(runtimeConfig)
+}
+
+// runtimeConfigInheritsRuntimeMcp mirrors the daemon's
+// decodeMcpInheritRuntime. Fails closed on malformed JSON: an unreadable
+// runtime_config never counts as an opt-in to the wider tool surface.
+func runtimeConfigInheritsRuntimeMcp(raw json.RawMessage) bool {
+	if !hasManagedJSON(raw) {
+		return false
+	}
+	var cfg struct {
+		Mcp struct {
+			InheritRuntime bool `json:"inherit_runtime"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return false
+	}
+	return cfg.Mcp.InheritRuntime
+}
+
 // resolveClaimMcpConfig builds the `mcp_config` a claim response carries and
 // reports whether that payload came ONLY from the per-task overlay.
 //

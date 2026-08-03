@@ -437,12 +437,20 @@
       "dialog_add_action": "Server を追加",
       "dialog_update_action": "変更を保存",
       "delete_dialog_title": "MCP Server を削除しますか？",
-      "delete_dialog_description": "{{name}} はこのエージェントで利用できなくなります。Runtime Server には影響しません。",
+      "delete_dialog_description": "{{name}} はこのエージェントで使用できなくなります。ここで管理している他の Server は変更されず、Runtime 自身の MCP Server も引き続き公開されません。",
       "delete_action": "Server を削除",
       "invalid_json": "無効な JSON: {{error}}",
       "save_failed_toast": "MCP config を保存できませんでした",
       "redacted_title": "設定済み — 現在の表示では非表示",
-      "redacted_hint": "この config を読み取れるのは、エージェントのオーナーまたはワークスペースの admin のみです。"
+      "redacted_hint": "この config を読み取れるのは、エージェントのオーナーまたはワークスペースの admin のみです。",
+      "managed_empty_strict": "MCP Server がありません。このエージェントは MCP に一切アクセスできません（Runtime 自身の Server も含む）。",
+      "clear_action": "MCP の管理を停止",
+      "clear_dialog_title": "このエージェントの MCP 管理を停止しますか？",
+      "clear_dialog_description": "管理設定を削除し、{{runtime}} 上のすべての MCP Server を再びこのエージェントが使用できるようになります。これは利用できるツールの範囲を**拡大**します。MCP アクセスを完全に無くしたい場合は、個別の Server を削除してください。",
+      "clear_confirm_action": "管理を停止して継承する",
+      "cleared_toast": "管理 MCP 設定を削除しました — Runtime Server を再び継承します",
+      "daemon_upgrade_required": "この Runtime の daemon は、管理設定に自身の MCP Server を統合します。この設定を許可リストとして有効にするには daemon をアップグレードしてください。",
+      "runtime_hint_needs_upgrade": "{{runtime}} から自動検出します。この daemon は排他的な MCP 設定に未対応のため、これらの Server は現在も このエージェントから到達可能です。除外するには daemon をアップグレードしてください。"
     },
     "composio_mcp": {
       "subtitle": "ツールキットにチェックを入れると、あなた（この agent の作成者）が直接または下位 agent のチェーン経由でこの agent をトリガーしたときに限り、MCP サーバーとしてマウントされます。",

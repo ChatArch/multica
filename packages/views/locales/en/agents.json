@@ -555,12 +555,20 @@
       "dialog_add_action": "Add Server",
       "dialog_update_action": "Save Changes",
       "delete_dialog_title": "Delete MCP Server?",
-      "delete_dialog_description": "{{name}} will no longer be available to this agent. Runtime servers are not affected.",
+      "delete_dialog_description": "{{name}} will no longer be available to this agent. The other servers managed here are unchanged, and the runtime's own MCP servers stay excluded.",
       "delete_action": "Delete Server",
       "invalid_json": "Invalid JSON: {{error}}",
       "save_failed_toast": "Failed to save MCP config",
       "redacted_title": "Configured — hidden from your view",
-      "redacted_hint": "Only the agent owner or a workspace admin can read this config."
+      "redacted_hint": "Only the agent owner or a workspace admin can read this config.",
+      "managed_empty_strict": "No MCP servers. This agent has no MCP access at all — not even the runtime's own servers.",
+      "clear_action": "Stop managing MCP",
+      "clear_dialog_title": "Stop managing MCP for this agent?",
+      "clear_dialog_description": "This removes the managed config and lets the agent use every MCP server on {{runtime}} again. That WIDENS the tools it can reach. To keep it locked down with no MCP access, delete the individual servers instead.",
+      "clear_confirm_action": "Stop managing and inherit",
+      "cleared_toast": "Managed MCP config removed — runtime servers are inherited again",
+      "daemon_upgrade_required": "This runtime's daemon still merges its own MCP servers into managed configs. Upgrade the daemon for this config to take effect as an allowlist.",
+      "runtime_hint_needs_upgrade": "Discovered automatically from {{runtime}}. These servers are still reachable by this agent because the daemon predates authoritative MCP configs — upgrade it to exclude them."
     },
     "composio_mcp": {
       "subtitle": "Check a toolkit to let this agent mount it as an MCP server — but only when you (its creator) are the one who triggered the run, directly or down a sub-agent chain.",

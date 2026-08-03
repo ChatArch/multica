@@ -188,6 +188,9 @@ func daemonClientCapabilities() string {
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityRPCV1,
+		// Tells the server this daemon honours an authoritative mcp_config, so
+		// the claim path may hand it strictly-scoped MCP tasks (GitHub #6283).
+		protocol.DaemonCapabilityAuthoritativeMcpV1,
 	}, ",")
 }
 

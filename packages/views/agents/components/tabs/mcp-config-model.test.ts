@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearManagedMcpConfig,
   hasManagedMcpConfig,
   inheritsRuntimeMcp,
   listManagedMcpServers,
@@ -52,16 +53,36 @@ describe("mcp config compatibility model", () => {
     });
   });
 
-  it("returns null only when deleting the last value from an otherwise empty document", () => {
+  // Deleting the last managed server must NOT clear the config to null: null
+  // means "inherit the runtime host's MCP servers" on the daemon side, so
+  // collapsing to it would turn a delete into a privilege widening — from one
+  // allowed server to every server on the host (GitHub #6283).
+  it("keeps an explicitly empty config when the last server is deleted", () => {
     const value = { mcpServers: { fetch: { command: "uvx" } } };
     const [fetch] = listManagedMcpServers(value);
-    expect(removeManagedMcpServer(value, fetch!)).toBeNull();
+    expect(removeManagedMcpServer(value, fetch!)).toEqual({ mcpServers: {} });
 
     const withMetadata = { version: 1, ...value };
     const [withMetadataFetch] = listManagedMcpServers(withMetadata);
     expect(removeManagedMcpServer(withMetadata, withMetadataFetch!)).toEqual({
       version: 1,
+      mcpServers: {},
     });
+  });
+
+  it("removes only the named server when siblings remain", () => {
+    const value = {
+      mcpServers: { fetch: { command: "uvx" }, docs: { url: "https://x/mcp" } },
+    };
+    const fetch = listManagedMcpServers(value).find((s) => s.name === "fetch");
+    expect(removeManagedMcpServer(value, fetch!)).toEqual({
+      mcpServers: { docs: { url: "https://x/mcp" } },
+    });
+  });
+
+  // Restoring inheritance is a separate, deliberate action.
+  it("clearManagedMcpConfig is the only path back to inheritance", () => {
+    expect(clearManagedMcpConfig()).toBeNull();
   });
 });
 

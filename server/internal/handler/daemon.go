@@ -1663,6 +1663,30 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if agent.McpConfig != nil {
 			mcpConfig = json.RawMessage(agent.McpConfig)
 		}
+		// Fail closed against a daemon that predates the authoritative
+		// mcp_config semantics: it would merge the runtime host's own MCP
+		// servers underneath this agent's managed set, handing the agent tools
+		// the operator explicitly scoped out (GitHub #6283). Running the task
+		// anyway is the vulnerability, and the UI cannot honestly report the
+		// boundary either, so cancel rather than silently widen.
+		if mcpConfigNeedsAuthoritativeDaemon(mcpConfig, agent.RuntimeConfig) &&
+			!requestHasClientCapability(r, protocol.DaemonCapabilityAuthoritativeMcpV1) {
+			slog.Error("task claim: daemon predates authoritative mcp_config; cancelling task instead of widening the agent's MCP tools",
+				"task_id", uuidToString(task.ID),
+				"agent_id", uuidToString(agent.ID),
+				"runtime_id", runtimeID,
+				"required_capability", protocol.DaemonCapabilityAuthoritativeMcpV1,
+			)
+			if _, cerr := h.TaskService.CancelTask(r.Context(), task.ID); cerr != nil {
+				slog.Error("task claim: cancel after authoritative mcp_config check failed",
+					"task_id", uuidToString(task.ID), "error", cerr)
+			}
+			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+				outcome: "error_mcp_config_daemon_outdated",
+				status:  http.StatusPreconditionFailed,
+				message: "this agent has a managed mcp_config, which requires a daemon that enforces it as an authoritative allowlist; upgrade the local daemon, or set runtime_config.mcp.inherit_runtime=true to accept the runtime host's MCP servers as well",
+			}
+		}
 		// Layer the per-task overlay (set at enqueue from the initiator
 		// user's active integrations — currently Composio) on top of the
 		// agent's saved mcp_config. Overlay wins on server-name collisions

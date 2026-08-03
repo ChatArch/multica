@@ -3029,6 +3029,11 @@ func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID
 		"supported":     supported,
 		"mcp_servers":   mcpServers,
 		"mcp_supported": mcpSupported,
+		// Additive: tells the server (and through it the agent MCP tab) that
+		// this daemon enforces a managed mcp_config as an authoritative
+		// allowlist. A daemon without this field still merges the host's MCP
+		// servers, so the UI must not claim they are excluded (GitHub #6283).
+		"authoritative_mcp": true,
 	})
 }
 

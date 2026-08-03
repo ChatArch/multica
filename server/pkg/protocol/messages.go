@@ -11,6 +11,17 @@ const (
 	// everyone else keeps using the HTTP claim endpoint.
 	DaemonCapabilityRPCV1 = "rpc-v1"
 
+	// DaemonCapabilityAuthoritativeMcpV1 advertises that the daemon treats a
+	// managed agent mcp_config as an authoritative allowlist instead of
+	// merging the runtime host's own MCP servers underneath it (GitHub #6283).
+	//
+	// This is a SECURITY capability, not a feature negotiation: a daemon
+	// without it silently widens an explicitly-scoped mcp_config to the full
+	// host set. The claim path therefore refuses to hand a strictly-scoped
+	// task to a daemon that does not advertise it, rather than running the
+	// agent with more tools than the operator configured.
+	DaemonCapabilityAuthoritativeMcpV1 = "authoritative-mcp-v1"
+
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
 	// chat:cancel_finalized as an invalidation hint plus the draft-restores

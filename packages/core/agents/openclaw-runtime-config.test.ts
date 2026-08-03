@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   OPENCLAW_GATEWAY_TOKEN_MASK,
+  openclawRuntimeConfigEquals,
+  parseOpenclawRuntimeConfig,
   serializeOpenclawRuntimeConfig,
 } from "./openclaw-runtime-config";
 
@@ -59,5 +61,65 @@ describe("serializeOpenclawRuntimeConfig", () => {
         token: "rotated-secret",
       },
     });
+  });
+});
+
+// `runtime_config` is one shared JSONB column and the OpenClaw tab persists its
+// serialized output as the WHOLE object. Dropping unknown keys therefore let an
+// unrelated routing save silently delete `mcp.inherit_runtime`, which controls
+// whether the agent may reach the host's MCP servers (GitHub #6283).
+describe("openclaw runtime_config passthrough", () => {
+  it("preserves keys owned by other tabs across a parse/serialize round-trip", () => {
+    const stored = {
+      mode: "gateway",
+      gateway: { host: "box.local", port: 4599 },
+      mcp: { inherit_runtime: true },
+    };
+
+    const parsed = parseOpenclawRuntimeConfig(stored);
+    expect(parsed.passthrough).toEqual({ mcp: { inherit_runtime: true } });
+
+    expect(serializeOpenclawRuntimeConfig(parsed)).toEqual(stored);
+  });
+
+  it("keeps the foreign keys when the OpenClaw settings themselves change", () => {
+    const parsed = parseOpenclawRuntimeConfig({
+      mode: "gateway",
+      gateway: { host: "old.local" },
+      mcp: { inherit_runtime: true },
+    });
+
+    // Simulate the form switching back to local mode and saving.
+    const saved = serializeOpenclawRuntimeConfig({
+      mode: "local",
+      passthrough: parsed.passthrough,
+    });
+
+    expect(saved).toEqual({ mode: "local", mcp: { inherit_runtime: true } });
+  });
+
+  it("never lets a foreign key overwrite the fields this form owns", () => {
+    const saved = serializeOpenclawRuntimeConfig({
+      mode: "local",
+      passthrough: { mode: "gateway", mcp: { inherit_runtime: false } },
+    });
+
+    expect(saved.mode).toBe("local");
+    expect(saved.mcp).toEqual({ inherit_runtime: false });
+  });
+
+  it("omits passthrough entirely when there are no foreign keys", () => {
+    const parsed = parseOpenclawRuntimeConfig({ mode: "local" });
+    expect(parsed.passthrough).toBeUndefined();
+    expect(serializeOpenclawRuntimeConfig(parsed)).toEqual({ mode: "local" });
+  });
+
+  it("does not report a config as dirty because of passthrough alone", () => {
+    expect(
+      openclawRuntimeConfigEquals(
+        { mode: "local", passthrough: { mcp: { inherit_runtime: true } } },
+        { mode: "local" },
+      ),
+    ).toBe(true);
   });
 });

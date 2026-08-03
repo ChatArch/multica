@@ -122,3 +122,85 @@ func TestResolveClaimMcpConfigBadOverlayWithNoAgentConfigYieldsNil(t *testing.T)
 		t.Fatalf("config = %q, want absent so the daemon keeps native inheritance", string(got))
 	}
 }
+
+// The strict mcp_config semantics are enforced by the DAEMON. A daemon that
+// predates them still merges the host's MCP servers into a managed config, so
+// the claim path must refuse rather than run the agent with tools the operator
+// scoped out (GitHub #6283).
+
+func TestMcpConfigNeedsAuthoritativeDaemonForManagedConfigs(t *testing.T) {
+	t.Parallel()
+
+	for _, agentCfg := range []json.RawMessage{
+		json.RawMessage(`{"mcpServers":{}}`),
+		json.RawMessage(`{"mcpServers":{"a":{"command":"a"}}}`),
+		json.RawMessage(`{}`),
+	} {
+		if !mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+			t.Fatalf("managed config %q must require an authoritative daemon", string(agentCfg))
+		}
+	}
+}
+
+func TestMcpConfigNeedsAuthoritativeDaemonSkipsUnmanaged(t *testing.T) {
+	t.Parallel()
+
+	// Nothing to widen: the host's servers were always in scope for an agent
+	// with no config of its own.
+	for _, agentCfg := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage(" null ")} {
+		if mcpConfigNeedsAuthoritativeDaemon(agentCfg, nil) {
+			t.Fatalf("unmanaged config %q must not gate the claim", string(agentCfg))
+		}
+	}
+}
+
+// The inherit opt-in doubles as the documented escape hatch: the operator has
+// declared they accept the host's servers, so an old daemon already matches
+// intent and the task must keep running.
+func TestMcpConfigNeedsAuthoritativeDaemonSkipsExplicitInherit(t *testing.T) {
+	t.Parallel()
+
+	if mcpConfigNeedsAuthoritativeDaemon(
+		json.RawMessage(`{"mcpServers":{"a":{"command":"a"}}}`),
+		json.RawMessage(`{"mcp":{"inherit_runtime":true}}`),
+	) {
+		t.Fatal("an explicit inherit opt-in must not gate the claim")
+	}
+}
+
+func TestMcpConfigNeedsAuthoritativeDaemonFailsClosedOnBadRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	managed := json.RawMessage(`{"mcpServers":{}}`)
+	for _, rc := range []json.RawMessage{
+		nil,
+		json.RawMessage(`{}`),
+		json.RawMessage(`{"mcp":{"inherit_runtime":false}}`),
+		json.RawMessage(`{"mcp":{"inherit_runtime":"true"}}`), // wrong type
+		json.RawMessage(`{"mcp":{"inherit_runtime":true}`),    // truncated
+		json.RawMessage(`{"mode":"gateway"}`),
+	} {
+		if !mcpConfigNeedsAuthoritativeDaemon(managed, rc) {
+			t.Fatalf("runtime_config %q must not count as an inherit opt-in", string(rc))
+		}
+	}
+}
+
+// Mirrors the daemon's decodeMcpInheritRuntime so the two sides cannot drift.
+func TestRuntimeConfigInheritsRuntimeMcp(t *testing.T) {
+	t.Parallel()
+
+	if !runtimeConfigInheritsRuntimeMcp(json.RawMessage(`{"mcp":{"inherit_runtime":true}}`)) {
+		t.Fatal("explicit true must be honoured")
+	}
+	for _, rc := range []json.RawMessage{
+		nil,
+		json.RawMessage("null"),
+		json.RawMessage(`{"mcp":{}}`),
+		json.RawMessage(`not json`),
+	} {
+		if runtimeConfigInheritsRuntimeMcp(rc) {
+			t.Fatalf("runtime_config %q must not opt in", string(rc))
+		}
+	}
+}

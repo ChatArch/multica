@@ -1132,6 +1132,13 @@ export interface RuntimeLocalSkillListRequest {
   supported: boolean;
 	mcp_servers?: RuntimeLocalMcpServerSummary[];
 	mcp_supported?: boolean;
+	/**
+	 * Whether the daemon enforces a managed `mcp_config` as an authoritative
+	 * allowlist. Absent/false on daemons predating that fix, which still merge
+	 * the host's own MCP servers underneath the managed set (GitHub #6283) —
+	 * the UI must not claim those servers are excluded.
+	 */
+	authoritative_mcp?: boolean;
   error?: string;
   created_at: string;
   updated_at: string;
@@ -1168,6 +1175,8 @@ export interface RuntimeLocalSkillsResult {
   supported: boolean;
 	mcpServers: RuntimeLocalMcpServerSummary[];
 	mcpSupported: boolean;
+	/** See `RuntimeLocalSkillListRequest.authoritative_mcp`. */
+	authoritativeMcp: boolean;
 }
 
 export interface RuntimeLocalSkillImportResult {
