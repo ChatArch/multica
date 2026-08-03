@@ -253,10 +253,9 @@
   },
   "labels": {
     "title": "标签",
-    "description": "分别管理工作区中用于整理 issue、智能体和 skill 的标签。三类标签相互独立。",
+    "description": "分别管理工作区中用于整理 issue 和 skill 的标签。两类标签相互独立。",
     "scopes": {
       "issue": "Issue",
-      "agent": "智能体",
       "skill": "Skill"
     },
     "search_placeholder": "按名称或描述筛选...",

@@ -253,10 +253,9 @@
   },
   "labels": {
     "title": "ラベル",
-    "description": "このワークスペースの Issue、エージェント、Skill 用ラベルを個別に管理します。",
+    "description": "このワークスペースの Issue、Skill 用ラベルを個別に管理します。",
     "scopes": {
       "issue": "Issue",
-      "agent": "エージェント",
       "skill": "Skill"
     },
     "search_placeholder": "名前または説明で絞り込み...",

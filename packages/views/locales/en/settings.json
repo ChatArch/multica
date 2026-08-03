@@ -254,10 +254,9 @@
   },
   "labels": {
     "title": "Labels",
-    "description": "Manage the separate label catalogs used to organize issues, agents, and skills in this workspace.",
+    "description": "Manage the separate label catalogs used to organize issues and skills in this workspace.",
     "scopes": {
       "issue": "Issues",
-      "agent": "Agents",
       "skill": "Skills"
     },
     "search_placeholder": "Filter by name or description...",

@@ -4777,38 +4777,17 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		)
 	}
 
-	// Subscribe the requester so they receive notifications for follow-up
-	// comments and updates. The DB row's creator_type/creator_id is the
-	// agent (it ran the CLI), but the human who triggered the quick-create
-	// is the semantic creator from a UX perspective — without this they
-	// only see the one-shot completion inbox and miss everything after.
-	// Best-effort: log on failure but don't block the inbox notification.
-	if err := s.Queries.AddIssueSubscriber(ctx, db.AddIssueSubscriberParams{
-		IssueID:  issue.ID,
-		UserType: "member",
-		UserID:   requesterID,
-		Reason:   "creator",
-	}); err != nil {
-		slog.Warn("quick-create completion: subscribe requester failed",
-			"task_id", util.UUIDToString(task.ID),
-			"issue_id", util.UUIDToString(issue.ID),
-			"requester_id", qc.RequesterID,
-			"error", err,
-		)
-	} else {
-		s.Bus.Publish(events.Event{
-			Type:        protocol.EventSubscriberAdded,
-			WorkspaceID: qc.WorkspaceID,
-			ActorType:   "agent",
-			ActorID:     util.UUIDToString(task.AgentID),
-			Payload: map[string]any{
-				"issue_id":  util.UUIDToString(issue.ID),
-				"user_type": "member",
-				"user_id":   qc.RequesterID,
-				"reason":    "creator",
-			},
-		})
-	}
+	// Subscribing the requester used to happen here, at completion. It now
+	// happens at issue-creation time in the shared delegated-subscriber rule
+	// (cmd/server/subscriber_listeners.go → subscribeDelegatedHuman), which
+	// resolves the human from origin_type='quick_create' + the origin task's
+	// originator_user_id — the same origin waterfall attribution uses.
+	//
+	// This was one of three separate hand-rolled fixes for "an agent created
+	// this issue and no human is subscribed" (quick-create here, the autopilot
+	// subscriber template, and — missing entirely until MUL-5483 — ordinary
+	// agent-created sub-issues). Keeping a second write here would leave the
+	// same decision encoded in two places that can drift.
 	prefix := s.getIssuePrefix(workspaceID)
 	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
 	details, _ := json.Marshal(map[string]any{
