@@ -1002,11 +1002,16 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 				// an explicit, verified handoff with a cleanup handle.
 				"persistent service handoff",
 				"running service itself is the requested deliverable",
-				// MUL-5442: pin the handoff concepts (durable logs, an
-				// ownership handle, readiness), not the operational phrasing.
+				// MUL-5442: pin the handoff concepts, not the operational
+				// phrasing — but the cleanup handle must stay general (a
+				// supervisor/profile-managed service has no single stable PID)
+				// and the user-facing reply must keep the full URL/logs/stop
+				// triple (durable logs alone are unobservable if the user is
+				// never told where they are).
 				"durable logs",
-				"recorded PID",
+				"cleanup handle such as PID/profile",
 				"verify readiness",
+				"URL, logs, and stop instructions",
 				"survival as best-effort, not guaranteed",
 				"does not cover tests, builds, CI polling",
 				"are not agent-owned background tasks",
