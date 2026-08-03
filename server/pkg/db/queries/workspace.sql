@@ -115,6 +115,18 @@ SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 -- "the workspace is being torn down" and abort rather than writing orphans.
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 
+-- name: TryLockWorkspaceForAutomationWrite :one
+-- Non-blocking variant of LockWorkspaceForAutomationWrite for BULK, best-effort
+-- sweeps (MUL-4332 review). A periodic global sweep spans many workspaces, so it
+-- must not queue behind one workspace that a teardown is holding: SKIP LOCKED makes
+-- a contended workspace return no rows, and the sweeper simply moves to the next
+-- workspace this tick (that workspace's tasks are being removed by the teardown
+-- anyway, and an uncontended retry happens on the next tick).
+--
+-- Interactive, single-target writers keep using the blocking variant: they must
+-- either win the lock or fail closed, never silently skip their own write.
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE SKIP LOCKED;
+
 -- name: DeleteWorkspace :exec
 -- The channel_* tables (MUL-3515 §4), resource-label junctions, custom issue
 -- property definitions, and quick actions carry NO FK to workspace, so — unlike the CASCADE-backed

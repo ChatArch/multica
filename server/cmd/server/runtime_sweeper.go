@@ -276,10 +276,12 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 	// Select a bounded batch of stale candidates, then fail the resolvable ones
 	// with their task.failed events atomically (MUL-4332 review point 2).
 	failedTasks, err := taskSvc.FailBulkTasksWithEvents(ctx,
-		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-			return qtx.SelectStaleTasksToFail(ctx, db.SelectStaleTasksToFailParams{
-				DispatchTimeoutSecs: dispatchTimeoutSeconds,
-				RunningTimeoutSecs:  runningTimeoutSeconds,
+		// UNLOCKED peek: the workspace is locked before these tasks are re-locked
+		// (MUL-4332 review: bulk workspace-first).
+		func(q *db.Queries) ([]db.AgentTaskQueue, error) {
+			return q.PeekStaleTasksToFail(ctx, db.PeekStaleTasksToFailParams{
+				DispatchedTimeoutSecs: dispatchTimeoutSeconds,
+				RunningTimeoutSecs:    runningTimeoutSeconds,
 				// Reuse the runtime stale window so the running-task backstop
 				// exactly matches what sweepStaleRuntimes considers "not alive".
 				RuntimeStaleSecs: staleThresholdSeconds,
@@ -319,8 +321,9 @@ func sweepOfflineRuntimeTasks(ctx context.Context, taskSvc *service.TaskService)
 		return
 	}
 	failedTasks, err := taskSvc.FailBulkTasksWithEvents(ctx,
-		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-			return qtx.SelectTasksForOfflineRuntimes(ctx, bulkFailBatchSize)
+		// UNLOCKED peek; see sweepStaleTasks.
+		func(q *db.Queries) ([]db.AgentTaskQueue, error) {
+			return q.PeekTasksForOfflineRuntimes(ctx, bulkFailBatchSize)
 		},
 		func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
 			return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
@@ -350,8 +353,9 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 	// Select a bounded batch of TTL-expired queued candidates, then fail the
 	// resolvable ones with their events atomically (MUL-4332 review point 2).
 	failedTasks, err := taskSvc.FailBulkTasksWithEvents(ctx,
-		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-			return qtx.SelectExpiredQueuedTasks(ctx, db.SelectExpiredQueuedTasksParams{
+		// UNLOCKED peek; see sweepStaleTasks.
+		func(q *db.Queries) ([]db.AgentTaskQueue, error) {
+			return q.PeekExpiredQueuedTasks(ctx, db.PeekExpiredQueuedTasksParams{
 				TtlSecs:    queuedTTLSeconds,
 				MaxPerTick: queuedExpireBatchSize,
 			})

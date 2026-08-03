@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/automation"
@@ -916,4 +917,131 @@ func (f teardownFixture) sleepDuringTaskUpdate(t *testing.T, taskID string, seco
 		f.pool.Exec(bg, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", quoteIdent(name)))
 		f.pool.Exec(bg, fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", quoteIdent(fn)))
 	})
+}
+
+// A REAL bulk sweep racing a workspace delete must not deadlock, and must still
+// drain a healthy workspace in the same tick (MUL-4332 review: bulk deadlock window).
+//
+// The sweepers are global, so a tick spans workspaces. Locking the candidate TASK
+// rows first — what the select-with-FOR-UPDATE did — is the reverse of
+// DeleteWorkspace's workspace -> task order. The sweep now peeks unlocked, groups by
+// resolved workspace, and runs one workspace-first transaction per group.
+func TestBulkSweepRacingWorkspaceDeleteDoesNotDeadlock(t *testing.T) {
+	f := newTeardownFixture(t)
+	ctx := context.Background()
+
+	// A running task in the workspace being torn down, and one in a healthy
+	// neighbour workspace that must still be swept in the same tick.
+	var agentID string
+	if err := f.pool.QueryRow(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 LIMIT 1`, f.ws).Scan(&agentID); err != nil {
+		t.Fatalf("load agent: %v", err)
+	}
+	seedRunning := func(issueID string) string {
+		var id string
+		if err := f.pool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
+			VALUES ($1, (SELECT runtime_id FROM agent WHERE id = $1), $2, 'running', 0, now() - interval '10 days')
+			RETURNING id`, agentID, issueID).Scan(&id); err != nil {
+			t.Fatalf("seed running task: %v", err)
+		}
+		t.Cleanup(func() {
+			bg := context.Background()
+			f.pool.Exec(bg, `DELETE FROM domain_event WHERE subject_id = $1`, id)
+			f.pool.Exec(bg, `DELETE FROM agent_task_queue WHERE id = $1`, id)
+		})
+		return id
+	}
+	// A neighbour-workspace issue so its task resolves to the neighbour workspace.
+	var neighborIssueID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, creator_type, creator_id, priority)
+		VALUES ($1, 'neighbor issue', 'member', $2, 'medium') RETURNING id`,
+		f.neighbor, f.userID).Scan(&neighborIssueID); err != nil {
+		t.Fatalf("seed neighbor issue: %v", err)
+	}
+	t.Cleanup(func() { f.pool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, neighborIssueID) })
+
+	doomedTask := seedRunning(f.issueID)
+	healthyTask := seedRunning(neighborIssueID)
+
+	taskSvc := &TaskService{Queries: db.New(f.pool), TxStarter: f.pool, Bus: events.New()}
+
+	// Hold the delete's workspace lock open so the sweep runs inside its window.
+	deleteTx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteTx.Rollback(ctx)
+	dqtx := db.New(f.pool).WithTx(deleteTx)
+	if _, err := dqtx.LockWorkspaceForDelete(ctx, util.MustParseUUID(f.ws)); err != nil {
+		t.Fatal(err)
+	}
+	// NOTE: the teardown holds ONLY the workspace at this point. That is what makes
+	// this test discriminate lock ORDER: a reverse-ordered sweep takes the doomed
+	// workspace's TASK locks first (they are still free) and then blocks wanting the
+	// workspace, while the teardown below blocks wanting those tasks — a deadlock.
+	// The workspace-first sweep never takes those task locks at all.
+	swept := make(chan error, 1)
+	go func() {
+		_, err := taskSvc.FailBulkTasksWithEvents(ctx,
+			func(q *db.Queries) ([]db.AgentTaskQueue, error) {
+				return q.PeekStaleTasksToFail(ctx, db.PeekStaleTasksToFailParams{
+					DispatchedTimeoutSecs: 60,
+					RunningTimeoutSecs:    60,
+					RuntimeStaleSecs:      60,
+					MaxPerTick:            100,
+				})
+			},
+			func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error) {
+				return qtx.FailAgentTasksByIDs(ctx, db.FailAgentTasksByIDsParams{
+					Ids:           ids,
+					Error:         pgtype.Text{String: "stale", Valid: true},
+					FailureReason: pgtype.Text{String: "stale_timeout", Valid: true},
+				})
+			})
+		swept <- err
+	}()
+
+	// Give the sweep time to reach the doomed workspace, then have the teardown take
+	// its task rows. With a reverse-ordered sweep this is where the deadlock lands.
+	time.Sleep(500 * time.Millisecond)
+	_, delErr := deleteTx.Exec(ctx,
+		`DELETE FROM agent_task_queue WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id = $1)`, f.ws)
+	assertNoDeadlock(t, delErr, "the delete transaction")
+	if delErr != nil {
+		t.Fatal(delErr)
+	}
+
+	select {
+	case err := <-swept:
+		assertNoDeadlock(t, err, "the bulk sweep")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the bulk sweep never returned — it blocked on rows the teardown holds")
+	}
+
+	// The healthy neighbour's task was still swept while the other workspace was
+	// locked: one workspace under teardown must not stall the rest of the tick.
+	var healthyStatus string
+	f.pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, healthyTask).Scan(&healthyStatus)
+	if healthyStatus != "failed" {
+		t.Errorf("healthy workspace task = %q, want failed — a workspace under teardown "+
+			"stalled the whole global sweep", healthyStatus)
+	}
+
+	// Finish the teardown; it must not have deadlocked against the sweep.
+	for _, stmt := range []string{
+		`DELETE FROM member WHERE workspace_id = $1`,
+		`DELETE FROM issue WHERE workspace_id = $1`,
+	} {
+		_, err := deleteTx.Exec(ctx, stmt, f.ws)
+		assertNoDeadlock(t, err, "the delete transaction")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := deleteTx.Commit(ctx); err != nil {
+		assertNoDeadlock(t, err, "the delete commit")
+		t.Fatal(err)
+	}
+	_ = doomedTask
 }

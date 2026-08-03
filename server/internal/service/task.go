@@ -4263,7 +4263,75 @@ func (s *TaskService) resolveTaskWorkspaceForEvent(ctx context.Context, qtx *db.
 // retries — every caller runs on a fixed cadence.
 func (s *TaskService) FailBulkTasksWithEvents(
 	ctx context.Context,
-	selectFn func(qtx *db.Queries) ([]db.AgentTaskQueue, error),
+	peekFn func(q *db.Queries) ([]db.AgentTaskQueue, error),
+	failFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
+) ([]db.AgentTaskQueue, error) {
+	// WORKSPACE-FIRST, BATCHED PER WORKSPACE (MUL-4332 review: bulk deadlock).
+	//
+	// The sweepers are global — one tick can span many workspaces — so there is no
+	// single workspace to lock up front. Locking the candidate TASK rows first (what
+	// the old select-with-FOR-UPDATE did) is the reverse of DeleteWorkspace's
+	// workspace -> task order and deadlocks (40P01) against a real teardown.
+	//
+	// Instead: peek candidates WITHOUT locks, resolve each one's workspace, group by
+	// workspace, and then run ONE transaction per workspace that locks the workspace
+	// first and only then re-locks that group's tasks (FOR UPDATE SKIP LOCKED). A
+	// workspace being torn down, or whose rows another worker holds, is skipped —
+	// the other workspaces in the same tick still drain.
+	candidates, err := peekFn(s.Queries)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// Group by resolved workspace. An unresolvable task can have no valid event, so
+	// it is skipped in isolation rather than aborting the batch (poison isolation).
+	order := make([]string, 0, len(candidates))
+	byWorkspace := make(map[string][]pgtype.UUID, len(candidates))
+	wsIDs := make(map[string]pgtype.UUID, len(candidates))
+	for _, t := range candidates {
+		wsID := s.resolveTaskWorkspaceForEvent(ctx, s.Queries, t)
+		if !wsID.Valid {
+			slog.Warn("bulk fail: skipping task with unresolvable workspace",
+				"task_id", util.UUIDToString(t.ID),
+				"agent_id", util.UUIDToString(t.AgentID))
+			continue
+		}
+		key := util.UUIDToString(wsID)
+		if _, seen := byWorkspace[key]; !seen {
+			order = append(order, key)
+			wsIDs[key] = wsID
+		}
+		byWorkspace[key] = append(byWorkspace[key], t.ID)
+	}
+
+	var allFailed []db.AgentTaskQueue
+	var firstErr error
+	for _, key := range order {
+		failed, err := s.failWorkspaceTaskBatch(ctx, wsIDs[key], byWorkspace[key], failFn)
+		if err != nil {
+			// One workspace's batch failing must not strand the others in this tick,
+			// so keep going — but still SURFACE the error, so a transient blip is
+			// visible to the caller and the tick is not reported as fully clean.
+			slog.Warn("bulk fail: workspace batch failed", "workspace_id", key, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		allFailed = append(allFailed, failed...)
+	}
+	return allFailed, firstErr
+}
+
+// failWorkspaceTaskBatch fails one workspace's slice of a bulk sweep in a single
+// transaction whose FIRST lock is the workspace.
+func (s *TaskService) failWorkspaceTaskBatch(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	ids []pgtype.UUID,
 	failFn func(qtx *db.Queries, ids []pgtype.UUID) ([]db.AgentTaskQueue, error),
 ) ([]db.AgentTaskQueue, error) {
 	tx, err := s.TxStarter.Begin(ctx)
@@ -4273,57 +4341,45 @@ func (s *TaskService) FailBulkTasksWithEvents(
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
 
-	candidates, err := selectFn(qtx)
+	// Workspace first — and NON-BLOCKING. A global sweep must not queue behind one
+	// workspace a teardown is holding, or a single delete stalls every other
+	// workspace's sweep for the tick. No rows means "gone, or contended right now";
+	// either way this workspace is skipped and retried on the next tick, while the
+	// rest of this tick proceeds.
+	if _, err := qtx.TryLockWorkspaceForAutomationWrite(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Re-lock this group's tasks now that the workspace is held. SKIP LOCKED means a
+	// row someone else holds is dropped from this batch instead of blocking it.
+	locked, err := qtx.LockAgentTasksByIDsForFail(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	if len(candidates) == 0 {
+	if len(locked) == 0 {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, fmt.Errorf("commit tx: %w", err)
 		}
 		return nil, nil
 	}
-
-	ids := make([]pgtype.UUID, 0, len(candidates))
-	wsByID := make(map[string]pgtype.UUID, len(candidates))
-	for _, t := range candidates {
-		wsID := s.resolveTaskWorkspaceForEvent(ctx, qtx, t)
-		if !wsID.Valid {
-			// Fail-closed but ISOLATED: a task with no resolvable workspace can
-			// have no valid event, so skip it (leaving it for ops to reap) instead
-			// of aborting the batch and stranding every healthy task with it.
-			slog.Warn("bulk fail: skipping task with unresolvable workspace",
-				"task_id", util.UUIDToString(t.ID),
-				"agent_id", util.UUIDToString(t.AgentID))
-			continue
-		}
-		ids = append(ids, t.ID)
-		wsByID[util.UUIDToString(t.ID)] = wsID
-	}
-	if len(ids) == 0 {
-		if err := tx.Commit(ctx); err != nil {
-			return nil, fmt.Errorf("commit tx: %w", err)
-		}
-		return nil, nil
+	lockedIDs := make([]pgtype.UUID, 0, len(locked))
+	for _, t := range locked {
+		lockedIDs = append(lockedIDs, t.ID)
 	}
 
-	failed, err := failFn(qtx, ids)
+	failed, err := failFn(qtx, lockedIDs)
 	if err != nil {
 		return nil, err
 	}
 	for _, t := range failed {
-		wsID, ok := wsByID[util.UUIDToString(t.ID)]
-		if !ok || !wsID.Valid {
-			// Defensive: failFn returned a row we never resolved. Impossible in one
-			// tx (ids came from wsByID), but fail-closed rather than emit an event
-			// with no workspace.
-			return nil, fmt.Errorf("task.failed event: unresolved workspace for task %s", util.UUIDToString(t.ID))
-		}
 		reason := ""
 		if t.FailureReason.Valid {
 			reason = t.FailureReason.String
 		}
-		evt := domainevent.TaskFailed(wsID, t.ID, domainevent.SystemActor(),
+		evt := domainevent.TaskFailed(workspaceID, t.ID, domainevent.SystemActor(),
 			domainevent.TaskFailedPayload{
 				IssueID:       util.UUIDToString(t.IssueID),
 				AgentID:       util.UUIDToString(t.AgentID),

@@ -1624,3 +1624,49 @@ SET status = CASE WHEN EXISTS (
     updated_at = now()
 WHERE a.id = $1
 RETURNING *;
+
+
+-- name: PeekStaleTasksToFail :many
+-- UNLOCKED candidate peek for the stale-task sweeper (MUL-4332 review: bulk
+-- workspace-first). Same predicate as SelectStaleTasksToFail but with NO row lock,
+-- so the sweeper can resolve each candidate's workspace, lock the WORKSPACE first,
+-- and only then re-lock the tasks — matching DeleteWorkspace's workspace -> task
+-- order. Locking the tasks first (as the old select did) is the reverse order and
+-- deadlocks against a concurrent teardown.
+SELECT * FROM agent_task_queue
+WHERE (
+        status = 'dispatched'
+        AND dispatched_at < now() - make_interval(secs => @dispatched_timeout_secs::double precision)
+        AND (prepare_lease_expires_at IS NULL OR prepare_lease_expires_at < now())
+      )
+   OR (
+        status = 'running'
+        AND started_at < now() - make_interval(secs => @running_timeout_secs::double precision)
+        AND NOT EXISTS (
+            SELECT 1 FROM agent_runtime r
+            WHERE r.id = agent_task_queue.runtime_id
+              AND r.status = 'online'
+              AND r.last_seen_at > now() - make_interval(secs => @runtime_stale_secs::double precision)
+        )
+      )
+ORDER BY created_at ASC
+LIMIT @max_per_tick::int;
+
+-- name: PeekExpiredQueuedTasks :many
+-- UNLOCKED candidate peek for the queued-TTL sweeper. See PeekStaleTasksToFail.
+SELECT * FROM agent_task_queue
+WHERE status = 'queued'
+  AND created_at < now() - make_interval(secs => @ttl_secs::double precision)
+ORDER BY created_at ASC
+LIMIT @max_per_tick::int;
+
+-- name: LockAgentTasksByIDsForFail :many
+-- Re-lock a specific, workspace-grouped id set with FOR UPDATE SKIP LOCKED, AFTER
+-- that workspace is locked. Rows another worker (or a teardown) already holds are
+-- skipped rather than waited on, so one busy workspace cannot stall the sweep and
+-- the lock order stays workspace -> task.
+SELECT * FROM agent_task_queue
+WHERE id = ANY(@ids::uuid[])
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+ORDER BY created_at ASC
+FOR UPDATE SKIP LOCKED;

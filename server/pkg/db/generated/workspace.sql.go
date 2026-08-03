@@ -426,6 +426,26 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const tryLockWorkspaceForAutomationWrite = `-- name: TryLockWorkspaceForAutomationWrite :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE SKIP LOCKED
+`
+
+// Non-blocking variant of LockWorkspaceForAutomationWrite for BULK, best-effort
+// sweeps (MUL-4332 review). A periodic global sweep spans many workspaces, so it
+// must not queue behind one workspace that a teardown is holding: SKIP LOCKED makes
+// a contended workspace return no rows, and the sweeper simply moves to the next
+// workspace this tick (that workspace's tasks are being removed by the teardown
+// anyway, and an uncontended retry happens on the next tick).
+//
+// Interactive, single-target writers keep using the blocking variant: they must
+// either win the lock or fail closed, never silently skip their own write.
+func (q *Queries) TryLockWorkspaceForAutomationWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, tryLockWorkspaceForAutomationWrite, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const updateWorkspace = `-- name: UpdateWorkspace :one
 UPDATE workspace SET
     name = COALESCE($2, name),

@@ -401,3 +401,16 @@ WHERE status = 'offline'
     WHERE agent.runtime_id = agent_runtime.id
   )
 RETURNING id, workspace_id;
+
+
+-- name: PeekTasksForOfflineRuntimes :many
+-- UNLOCKED candidate peek for the offline-runtime sweeper (MUL-4332 review: bulk
+-- workspace-first). Same predicate as SelectTasksForOfflineRuntimes with NO row
+-- lock, so the sweeper locks each candidate's workspace before re-locking its tasks.
+SELECT * FROM agent_task_queue
+WHERE status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND runtime_id IN (
+    SELECT id FROM agent_runtime WHERE status = 'offline'
+  )
+ORDER BY created_at ASC
+LIMIT @max_per_tick::int;
