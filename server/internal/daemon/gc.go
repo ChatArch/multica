@@ -82,7 +82,14 @@ func (d *Daemon) runGC(ctx context.Context) {
 
 	stats := &gcStats{byPattern: map[string]int{}}
 	for _, wsEntry := range entries {
-		if !wsEntry.IsDir() || wsEntry.Name() == reposDirName {
+		// Skip every daemon-internal dot directory, not just .repos. A
+		// workspace directory is always a UUID, so a dot-prefixed entry is one
+		// of our own caches. Walking .skill-cache as if it were a workspace
+		// made its `v1` directory look like a task dir with no .gc_meta.json,
+		// so the orphan path would delete the entire bundle cache once its
+		// mtime went 72h without a new bundle. That reclaimed a few hundred KB
+		// and cost a full re-download.
+		if !wsEntry.IsDir() || strings.HasPrefix(wsEntry.Name(), ".") {
 			continue
 		}
 		wsDir := filepath.Join(root, wsEntry.Name())
@@ -746,7 +753,6 @@ func (d *Daemon) pruneRepoWorktrees(workspacesRoot string, stats *gcStats) {
 		return
 	}
 
-	live := d.liveRepoBarePaths()
 	for _, wsEntry := range wsEntries {
 		if !wsEntry.IsDir() {
 			continue
@@ -764,7 +770,7 @@ func (d *Daemon) pruneRepoWorktrees(workspacesRoot string, stats *gcStats) {
 			if !isBareRepo(barePath) {
 				continue
 			}
-			d.maintainRepoCache(barePath, live, stats)
+			d.maintainRepoCache(barePath, stats)
 		}
 		// Drop the per-workspace directory once its last repo is gone.
 		if remaining, err := os.ReadDir(wsRepoDir); err == nil && len(remaining) == 0 {
@@ -773,10 +779,10 @@ func (d *Daemon) pruneRepoWorktrees(workspacesRoot string, stats *gcStats) {
 	}
 }
 
-func (d *Daemon) maintainRepoCache(barePath string, live map[string]struct{}, stats *gcStats) {
+func (d *Daemon) maintainRepoCache(barePath string, stats *gcStats) {
 	d.withRepoLock(barePath, func() {
 		d.pruneWorktreeLocked(barePath)
-		d.evictRepoCacheLocked(barePath, live, stats)
+		d.evictRepoCacheLocked(barePath, stats)
 	})
 }
 
@@ -830,11 +836,13 @@ func (d *Daemon) withRepoLock(barePath string, fn func()) {
 // Evicting wrongly costs time, not correctness: the next task that needs the
 // repo takes the cache-miss path in ensureRepoReady, which re-syncs and
 // re-clones on demand.
-func (d *Daemon) evictRepoCacheLocked(barePath string, live map[string]struct{}, stats *gcStats) {
+func (d *Daemon) evictRepoCacheLocked(barePath string, stats *gcStats) {
 	if d.cfg.GCRepoTTL <= 0 {
 		return
 	}
-	if _, attached := live[barePath]; attached {
+	// Cheap early-out so an attached repo — the common case — never pays for
+	// the git and filesystem work below.
+	if d.repoBarePathIsLive(barePath) {
 		return
 	}
 
@@ -857,6 +865,14 @@ func (d *Daemon) evictRepoCacheLocked(barePath string, live map[string]struct{},
 	}
 	idle := time.Since(lastUsed)
 	if idle <= d.cfg.GCRepoTTL {
+		return
+	}
+
+	// Ask again immediately before deleting. The checks above run git and walk
+	// the filesystem, and a workspace can re-attach this repo while they do;
+	// re-reading in-memory state costs one mutex and no network, and shrinks
+	// the window from "the whole .repos walk" to these few statements.
+	if d.repoBarePathIsLive(barePath) {
 		return
 	}
 

@@ -222,3 +222,77 @@ func TestLinkedWorktreeCount(t *testing.T) {
 		t.Errorf("linked worktrees = %d, want 2", count)
 	}
 }
+
+// TestRunGCLeavesDaemonInternalCachesAlone is the fix for the traversal split
+// between the GC and disk-usage. `.skill-cache` is not a workspace, but the GC
+// used to walk it as one: its `v1` directory then looked like a task dir with
+// no .gc_meta.json, so the orphan path deleted the whole bundle cache once its
+// mtime went GCOrphanTTL without a new bundle — reclaiming a few hundred KB in
+// exchange for a full re-download.
+func TestRunGCLeavesDaemonInternalCachesAlone(t *testing.T) {
+	d := newGCTestDaemon(t, http.NewServeMux())
+
+	skillCache := filepath.Join(d.cfg.WorkspacesRoot, ".skill-cache", "v1")
+	bundle := filepath.Join(skillCache, "ws", "source", "skill-id", "hash")
+	if err := os.MkdirAll(bundle, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "bundle.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Older than GCOrphanTTL, which is what used to make it eligible.
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	if err := os.Chtimes(skillCache, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	d.runGC(t.Context())
+
+	if _, err := os.Stat(filepath.Join(bundle, "bundle.json")); err != nil {
+		t.Fatalf("skill bundle cache must survive the GC walk: %v", err)
+	}
+}
+
+// TestRepoBarePathIsLiveCoversBothURLSets pins the union that keeps project
+// repos safe. taskRepoURLs holds repos the server surfaced through a task
+// claim; they never appear in GetWorkspaceRepos, so checking only
+// allowedRepoURLs would evict caches that tasks are actively checking out.
+func TestRepoBarePathIsLiveCoversBothURLSets(t *testing.T) {
+	d := newGCTestDaemon(t, http.NewServeMux())
+
+	const wsID = "11111111-1111-1111-1111-111111111111"
+	const workspaceRepo = "https://example.com/acme/workspace-repo.git"
+	const taskRepo = "https://example.com/acme/task-repo.git"
+	const strangerRepo = "https://example.com/acme/stranger.git"
+
+	d.mu.Lock()
+	d.workspaces[wsID] = &workspaceState{
+		workspaceID:     wsID,
+		allowedRepoURLs: map[string]struct{}{workspaceRepo: {}},
+		taskRepoURLs:    map[string]struct{}{taskRepo: {}},
+	}
+	d.mu.Unlock()
+
+	for _, tc := range []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"workspace-level binding", workspaceRepo, true},
+		{"task-surfaced project repo", taskRepo, true},
+		{"repo no workspace claims", strangerRepo, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := d.repoBarePathIsLive(d.repoCache.BarePath(wsID, tc.url))
+			if got != tc.want {
+				t.Errorf("repoBarePathIsLive(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+
+	// Same URL under a workspace this daemon does not watch is not live.
+	other := d.repoCache.BarePath("22222222-2222-2222-2222-222222222222", workspaceRepo)
+	if d.repoBarePathIsLive(other) {
+		t.Error("a repo under an unwatched workspace must not count as live")
+	}
+}
