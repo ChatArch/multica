@@ -338,7 +338,10 @@
       "thinking": "正在更新草稿…",
       "placeholder": "描述你需要的智能体…",
       "send": "发送消息",
-      "draft_updated": "· 已更新右侧配置"
+      "draft_updated": "已更新右侧配置",
+      "draft_updating": "· 更新配置中…",
+      "draft_json_title": "本次配置更新",
+      "draft_json_hint": "这条回复实际写入表单的内容。"
     },
     "live_draft": "智能体配置",
     "live_draft_hint": "对话生成的建议会更新到这里，你也可以随时直接调整。",

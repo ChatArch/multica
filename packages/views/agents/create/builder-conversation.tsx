@@ -23,6 +23,7 @@ import {
   ChatMessageSkeleton,
 } from "../../chat/components/chat-message-list";
 import { useT } from "../../i18n";
+import { AgentDraftBlock } from "./agent-draft-block";
 import { ModelDropdown } from "../components/model-dropdown";
 import { RuntimePicker } from "../components/runtime-picker";
 
@@ -157,11 +158,20 @@ export function BuilderConversation({
   const draftKey = `agent-builder:${sessionId}`;
   // Every reply ends in the structured block that drives the form on the right.
   // Deleting it silently left the user watching fields change with no stated
-  // cause, so it collapses to one line instead.
-  const draftMarker = t(($) => $.creation_studio.builder.draft_updated);
+  // cause, so it collapses to one line — "updating" while the block is still
+  // streaming, "updated" once it closes.
+  //
+  // Passed as `transformContent`, which is opt-in per surface: no other chat
+  // renders this, because no other chat speaks the builder protocol.
+  const draftStreaming = t(($) => $.creation_studio.builder.draft_updating);
+  const draftComplete = t(($) => $.creation_studio.builder.draft_updated);
   const hideDraftBlock = useCallback(
-    (content: string) => stripBuilderDraft(content, draftMarker),
-    [draftMarker],
+    (content: string) =>
+      stripBuilderDraft(content, {
+        streaming: draftStreaming,
+        complete: draftComplete,
+      }),
+    [draftComplete, draftStreaming],
   );
   const prompts = [
     t(($) => $.creation_studio.builder.prompt_review),
@@ -206,6 +216,9 @@ export function BuilderConversation({
           // Applies to the live stream as well as history, which is what keeps
           // the half-written JSON block off the screen mid-reply.
           transformContent={hideDraftBlock}
+          renderAssistantAddon={(assistantMessage) => (
+            <AgentDraftBlock message={assistantMessage} />
+          )}
         />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-5 py-8">

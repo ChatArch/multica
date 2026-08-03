@@ -94,26 +94,53 @@ function escapeJsonStringControlCharacters(value: string): string {
 
 /**
  * Removes the structured block from a reply before a human reads it, optionally
- * leaving `marker` in its place.
+ * leaving a marker in its place.
  *
- * Two patterns, not one. The closed form is what history holds. The unclosed
- * one is what streaming produces: the reply arrives token by token, so for the
- * seconds it takes to emit the JSON there is an opening tag and no closing tag
- * — which the closed-form pattern cannot match, so the raw payload scrolled
- * past the user on every single turn.
+ * Two patterns, and they mean different things. The closed form is a finished
+ * update — history holds these, and so does the moment a reply lands. The
+ * unclosed one only exists mid-stream: the reply arrives token by token, so for
+ * the seconds it takes to emit the JSON there is an opening tag and no closing
+ * tag. The closed-form pattern cannot match that, which is why the raw payload
+ * used to scroll past on every single turn.
  *
- * `marker` exists because deleting the block outright is also wrong: the form
- * on the right visibly changes and nothing in the conversation says why. Callers
- * that render a conversation pass a localized line; callers rendering a one-line
- * preview pass nothing.
+ * Because the two are distinguishable, they get distinct copy: the tail reads
+ * as work in progress, the closed block as work done. Deleting either outright
+ * is the wrong answer — the form on the right visibly changes and nothing in
+ * the conversation would say why.
+ *
+ * Callers rendering a one-line preview pass no markers and get the prose alone.
  */
-export function stripBuilderDraft(content: string, marker = ""): string {
-  const replacement = marker ? `\n\n${marker}` : "";
+/**
+ * The raw payload of a completed `<agent_draft>` block, pretty-printed when it
+ * parses. Null while a reply is still streaming — an unclosed block has no
+ * payload to show — and null for any message that carries none.
+ *
+ * Pretty-printing is best-effort on purpose: the point is to let a human check
+ * what the builder actually said, and a payload too malformed to parse is
+ * exactly when that matters most, so it is returned verbatim rather than
+ * withheld.
+ */
+export function extractBuilderDraftBlock(content: string): string | null {
+  const match = content.match(/<agent_draft>([\s\S]*?)<\/agent_draft>/);
+  const raw = match?.[1]?.trim();
+  if (!raw) return null;
+  const parsed = parseBuilderDraft(content);
+  return parsed ? JSON.stringify(parsed, null, 2) : raw;
+}
+
+export function stripBuilderDraft(
+  content: string,
+  markers: { streaming?: string; complete?: string } = {},
+): string {
+  const line = (marker?: string) => (marker ? `\n\n${marker}` : "");
+  // Closed blocks first: whatever opening tag survives that pass is, by
+  // definition, the one still being written.
+  //
   // The leading `\s*` eats whatever the model put between its prose and the
-  // block, so the marker sits one blank line below the reply regardless.
+  // block, so a marker sits exactly one blank line below the reply.
   return content
-    .replace(/\s*<agent_draft>[\s\S]*?<\/agent_draft>/g, replacement)
-    .replace(/\s*<agent_draft>[\s\S]*$/, replacement)
+    .replace(/\s*<agent_draft>[\s\S]*?<\/agent_draft>/g, line(markers.complete))
+    .replace(/\s*<agent_draft>[\s\S]*$/, line(markers.streaming))
     .trim();
 }
 
