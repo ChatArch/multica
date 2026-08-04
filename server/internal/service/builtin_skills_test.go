@@ -281,6 +281,9 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"multica issue metadata list <issue-id> --output json",
 		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+		// MUL-5696: the stricter parallel metadata write bar must not return
+		// alongside the brief-aligned two-condition bar.
+		"explicit task requirement",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {

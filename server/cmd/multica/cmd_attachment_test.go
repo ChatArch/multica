@@ -42,6 +42,10 @@ func TestRunAttachmentDownloadWritesBasenameIntoOutputDir(t *testing.T) {
 	}))
 	defer srv.Close()
 	setCLITestServerEnv(t, srv.URL)
+	// A task-scoped mat_ token so the test also runs inside an agent workdir,
+	// where a daemon task marker makes newAPIClient reject the helper's
+	// default non-mat_ token before the download logic is reached.
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 
 	outputDir := t.TempDir()
 	cmd := newAttachmentDownloadTestCmd()
@@ -97,6 +101,7 @@ func TestRunAttachmentDownloadCreatesMissingOutputDir(t *testing.T) {
 	}))
 	defer srv.Close()
 	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 
 	outputDir := filepath.Join(t.TempDir(), "attachments", "images")
 	cmd := newAttachmentDownloadTestCmd()
@@ -305,6 +310,7 @@ func TestRunAttachmentDownloadRequiresDownloadURL(t *testing.T) {
 	}))
 	defer srv.Close()
 	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 
 	cmd := newAttachmentDownloadTestCmd()
 	if err := runAttachmentDownload(cmd, []string{"att-no-url"}); err == nil || !strings.Contains(err.Error(), "no download URL") {
