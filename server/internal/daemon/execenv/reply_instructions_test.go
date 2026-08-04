@@ -198,9 +198,15 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 	}
 	for _, want := range []string{
 		// MUL-5442 stage 1: the mode-router paragraph compressed to a
-		// "Turn mode." lead — pin the routing fact (per-turn message names
-		// the mode), not the old heading.
+		// "Turn mode." lead. Pin every routing RULE, not just the markers —
+		// a further compression that drops the one-block rule or the
+		// no-mode-line fallback must fail here (stage-1 review).
 		"**Turn mode.**",
+		"Steps 1–6 are shared",
+		"apply exactly one mode block",
+		"differ on issue status",
+		"No mode line",
+		"do not change the issue status",
 		"`Turn mode: Reply.`",
 		"`Turn mode: Ownership.`",
 		"Use the `--parent` value the per-turn user message gives you for this turn",

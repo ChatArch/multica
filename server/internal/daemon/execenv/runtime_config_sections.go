@@ -300,7 +300,7 @@ func writeAvailableCommandsQuickCreate(b *strings.Builder) {
 // surfaces.
 func writeIssueBodyFormatting(b *strings.Builder) {
 	b.WriteString("## Issue Body Formatting\n\n")
-	b.WriteString("An issue title already serves as its H1. By default, do not add a Markdown H1 (`# ...`) to an issue body; start with prose or `##` subheadings. Only add an H1 when the user specifically requests one.\n\n")
+	b.WriteString("An issue title already serves as its H1. By default, do not add a Markdown H1 (`# ...`) to an issue body or description; start with prose or `##` subheadings. Only add an H1 when the user specifically requests one.\n\n")
 }
 
 // writeCommentFormatting emits the cross-platform file-first guardrail.
@@ -509,7 +509,7 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 
 	b.WriteString("**Steps 1–6 — both modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
-	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` is normal. What to look for: `## Issue Metadata`.\n", ctx.IssueID)
+	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. What to look for: `## Issue Metadata`.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional — in two bounded reads, never one bulk pull: scan every thread cheaply with `multica issue comment list %s --roots-only --summary --output json`, then expand only the threads that matter with `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks. Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant.\n", ctx.IssueID, ctx.IssueID)
 	b.WriteString("4. Complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {

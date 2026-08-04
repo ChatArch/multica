@@ -96,7 +96,10 @@ func TestBuildMetaSkillContentIssueBodyFormatting(t *testing.T) {
 			for _, want := range []string{
 				"## Issue Body Formatting",
 				"An issue title already serves as its H1.",
-				"do not add a Markdown H1 (`# ...`)",
+				// The rule covers BOTH surfaces: `description` is the CLI/API
+		// field name, `body` the UI term — the alias is a cross-surface
+		// mapping, not prose (MUL-5442 stage-1 review).
+		"do not add a Markdown H1 (`# ...`) to an issue body or description",
 				"start with prose or `##` subheadings",
 				"Only add an H1 when the user specifically requests one",
 			} {

@@ -4993,6 +4993,12 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// pinning which section carries it.
 		for _, want := range []string{
 			"Decide whether a reply is warranted",
+			// Both outcomes pinned individually (MUL-5442 stage-1 review):
+			// the work-produced arm and the silent-exit arm must each
+			// survive compression, not just the bullet's heading.
+			"produced actual work",
+			"pure acknowledgment / thanks / sign-off",
+			"do NOT reply",
 			"Silence is a valid and preferred way",
 			"Never @mention the agent you are replying to as a thank-you or sign-off",
 		} {
@@ -5662,6 +5668,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-1 --output json",
+				// Platform failure semantics, not tool mechanics: a failed
+				// metadata read must never block the main task (MUL-5442
+				// stage-1 review).
+				"CLI failures are normal",
 				// Both steps point at the section instead of restating its
 				// rules (MUL-5442); the entry step names what to look for,
 				// the exit step names the write bar.
