@@ -12,13 +12,11 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import { cn } from "@multica/ui/lib/utils";
-import type { OnboardingStep } from "@multica/core/onboarding";
 import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
 import {
   StepFooter,
   StepHeading,
-  StepShell,
 } from "../components/step-shell";
 import { CompactRuntimeRow } from "../components/compact-runtime-row";
 import { useRuntimePicker } from "../components/use-runtime-picker";
@@ -57,9 +55,6 @@ export function StepPlatformFork({
   wsId,
   wsSlug,
   onNext,
-  onBack,
-  headerTrailing,
-  onStepChange,
   cliInstructions,
 }: {
   wsId: string;
@@ -68,13 +63,6 @@ export function StepPlatformFork({
    *  showing. */
   wsSlug?: string;
   onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
-  onBack?: () => void;
-  /** Log out escape hatch, injected by the flow so this step does not depend
-   *  on the auth layer. */
-  headerTrailing?: ReactNode;
-  /** Return to a completed step from the rail; injected by the flow,
-   *  which owns step order. */
-  onStepChange?: (step: OnboardingStep) => void;
   /** Platform-specific CLI install card, rendered inside the CLI dialog. */
   cliInstructions?: ReactNode;
 }) {
@@ -114,12 +102,7 @@ export function StepPlatformFork({
   })();
 
   return (
-    <StepShell
-      currentStep="runtime"
-      onBack={onBack}
-      onStepChange={onStepChange}
-      sidebarFooter={headerTrailing}
-    >
+    <>
       <div className="flex flex-col gap-8 pt-2 sm:pt-6">
         {/* The eyebrow read "Connect a computer" directly above a headline
             that starts with the same three words. The block has no eyebrow
@@ -177,7 +160,7 @@ export function StepPlatformFork({
       connecting={connecting}
       cliInstructions={cliInstructions}
     />
-    </StepShell>
+    </>
   );
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState , type ReactNode } from "react";
+import { useCallback, useEffect, useState  } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
-import type { OnboardingStep } from "@multica/core/onboarding";
 import { runtimeKeys } from "@multica/core/runtimes/queries";
 import {
   runtimeDisplayLabel,
@@ -20,7 +19,6 @@ import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
 import {
   StepFooter,
-  StepShell,
 } from "../components/step-shell";
 import { useRuntimePicker } from "../components/use-runtime-picker";
 import { useT } from "../../i18n";
@@ -44,9 +42,6 @@ export function StepRuntimeConnect({
   wsId,
   wsSlug,
   onNext,
-  onBack,
-  headerTrailing,
-  onStepChange,
   onRefresh,
   runtimesPending,
   currentUserId,
@@ -57,13 +52,6 @@ export function StepRuntimeConnect({
    *  showing. */
   wsSlug?: string;
   onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
-  onBack?: () => void;
-  /** Log out escape hatch, injected by the flow so this step does not depend
-   *  on the auth layer. */
-  headerTrailing?: ReactNode;
-  /** Return to a completed step from the rail; injected by the flow,
-   *  which owns step order. */
-  onStepChange?: (step: OnboardingStep) => void;
   /** Runtime picker labels rows by owner; injected for the same reason. */
   currentUserId?: string | null;
   /** Platform-level rescan hook. Desktop wires this to restart the
@@ -89,9 +77,6 @@ export function StepRuntimeConnect({
       selectedId={selectedId}
       setSelectedId={setSelectedId}
       onNext={onNext}
-      onBack={onBack}
-      headerTrailing={headerTrailing}
-      onStepChange={onStepChange}
       currentUserId={currentUserId}
       onRefresh={onRefresh}
       runtimesPending={runtimesPending}
@@ -121,9 +106,6 @@ function FancyView({
   selectedId,
   setSelectedId,
   onNext,
-  onBack,
-  headerTrailing,
-  onStepChange,
   onRefresh,
   runtimesPending,
   currentUserId,
@@ -134,11 +116,6 @@ function FancyView({
   selectedId: string | null;
   setSelectedId: (id: string) => void;
   onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
-  onBack?: () => void;
-  headerTrailing?: ReactNode;
-  /** Return to a completed step from the rail; injected by the flow,
-   *  which owns step order. */
-  onStepChange?: (step: OnboardingStep) => void;
   onRefresh?: () => void | Promise<void>;
   runtimesPending?: boolean;
   /** Runtime picker labels rows by owner; injected so this step does not read
@@ -247,12 +224,7 @@ function FancyView({
           : t(($) => $.step_runtime.hint_skip_or_refresh);
 
   return (
-    <StepShell
-      currentStep="runtime"
-      onBack={onBack}
-      onStepChange={onStepChange}
-      sidebarFooter={headerTrailing}
-    >
+    <>
       {/* key=phase forces a remount on phase transition so the
           `animate-onboarding-enter` animation replays — otherwise CSS
           only runs on initial mount and scanning→found would be a
@@ -317,7 +289,7 @@ function FancyView({
           </Button>
         )}
       </StepFooter>
-    </StepShell>
+    </>
   );
 }
 

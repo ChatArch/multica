@@ -16,6 +16,7 @@ import {
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import type { AgentRuntime, Workspace } from "@multica/core/types";
 import { StepWelcome } from "./steps/step-welcome";
+import { StepShell } from "./components/step-shell";
 import { StepAboutYou } from "./steps/step-about-you";
 import { StepWorkspace } from "./steps/step-workspace";
 import { StepRuntimeConnect } from "./steps/step-runtime-connect";
@@ -154,6 +155,9 @@ function OnboardingStepFlow({
     isNewWorkspace ? "workspace" : "welcome",
   );
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  // Raised by whichever step has a request in flight; locks Back and the
+  // rail. Only the workspace step sets it today.
+  const [stepBusy, setStepBusy] = useState(false);
   const bootstrapMika = useBootstrapMika(workspace?.id ?? "");
 
   // Fetched at Step 0 + Step 2. Step 2 uses it to detect a pre-existing
@@ -345,14 +349,19 @@ function OnboardingStepFlow({
   // every step behind it is gone. Same invariant `runtimeStepBack` enforces.
   const handleStepChange = isNewWorkspace ? undefined : setStep;
 
-  // Every step owns its full-bleed shell; this component only switches
-  // between the active screen.
+  // ONE shell for the whole flow, rendered here rather than by each step.
+  // Every step used to render its own <StepShell>, and because each step is a
+  // different component type React tore the shell down and built a new one on
+  // every transition — remounting the "persistent" rail, restarting its canvas,
+  // and replaying the shell's fade from opacity 0. That full-window re-fade is
+  // the flash. Hoisting the shell makes the rail actually persistent and leaves
+  // only the step body swapping.
   if (step === "welcome") {
-    // Welcome has no step header, so the escape hatch stays pinned here.
+    // Welcome has no rail, so the escape hatch stays pinned there.
     return (
       <>
         <OnboardingLogoutButton />
-          <StepWelcome
+        <StepWelcome
           onNext={handleWelcomeNext}
           onSkip={canSkipWelcome ? handleWelcomeSkip : undefined}
           isWeb={isWeb}
@@ -361,67 +370,63 @@ function OnboardingStepFlow({
     );
   }
 
-  if (step === "about_you") {
-    return (
-      <StepAboutYou
-        headerTrailing={headerTrailing}
-        onStepChange={handleStepChange}
-        answers={answers}
-        onChange={applyAnswers}
-        onAdvance={() => advanceFrom("about_you")}
-        onSkip={() => advanceFrom("about_you")}
-        onBack={() => handleBack("about_you")}
-      />
-    );
-  }
+  const stepBack =
+    step === "about_you"
+      ? () => handleBack("about_you")
+      : step === "workspace"
+        ? () => handleBack("workspace")
+        : runtimeStepBack;
 
-  if (step === "workspace") {
-    return (
-      <StepWorkspace
-        headerTrailing={headerTrailing}
-        onStepChange={handleStepChange}
-        existing={existingWorkspace}
-        onCreated={handleWorkspaceCreated}
-        onBack={() => handleBack("workspace")}
-      />
-    );
-  }
-
-  // Step 3. Both paths own full-bleed two-column layouts.
-  //   - Desktop (no cliInstructions slot) → StepRuntimeConnect drives
-  //     the local daemon's runtime list directly.
-  //   - Web → StepPlatformFork offers Download / CLI / Cloud paths.
-  //     Under the CLI path it embeds StepRuntimeConnect for the live
-  //     probe; the Cloud path is a soft exit via the waitlist.
-  if (step === "runtime" && workspace) {
-    if (!runtimeInstructions) {
-      return (
-        <StepRuntimeConnect
-        headerTrailing={headerTrailing}
-        onStepChange={handleStepChange}
-          wsId={workspace.id}
-          wsSlug={workspace.slug}
-          onNext={handleRuntimeNext}
-          onBack={runtimeStepBack}
-          onRefresh={onRuntimeRefresh}
-          runtimesPending={runtimesPending}
+  return (
+    <StepShell
+      currentStep={step}
+      onBack={stepBack}
+      backDisabled={stepBusy}
+      onStepChange={handleStepChange}
+      sidebarFooter={headerTrailing}
+    >
+      {step === "about_you" && (
+        <StepAboutYou
+          answers={answers}
+          onChange={applyAnswers}
+          onAdvance={() => advanceFrom("about_you")}
+          onSkip={() => advanceFrom("about_you")}
         />
-      );
-    }
-    return (
-      <StepPlatformFork
-        headerTrailing={headerTrailing}
-        onStepChange={handleStepChange}
-        wsId={workspace.id}
-        wsSlug={workspace.slug}
-        onNext={handleRuntimeNext}
-        onBack={runtimeStepBack}
-        cliInstructions={runtimeInstructions}
-      />
-    );
-  }
+      )}
 
-  return null;
+      {step === "workspace" && (
+        <StepWorkspace
+          existing={existingWorkspace}
+          onCreated={handleWorkspaceCreated}
+          onBusyChange={setStepBusy}
+        />
+      )}
+
+      {/* Step 3 has two paths:
+            - Desktop (no cliInstructions slot) drives the local daemon's
+              runtime list directly.
+            - Web offers Download / CLI / Cloud; under the CLI path it embeds
+              the live probe, and Cloud is a soft exit via the waitlist. */}
+      {step === "runtime" &&
+        workspace &&
+        (!runtimeInstructions ? (
+          <StepRuntimeConnect
+            wsId={workspace.id}
+            wsSlug={workspace.slug}
+            onNext={handleRuntimeNext}
+            onRefresh={onRuntimeRefresh}
+            runtimesPending={runtimesPending}
+          />
+        ) : (
+          <StepPlatformFork
+            wsId={workspace.id}
+            wsSlug={workspace.slug}
+            onNext={handleRuntimeNext}
+            cliInstructions={runtimeInstructions}
+          />
+        ))}
+    </StepShell>
+  );
 }
 
 export type OnboardingMode = "first_run" | "new_workspace";

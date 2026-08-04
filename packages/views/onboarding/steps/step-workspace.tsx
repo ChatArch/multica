@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef, useEffect, useState } from "react";
 import { Dices, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -14,7 +14,6 @@ import {
   FieldTitle,
 } from "@multica/ui/components/ui/field";
 import { cn } from "@multica/ui/lib/utils";
-import type { OnboardingStep } from "@multica/core/onboarding";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
 import type { Workspace } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
@@ -25,7 +24,6 @@ import { useLogout } from "../../auth";
 import {
   StepFooter,
   StepHeading,
-  StepShell,
 } from "../components/step-shell";
 import { RadioMark } from "../components/option-card";
 import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
@@ -74,19 +72,14 @@ function issuePrefix(slug: string): string {
 export function StepWorkspace({
   existing,
   onCreated,
-  onBack,
-  headerTrailing,
-  onStepChange,
+  onBusyChange,
 }: {
   existing?: Workspace | null;
   onCreated: (workspace: Workspace) => void | Promise<void>;
-  onBack?: () => void;
-  /** Log out escape hatch, injected by the flow so this step does not depend
-   *  on the auth layer. */
-  headerTrailing?: ReactNode;
-  /** Return to a completed step from the rail; injected by the flow,
-   *  which owns step order. */
-  onStepChange?: (step: OnboardingStep) => void;
+  /** Reports the create request's in-flight state to the flow, which owns
+   *  the shell: Back and the rail have to lock while a workspace is being
+   *  created, and only this step knows when that is. */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { t, i18n } = useT("onboarding");
   const locale = matchLocale([i18n.resolvedLanguage ?? i18n.language]);
@@ -190,6 +183,12 @@ export function StepWorkspace({
   // case the create path is unreachable and a no-reusing user falls
   // through to the disabled notice (rendered separately below).
   const isCreating = createWorkspace.isPending;
+  useEffect(() => {
+    onBusyChange?.(isCreating);
+    // Clear on unmount: a successful create advances the flow immediately, so
+    // without this the shell would stay locked on the next step.
+    return () => onBusyChange?.(false);
+  }, [isCreating, onBusyChange]);
   const creatingActive =
     workspaceCreationAllowed && (!reusing || mode === "create");
   const existingActive = Boolean(reusing) && mode === "existing";
@@ -306,13 +305,7 @@ export function StepWorkspace({
   );
 
   return (
-    <StepShell
-      currentStep="workspace"
-      onBack={onBack}
-      backDisabled={isCreating}
-      onStepChange={onStepChange}
-      sidebarFooter={headerTrailing}
-    >
+    <>
       <div className="flex flex-col gap-8 pt-2 sm:pt-6">
         {/* The eyebrow is gone with the rest of them, but its disabled-state
             wording is not: "Workspace creation is disabled" was the only
@@ -380,7 +373,7 @@ export function StepWorkspace({
           </Button>
         </StepFooter>
       )}
-    </StepShell>
+    </>
   );
 }
 

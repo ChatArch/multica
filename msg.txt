@@ -1,24 +1,28 @@
-fix(onboarding): make every block in the column share one width
+fix(onboarding): stop the whole window re-fading on every step change
 
-Reported on the workspace step: the name field ended short of the
-description above it. Measured rather than eyeballed -- the heading,
-description and footer all render at 448px, the form at 384px, because the
-FieldGroup still carried STEP_MEASURE.
+Every step rendered its own <StepShell>. Because each step is a different
+component type, React tore the shell down and built a new one on each
+transition: the "persistent" rail remounted, its canvas restarted, and the
+shell replayed `animate-onboarding-enter` -- a 0.4s fade from opacity 0
+across the entire window. That full-window re-fade is the flash.
 
-STEP_MEASURE made sense against the old 920px frame, where a full-width
-input would have been absurd. Against a 28rem column it does nothing but
-misalign, so both remaining uses are gone -- the workspace form and the
-runtime picker -- and the constant with them. A single measure that no step
-can locally narrow is the whole point of the column; leaving the knob
-exported invites the same drift back.
+Measured before changing anything: tagging the live <aside> and switching
+steps showed the attribute gone, and the shell root still reporting
+animation-name `onboarding-enter` after the switch.
 
-Two stale measures went with it. The runtime phase views still capped their
-ledes at max-w-[620px], inert inside a 448px column, and sized them
-text-body-lg against StepHeading's text-body; their h2 was text-title-lg,
-the same size as the h1 above it. Both now match the shared scale.
+The upstream block has no step-change motion at all -- no animate-*, no
+transitions, no framer-motion, no AnimatePresence. Its sidebar and section
+live in one component and only the step body swaps. This does the same: the
+flow owns a single StepShell and the steps render content. The shell's
+entrance fade now runs once, on entering onboarding, which is what it was
+for.
 
-Guarded in e2e rather than a unit test. The shell test renders a stub child,
-so asserting "no narrow cap inside the column" there would pass whatever the
-real steps do. The new spec walks all three steps and compares rendered
-geometry -- it fails on the reported bug and passes after the fix, which is
-what makes it worth keeping.
+`backDisabled` was the one thing blocking the hoist -- the shell needs it but
+only the workspace step knows the create request is in flight. It reports
+upward through `onBusyChange`, with an unmount cleanup: a successful create
+advances immediately, so without clearing the flag the next step would open
+with Back and the rail dead.
+
+Guarded in e2e by tagging the rail and content nodes and asserting they
+survive a step change, plus a single DotSphere canvas rather than one per
+visited step.

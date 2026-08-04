@@ -68,7 +68,7 @@ function renderStep({
       selector({ workspaceCreationDisabled: disabled, daemonAppUrl }),
   );
   return render(
-    <StepWorkspace existing={existing} onCreated={vi.fn()} onBack={vi.fn()} />,
+    <StepWorkspace existing={existing} onCreated={vi.fn()} />,
     { wrapper: I18nWrapper },
   );
 }

@@ -39,7 +39,6 @@ function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
 
 function renderStep(props: { runtimesPending?: boolean } = {}) {
   const onNext = vi.fn();
-  const onBack = vi.fn();
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -49,13 +48,12 @@ function renderStep(props: { runtimesPending?: boolean } = {}) {
         <StepRuntimeConnect
           wsId="ws_test"
           onNext={onNext}
-          onBack={onBack}
           runtimesPending={props.runtimesPending}
         />
       </I18nProvider>
     </QueryClientProvider>,
   );
-  return { onNext, onBack };
+  return { onNext };
 }
 
 describe("StepRuntimeConnect", () => {

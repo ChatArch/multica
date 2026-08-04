@@ -1,6 +1,5 @@
 "use client";
 
-import type { ReactNode } from "react";
 import {
   Brain,
   Briefcase,
@@ -20,11 +19,9 @@ import {
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import type { QuestionnaireAnswers, Role, UseCase } from "@multica/core/onboarding";
-import type { OnboardingStep } from "@multica/core/onboarding";
 import {
   StepFooter,
   StepHeading,
-  StepShell,
 } from "../components/step-shell";
 import {
   IconOptionCard,
@@ -59,21 +56,11 @@ export function StepAboutYou({
   onChange,
   onAdvance,
   onSkip,
-  onBack,
-  headerTrailing,
-  onStepChange,
 }: {
   answers: QuestionnaireAnswers;
   onChange: (patch: Partial<QuestionnaireAnswers>) => void;
   onAdvance: () => void;
   onSkip: () => void;
-  onBack?: () => void;
-  /** Log out escape hatch, injected by the flow so this step does not depend
-   *  on the auth layer. */
-  headerTrailing?: ReactNode;
-  /** Return to a completed step from the rail; injected by the flow,
-   *  which owns step order. */
-  onStepChange?: (step: OnboardingStep) => void;
 }) {
   const { t } = useT("onboarding");
 
@@ -185,12 +172,7 @@ export function StepAboutYou({
     : t(($) => $.step_question.hint_pick);
 
   return (
-    <StepShell
-      currentStep="about_you"
-      onBack={onBack}
-      onStepChange={onStepChange}
-      sidebarFooter={headerTrailing}
-    >
+    <>
       <div className="flex flex-col gap-8 pt-2 sm:pt-6">
         <StepHeading title={t(($) => $.questions.about_you.question)} />
 
@@ -227,7 +209,7 @@ export function StepAboutYou({
           {t(($) => $.common.skip)}
         </Button>
       </StepFooter>
-    </StepShell>
+    </>
   );
 }
 
