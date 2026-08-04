@@ -989,6 +989,10 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 			s := string(data)
 			for _, want := range []string{
 				"## Background Task Safety",
+				// The orphan rule is scoped to run-owned work — an unscoped
+				// "anything still running" would sweep in external systems
+				// (GitHub Actions) the section later says NOT to wait for.
+				"any run-owned work still active is orphaned",
 				"Do NOT end your turn while background tasks",
 				"wait for a future notification/reminder",
 				"run the work synchronously instead",

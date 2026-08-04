@@ -411,6 +411,13 @@ func TestSquadsSkillCoversLeaderRoutingContract(t *testing.T) {
 		"mention://squad/<squad-id>",
 		"recording squad activity",
 		"references/squad-source-map.md",
+		// The debugging quick-start must stay a bounded two-step read
+		// (MUL-5442): a roots-only scan alone never returns reply bodies,
+		// where mention triggers and failure reasons usually live — and it
+		// must not regress to a --recent bulk pull either.
+		"--roots-only --summary",
+		"--thread <thread-id> --tail 30",
+		"scan the roots first, then open the threads",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
