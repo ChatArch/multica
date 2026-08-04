@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -29,7 +30,7 @@ func TestRenderChatQuickActionsContextLabelsSpeakersAndClosesWithTheTask(t *test
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("user", "why is this slow"),
 		chatMsg("assistant", "because it spawns a CLI per turn"),
-	}, nil, "OUTPUT LANGUAGE: English.")
+	}, nil)
 
 	if !strings.Contains(out, "[user]: why is this slow") {
 		t.Fatalf("user turn missing or mislabeled:\n%s", out)
@@ -45,18 +46,12 @@ func TestRenderChatQuickActionsContextLabelsSpeakersAndClosesWithTheTask(t *test
 	if !strings.HasSuffix(out, "Produce the follow-up suggestions for the latest agent reply.") {
 		t.Fatalf("prompt must end with the instruction:\n%s", out)
 	}
-	// The directive is the last constraint before the task line: everything
-	// above it is conversation that may be in another language entirely.
-	if !strings.Contains(out, "OUTPUT LANGUAGE: English.\n\nProduce the follow-up") {
-		t.Fatalf("language directive must close the prompt:\n%s", out)
-	}
 }
 
 func TestRenderChatQuickActionsContextListsPreviousLabels(t *testing.T) {
 	out := renderChatQuickActionsContext(
 		[]db.ChatMessage{chatMsg("assistant", "done")},
 		[]string{"看下 diff", "老 daemon 的影响"},
-		"OUTPUT LANGUAGE: English.",
 	)
 	if !strings.Contains(out, "- 看下 diff\n- 老 daemon 的影响") {
 		t.Fatalf("previous labels must be listed verbatim:\n%s", out)
@@ -76,7 +71,7 @@ func TestRenderChatQuickActionsContextKeepsHeadAndTailOfLongLatestReply(t *testi
 	tail := strings.Repeat("T", 500)
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("assistant", head+middle+tail),
-	}, nil, "")
+	}, nil)
 
 	if !strings.Contains(out, head) {
 		t.Fatal("truncated latest reply must keep its head")
@@ -94,7 +89,7 @@ func TestRenderChatQuickActionsContextKeepsHeadAndTailOfLongLatestReply(t *testi
 
 func TestRenderChatQuickActionsContextLeavesShortLatestReplyIntact(t *testing.T) {
 	reply := strings.Repeat("x", chatQuickActionsLatestBudget)
-	out := renderChatQuickActionsContext([]db.ChatMessage{chatMsg("assistant", reply)}, nil, "")
+	out := renderChatQuickActionsContext([]db.ChatMessage{chatMsg("assistant", reply)}, nil)
 	if strings.Contains(out, "…[truncated]…") {
 		t.Fatal("a reply exactly at the budget must not be truncated")
 	}
@@ -105,7 +100,7 @@ func TestRenderChatQuickActionsContextTruncatesOlderMessagesToTheSmallerBudget(t
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("user", long),
 		chatMsg("assistant", "short reply"),
-	}, nil, "")
+	}, nil)
 
 	if strings.Contains(out, long) {
 		t.Fatal("an older message over budget must be cut")
@@ -191,5 +186,59 @@ func TestParseChatQuickActionsOutputAcceptsFencedObject(t *testing.T) {
 	actions := parseChatQuickActionsOutput(raw)
 	if len(actions) != 1 || actions[0].Label != "Fenced" {
 		t.Fatalf("actions = %+v", actions)
+	}
+}
+
+// The MUL-5689 shape, with every pull toward the wrong language present at
+// once: an older Chinese turn, a Chinese agent reply, Chinese labels replayed
+// under ALREADY SUGGESTED — and the user's newest turn in English. The rendered
+// prompt must close by pointing at that newest [user] turn and disowning the
+// rest.
+func TestRenderChatQuickActionsContextClosesWithTheLanguageRule(t *testing.T) {
+	out := renderChatQuickActionsContext([]db.ChatMessage{
+		chatMsg("user", "帮我看下这个 PR"),
+		chatMsg("user", "review this PR for simplifications"),
+		chatMsg("assistant", "已创建工单 EFF-359，并分配给了 Claude Engineer。"),
+	}, []string{"查看工单详情", "补充审查范围"})
+
+	// Last thing before the task line: the conversation above it is Chinese, so
+	// anything earlier would be read through that.
+	if !strings.Contains(out, chatQuickActionsLanguageRule+"\n\nProduce the follow-up") {
+		t.Fatalf("language rule must be the final constraint:\n%s", out)
+	}
+	// Anchored on the newest user turn — not the window, not the agent.
+	if !strings.Contains(out, "same language as the most recent [user] message") {
+		t.Fatalf("rule must anchor on the most recent user turn:\n%s", out)
+	}
+	for _, disowned := range []string{"agent's reply", "older messages", "these instructions", "ALREADY SUGGESTED"} {
+		if !strings.Contains(chatQuickActionsLanguageRule, disowned) {
+			t.Fatalf("rule must explicitly exclude %q: %s", disowned, chatQuickActionsLanguageRule)
+		}
+	}
+	// The Chinese context is still delivered verbatim; the rule governs output,
+	// it does not scrub the input.
+	if !strings.Contains(out, "已创建工单 EFF-359") || !strings.Contains(out, "- 查看工单详情") {
+		t.Fatalf("conversation and previous labels must survive intact:\n%s", out)
+	}
+}
+
+// Neither prompt may name or contain a language: that is what taught the model
+// Chinese was on the table in the first place.
+func TestChatQuickActionsPromptsNameNoLanguage(t *testing.T) {
+	for name, text := range map[string]string{
+		"system prompt": chatQuickActionsSystemPrompt,
+		"language rule": chatQuickActionsLanguageRule,
+	} {
+		for _, r := range text {
+			if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) ||
+				unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) {
+				t.Fatalf("%s must contain no CJK, found %q", name, r)
+			}
+		}
+		for _, named := range []string{"Chinese", "Japanese", "Korean", "English"} {
+			if strings.Contains(text, named) {
+				t.Fatalf("%s must not name a language, found %q", name, named)
+			}
+		}
 	}
 }

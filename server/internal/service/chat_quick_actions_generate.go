@@ -100,11 +100,10 @@ type ChatQuickActionsLLM interface {
 // agent-operations actions; this pass has no such context and must be told the
 // frame explicitly.
 //
-// Output language is NOT decided here. The server resolves it and appends an
-// OUTPUT LANGUAGE directive to the user message (chat_quick_actions_language.go);
-// this prompt only says that the directive wins. Naming a specific language in
-// these stable instructions is what this file must avoid — a model reading
-// "…in Chinese" in a rule about button width will sometimes take it as
+// Output language is settled by chatQuickActionsLanguageRule, which closes the
+// user message; this prompt only says that rule wins. Naming a specific
+// language in these stable instructions is what this file must avoid — a model
+// reading "…in Chinese" in a rule about button width will sometimes take it as
 // permission to answer in Chinese (MUL-5689).
 //
 // The word "JSON" must stay in this text: response_format=json_object is
@@ -138,15 +137,38 @@ Field rules:
 - "primary": true on exactly one suggestion, the single most likely next step.
   false on all others.
 
-Language: the user message ends with an OUTPUT LANGUAGE line. It is
-authoritative — write both fields in that language and in no other. Do not take
-the language from the agent's reply, from these instructions, or from the
-ALREADY SUGGESTED labels; those labels are listed only so you avoid repeating
-them, and they say nothing about what language to write in.
+Language: the user message ends with a LANGUAGE RULE line. It is authoritative;
+follow it exactly.
 
 Output JSON only, exactly this shape:
 {"actions":[{"label":"...","prompt":"...","primary":true}]}
 No prose, no markdown, no code fences.`
+
+// chatQuickActionsLanguageRule closes the pass's user message and is the whole
+// language policy. It is last on purpose: everything above it is conversation
+// that may be in a language the pills must NOT be written in, and the rule has
+// to be the final thing read before the task line.
+//
+// It anchors on the MOST RECENT user turn, not on the window as a whole. A pill
+// sends a message as the user, so it follows how they are writing right now —
+// which also means switching language takes effect on the very next turn
+// instead of waiting for the window to tip.
+//
+// Everything else is named and excluded explicitly, because each one has been
+// observed to pull the output the wrong way (MUL-5689): the agent may reply in
+// another language, these instructions are English, and ALREADY SUGGESTED
+// replays the previous turn's labels — which is what made one bad pass stick,
+// each Chinese label seeding the next round.
+//
+// Deliberately NOT done here: resolving the language server-side from
+// `"user".language` or from Unicode script detection. The stored preference is
+// the UI locale, not the language of this conversation, so an English UI would
+// silently override someone chatting in Chinese. Script detection fares worse —
+// it cannot tell one Latin-script language from another (so the model still has
+// to infer), it reads an earlier Korean turn over the latest Japanese one, and
+// a kana sentence carrying enough English identifiers classifies as Latin, at
+// which point a "never emit CJK" clause forbids the user's own script.
+const chatQuickActionsLanguageRule = `LANGUAGE RULE: Write every "label" and "prompt" in the same language as the most recent [user] message above. Ignore the agent's reply, older messages, these instructions, and ALREADY SUGGESTED when choosing the language. If there is no [user] message, use the latest [agent] message.`
 
 // GenerateChatQuickActionsForTask runs one suggestion pass for a completed chat
 // turn and attaches the result to that turn's assistant row, broadcasting
@@ -186,7 +208,7 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 		return s.SupplementChatQuickActions(ctx, task, "", false)
 	}
 
-	prompt, err := s.buildChatQuickActionsPrompt(ctx, task, target)
+	prompt, err := s.buildChatQuickActionsPrompt(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -314,7 +336,7 @@ func (s *TaskService) resolveChatQuickActionsPlaceholder(task db.AgentTaskQueue)
 // completion callback and this read would otherwise supply the context while
 // the result is still written to the older turn, and a newly-sent user message
 // would leave the window ending on a user row with no reply to build on.
-func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, task db.AgentTaskQueue, target db.ChatMessage) (string, error) {
+func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, target db.ChatMessage) (string, error) {
 	// Strictly older than target, newest-first; reversed below. Over-fetch so
 	// dropped rows (no_response, failures) don't shrink the window below the
 	// intended turn count.
@@ -346,42 +368,7 @@ func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, task db.A
 		msgs = msgs[len(msgs)-(chatQuickActionsContextMessages-1):]
 	}
 	msgs = append(msgs, target)
-	directive := chatQuickActionsLanguageDirective(
-		s.chatQuickActionsUserLanguage(ctx, task),
-		chatQuickActionsUserText(msgs),
-	)
-	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs), directive), nil
-}
-
-// chatQuickActionsUserLanguage returns the stored UI language preference of the
-// person this turn belongs to, or "" when there is none to read.
-//
-// initiator_user_id is the authoritative sender of a chat turn where it is set;
-// it is NULL on turns queued before that column existed, so the session's
-// creator is the fallback. The two only diverge for channel-backed sessions,
-// where the creator is the installer rather than the speaker — and those never
-// reach a suggestion pass (see chatQuickActionsEligible).
-//
-// Best-effort throughout: a preference is an upgrade over script detection, not
-// a requirement, so every failure here degrades to "" rather than costing the
-// user their suggestions.
-func (s *TaskService) chatQuickActionsUserLanguage(ctx context.Context, task db.AgentTaskQueue) string {
-	userID := task.InitiatorUserID
-	if !userID.Valid {
-		session, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
-		if err != nil {
-			return ""
-		}
-		userID = session.CreatorID
-	}
-	if !userID.Valid {
-		return ""
-	}
-	user, err := s.Queries.GetUser(ctx, userID)
-	if err != nil || !user.Language.Valid {
-		return ""
-	}
-	return user.Language.String
+	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs)), nil
 }
 
 // collectPreviousChatQuickActions gathers the labels already offered in this
@@ -389,6 +376,11 @@ func (s *TaskService) chatQuickActionsUserLanguage(ctx context.Context, task db.
 // included: on an explicit refresh it holds the pills the user is asking to
 // replace, and offering the same three back is the one outcome a refresh must
 // never produce.
+//
+// These labels are a de-duplication list ONLY. They are replayed verbatim, so
+// on a session that once drifted they are the wrong language — which is exactly
+// how one bad pass used to seed the next. chatQuickActionsLanguageRule names
+// them explicitly as something to ignore when choosing the output language.
 func collectPreviousChatQuickActions(msgs []db.ChatMessage) []string {
 	labels := make([]string, 0, chatQuickActionsPreviousMax)
 	seen := make(map[string]struct{}, chatQuickActionsPreviousMax)
@@ -425,11 +417,8 @@ func collectPreviousChatQuickActions(msgs []db.ChatMessage) []string {
 // truncation rules are unit-testable without a database.
 //
 // msgs is oldest-first and its last entry must be the assistant reply the
-// suggestions are for. directive is the resolved OUTPUT LANGUAGE block, placed
-// last so it is the final constraint the model reads before the task line — the
-// conversation above it may be in any language, including one the pills must
-// not be written in.
-func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string, directive string) string {
+// suggestions are for.
+func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string) string {
 	var b strings.Builder
 	b.WriteString("CONVERSATION (oldest first):\n")
 	for i, msg := range msgs {
@@ -456,7 +445,7 @@ func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string, dir
 	}
 
 	b.WriteString("\n")
-	b.WriteString(directive)
+	b.WriteString(chatQuickActionsLanguageRule)
 
 	b.WriteString("\n\nProduce the follow-up suggestions for the latest agent reply.")
 	return b.String()
