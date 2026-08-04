@@ -25,8 +25,9 @@ var attachmentDownloadCmd = &cobra.Command{
 	Example: `  # Download an image attachment to the current directory
   $ multica attachment download abc123
 
-  # Download to a specific directory
-  $ multica attachment download abc123 -o /tmp/images`,
+  # Download to a directory inside the working directory (keep agent
+  # downloads out of /tmp and other machine-shared paths, MUL-4252)
+  $ multica attachment download abc123 -o ./attachments`,
 	Args: exactArgs(1),
 	RunE: runAttachmentDownload,
 }
