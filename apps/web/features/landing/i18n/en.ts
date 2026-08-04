@@ -320,7 +320,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
           "Opening a running agent's log from the Issue header no longer closes it immediately.",
           "OpenClaw replies arrive as soon as they are finished instead of waiting.",
           "Sending /new on its own in Slack or Feishu no longer creates an empty message and run.",
-          "Newly connected chat channels can receive file attachments.",
+          "In newly connected chat channels, agents no longer report sending a file they cannot send.",
           "A long project or label name no longer stretches its pill across the whole row.",
           "Clearing a field is now the first row of every picker.",
           "A wide Autopilot runbook no longer pushes the settings panel out of the dialog.",
