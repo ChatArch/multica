@@ -570,10 +570,6 @@ func buildAutopilotPrompt(task Task) string {
 	} else {
 		b.WriteString("Complete the instructions above.\n")
 	}
-	// Mirrors the brief's autopilot workflow line (writeWorkflowAutopilot)
-	// verbatim: an unconditional ban here contradicted the brief's
-	// "unless the autopilot instructions direct issue work" carve-out
-	// whenever an autopilot legitimately creates or updates an issue.
-	b.WriteString("Do not run `multica issue get`, `multica issue comment add`, or `multica issue status` for this run unless the autopilot instructions explicitly tell you to create or update an issue.\n")
+	b.WriteString(execenv.AutopilotIssueCommandsGuard + "\n")
 	return b.String()
 }

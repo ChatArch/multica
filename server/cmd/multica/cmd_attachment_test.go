@@ -73,6 +73,51 @@ func TestRunAttachmentDownloadWritesBasenameIntoOutputDir(t *testing.T) {
 	}
 }
 
+// TestRunAttachmentDownloadCreatesMissingOutputDir pins that `-o` works
+// against a directory that does not exist yet — the shape the command's own
+// help example (`-o ./attachments`) produces in a clean workdir (MUL-5696).
+func TestRunAttachmentDownloadCreatesMissingOutputDir(t *testing.T) {
+	const attachmentID = "att-456"
+	const fileBody = "nested dir body"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/attachments/"+attachmentID:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           attachmentID,
+				"filename":     "shot.png",
+				"download_url": "/downloads/shot.png",
+				"size_bytes":   "15",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/downloads/shot.png":
+			_, _ = w.Write([]byte(fileBody))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	outputDir := filepath.Join(t.TempDir(), "attachments", "images")
+	cmd := newAttachmentDownloadTestCmd()
+	_ = cmd.Flags().Set("output-dir", outputDir)
+
+	stderr := captureStderr(t)
+	_, err := captureStdout(t, func() error { return runAttachmentDownload(cmd, []string{attachmentID}) })
+	_ = stderr.read()
+	if err != nil {
+		t.Fatalf("runAttachmentDownload with missing output dir: %v", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(outputDir, "shot.png"))
+	if readErr != nil {
+		t.Fatalf("read downloaded file: %v", readErr)
+	}
+	if string(data) != fileBody {
+		t.Fatalf("downloaded body = %q, want %q", data, fileBody)
+	}
+}
+
 func newAttachmentUploadTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "upload"}
 	cmd.Flags().String("task", "", "")

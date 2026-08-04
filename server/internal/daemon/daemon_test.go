@@ -854,13 +854,19 @@ func TestBuildPromptAutopilotRunOnly(t *testing.T) {
 		"Daily dependency check",
 		"Check dependencies and report outdated packages.",
 		"multica autopilot get autopilot-1 --output json",
-		"Do not run `multica issue get`",
+		// The issue-command boundary must be the shared constant the brief
+		// also emits — MUL-5696 found the two hand-maintained copies had
+		// drifted into an unconditional ban here vs a conditional one there.
+		execenv.AutopilotIssueCommandsGuard,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("autopilot prompt missing %q\n---\n%s", want, prompt)
 		}
 	}
 
+	if strings.Contains(prompt, "this run does not have an issue ID") {
+		t.Fatalf("autopilot prompt carries the old unconditional issue-get ban (MUL-5696)\n---\n%s", prompt)
+	}
 	if strings.Contains(prompt, "Your assigned issue ID is:") {
 		t.Fatalf("autopilot prompt should not use issue assignment template\n---\n%s", prompt)
 	}

@@ -178,6 +178,27 @@ func TestBuildMetaSkillContentSlimKindMatrix(t *testing.T) {
 	}
 }
 
+// TestBriefDueDateTeachesCalendarDayFormat pins the --due-date synopsis to
+// the calendar-day format the server canonically accepts
+// (util.ParseCalendarDate: YYYY-MM-DD; an RFC3339 value passes only at exact
+// UTC midnight). MUL-5696 found the brief teaching `<RFC3339>` while the CLI
+// help and the projects skill say YYYY-MM-DD, steering agents that computed a
+// natural timestamp into 400s.
+func TestBriefDueDateTeachesCalendarDayFormat(t *testing.T) {
+	for name, ctx := range map[string]TaskContextForEnv{
+		"issue":        {IssueID: "issue-1"},
+		"quick-create": {QuickCreatePrompt: "create an issue"},
+	} {
+		out := buildMetaSkillContent("claude", ctx)
+		if !strings.Contains(out, "--due-date <YYYY-MM-DD>") {
+			t.Errorf("%s brief missing the calendar-day --due-date synopsis", name)
+		}
+		if strings.Contains(out, "--due-date <RFC3339>") {
+			t.Errorf("%s brief still teaches --due-date <RFC3339>, which the server rejects except at UTC midnight (MUL-5696)", name)
+		}
+	}
+}
+
 // TestSlimQuickCreateAvailableCommands locks the minimal-variant content
 // for quick-create's Available Commands: `issue create` present, every
 // other Core command absent (the hard guardrails forbid the call).

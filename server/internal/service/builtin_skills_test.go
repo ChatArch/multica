@@ -450,6 +450,19 @@ func TestSquadsSkillCoversLeaderRoutingContract(t *testing.T) {
 		}
 	}
 
+	// MUL-5696: no unbounded comment pull anywhere in the skill. #6347 fixed
+	// the quick start's `--recent 10` but missed a second unbounded
+	// `issue comment list` in the CLI section; both shapes contradict the
+	// brief's "two bounded reads, never one bulk pull" doctrine.
+	for _, banned := range []string{
+		"multica issue comment list <issue-id> --output json",
+		"--recent 10",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("squads skill carries the unbounded comment read %q (MUL-5696)", banned)
+		}
+	}
+
 	if !skillHasFile(skill, "references/squad-source-map.md") {
 		t.Errorf("squads skill missing supporting file references/squad-source-map.md")
 	}
