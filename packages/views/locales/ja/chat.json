@@ -92,8 +92,8 @@
     },
     "stop_dialog": {
       "title": "この実行を停止しますか？",
-      "description_with_title": "\"{{title}}\" の現在のエージェントタスクをキャンセルします。生成済みの内容はチャットに残ります。",
-      "description_default": "現在のエージェントタスクをキャンセルします。生成済みの内容はチャットに残ります。",
+      "description_with_title": "\"{{title}}\" の現在のエージェント作業をキャンセルします。生成済みの内容はチャットに残ります。",
+      "description_default": "現在のエージェント作業をキャンセルします。生成済みの内容はチャットに残ります。",
       "cancel": "実行を続ける",
       "confirm": "実行を停止",
       "confirming": "停止中..."
@@ -121,7 +121,7 @@
   "empty_state": {
     "first_time_title": "エージェントとチャット",
     "first_time_intro": "✨ エージェントはあなたのワークスペースを把握しています —",
-    "first_time_pillars": "イシュー、プロジェクト、スキル",
+    "first_time_pillars": "タスク、プロジェクト、スキル",
     "first_time_pillars_suffix": "。",
     "first_time_actions": "要約を頼んだり、今日の予定を立てたり、簡単なタスクを任せたりしてみましょう。",
     "returning_title_named": "こんにちは、{{name}} です",
