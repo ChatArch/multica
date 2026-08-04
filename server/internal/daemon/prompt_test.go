@@ -717,9 +717,14 @@ func TestBuildPromptNewCommentsHint(t *testing.T) {
 	if !strings.Contains(out, "--tail 30") {
 		t.Errorf("hint must offer the full-thread (--tail 30) option, got:\n%s", out)
 	}
-	// Issue-wide catch-up is demoted to an only-if-needed fallback.
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
-		t.Errorf("hint must keep the issue-wide --since catch-up as a fallback, got:\n%s", out)
+	// Issue-wide catch-up is demoted to an only-if-needed fallback, phrased as
+	// a rerun of the thread command minus `--thread` (MUL-5721 OPT-1) instead
+	// of a second full command that restated the UUID and anchor.
+	if !strings.Contains(out, "rerun it without `--thread` for the issue-wide catch-up") {
+		t.Errorf("hint must keep the issue-wide catch-up fallback, got:\n%s", out)
+	}
+	if strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
+		t.Errorf("warm hint must not render a second full issue-wide command (MUL-5721 OPT-1), got:\n%s", out)
 	}
 	// The old cursor-heavy paragraph must be gone.
 	if strings.Contains(out, "Next reply cursor") || strings.Contains(out, "--before-id") {
@@ -752,9 +757,14 @@ func TestBuildPromptColdStartThreadRead(t *testing.T) {
 	// MUL-5372: cross-thread background is a cheap roots scan. The hint names
 	// only the reads it wants run — `--recent` and its saturation trap are
 	// documented once in the brief's `## Available Commands`, so restating the
-	// flag surface here would put reference text on every cold turn.
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --roots-only --summary --output json") {
+	// flag surface here would put reference text on every cold turn. The scan
+	// is phrased as a flag swap on the thread command, not a second full
+	// command restating the UUID (MUL-5721 OPT-1).
+	if !strings.Contains(out, "Rerun with `--roots-only --summary` replacing `--thread ... --tail 30`") {
 		t.Errorf("cold start should offer the cheap roots scan for cross-thread background, got:\n%s", out)
+	}
+	if strings.Contains(out, "multica issue comment list "+issueID+" --roots-only --summary --output json") {
+		t.Errorf("cold hint must not render a second full command for the roots scan (MUL-5721 OPT-1), got:\n%s", out)
 	}
 	if strings.Contains(out, "--recent") {
 		t.Errorf("cold start hint should not restate the --recent surface, got:\n%s", out)
@@ -782,7 +792,6 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 	for _, want := range []string{
 		"triggering comment is already included above",
 		"No other new comments on this issue since your last run",
-		"active thread anchor `thread-root-1` and triggering comment ID `trigger-1`",
 		"If your reply depends on thread context",
 		"do not rely only on resumed session memory",
 		"multica issue comment list " + issueID + " --thread thread-root-1 --tail 30 --output json",
@@ -790,6 +799,11 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("resumed/no-delta prompt missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+	// The anchor-restating sentence is gone (MUL-5721 OPT-1): the read command
+	// carries the thread anchor and the reply cookbook carries the trigger id.
+	if strings.Contains(out, "active thread anchor") {
+		t.Errorf("resumed/no-delta prompt must not restate anchors outside the commands, got:\n%s", out)
 	}
 	// The stale thread-scoped wording (since-delta used to be thread-scoped)
 	// must not reappear.

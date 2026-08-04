@@ -5442,7 +5442,6 @@ func TestInjectRuntimeConfigBriefOmitsResumedThreadAnchor(t *testing.T) {
 	for _, want := range []string{
 		"triggering comment is already included above",
 		"No other new comments on this issue since your last run",
-		"active thread anchor `thread-root-1` and triggering comment ID `" + triggerID + "`",
 		"If your reply depends on thread context",
 		"do not rely only on resumed session memory",
 		"multica issue comment list " + issueID + " --thread thread-root-1 --tail 30 --output json",
@@ -5450,6 +5449,11 @@ func TestInjectRuntimeConfigBriefOmitsResumedThreadAnchor(t *testing.T) {
 		if !strings.Contains(hint, want) {
 			t.Errorf("resumed hint missing %q\n---\n%s", want, hint)
 		}
+	}
+	// The anchor-restating sentence is gone (MUL-5721 OPT-1): the read command
+	// carries the thread anchor and the reply cookbook carries the trigger id.
+	if strings.Contains(hint, "active thread anchor") {
+		t.Errorf("resumed hint must not restate anchors outside the commands, got:\n%s", hint)
 	}
 }
 
