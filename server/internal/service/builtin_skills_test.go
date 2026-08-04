@@ -244,13 +244,20 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"when a whole stage finishes",
 		"multica issue status <child-id> todo",
 		// MUL-5442: the brief's Issue Metadata section defers the full
-		// write discipline here. These anchors are the relocated bans —
-		// each one used to be pinned in the brief and must not leave the
-		// skill while the brief still points at it.
+		// write discipline here. Every relocated ban is anchored
+		// individually — both defining categories AND each example —
+		// so no single item or category boundary can be dropped while
+		// the brief still points at this skill (round-3 review).
 		"Never store secrets, tokens, or API keys",
-		"Not metadata: logs,",
-		"attempt counts, agent ids",
+		"Not metadata: logs or summaries",
+		"bookkeeping such as timestamps",
+		"attempt counts, or agent IDs",
+		"other single-run details",
+		"files touched and investigation notes",
 		"belong in the result comment",
+		// Owner ruling: metadata is deliberately free-form custom state;
+		// the platform curates no key vocabulary.
+		"the platform curates no vocabulary",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -259,6 +266,11 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	}
 
 	mustNotContain := []string{
+		// A curated key list is the "recommended fields" concept the owner
+		// ruled out on MUL-5442 — it must not creep back into the skill
+		// that loads exactly when an agent is about to write metadata.
+		"High-signal keys",
+		"reuse these names so queries stay consistent",
 		"Start from the trigger, not from memory",
 		"multica issue get <issue-id> --output json",
 		"multica issue metadata list <issue-id> --output json",
