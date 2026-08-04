@@ -179,6 +179,7 @@ function AssigneePickerImpl({
           picker in the app puts the empty value there, so "clear this field"
           never moves. */}
       <PickerItem
+        emptyValue
         selected={!mixed && !assigneeType && !assigneeId}
         onClick={() => {
           onUpdate({ assignee_type: null, assignee_id: null });

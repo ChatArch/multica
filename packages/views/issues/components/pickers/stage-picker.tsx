@@ -78,6 +78,7 @@ export function StagePicker({
       {/* "No stage" — always the first row, matching every other picker. Keeps
           the value rows' icon column so the labels line up. */}
       <PickerItem
+        emptyValue
         selected={stage == null}
         onClick={() => {
           onUpdate({ stage: null });

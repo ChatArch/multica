@@ -99,6 +99,7 @@ export function ProjectPicker({
             only clear entry now that the pill carries no inline ×. Mirrors
             the unassigned row in the assignee picker. */}
         <PickerItem
+          emptyValue
           selected={!projectId}
           onClick={() => {
             onUpdate({ project_id: null });

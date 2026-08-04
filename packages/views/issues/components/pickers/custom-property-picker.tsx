@@ -128,6 +128,7 @@ export function CustomPropertyValueInput({
   // checkmark when the property is unset.
   const emptyRow = (
     <PickerItem
+      emptyValue
       selected={!hasValue}
       onClick={() => {
         clear();
