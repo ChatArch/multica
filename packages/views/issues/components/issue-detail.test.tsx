@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Label, TimelineEntry } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
@@ -1697,6 +1698,12 @@ describe("IssueDetail (shared)", () => {
 
     beforeEach(() => {
       mockApiObj.listIssueSubscribers.mockResolvedValue(subscribedAsMember);
+      // The menu only exists when there is a sub-tree for its second item to
+      // act on. A childless issue renders a direct button instead — covered
+      // by the "no sub-issues" tests below (MUL-5714).
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [{ ...mockIssue, id: "child-1", parent_issue_id: "issue-1" }],
+      });
     });
 
     // Base UI portals the popup onto document.body; RTL unmounts it, but wipe
@@ -1745,6 +1752,174 @@ describe("IssueDetail (shared)", () => {
         ),
       );
       expect(mockApiObj.unsubscribeFromIssue).not.toHaveBeenCalled();
+    });
+
+    it("still offers the menu while the child count is unknown", async () => {
+      // Children never resolve, so the component cannot yet tell a childless
+      // issue from one with a sub-tree. The menu is the safe answer: unlike
+      // the direct button it never picks an opt-out scope for the user.
+      mockApiObj.listChildIssues.mockReturnValue(new Promise(() => {}));
+      renderIssueDetail();
+
+      const control = await screen.findByText("Unsubscribe");
+
+      expect(control.getAttribute("aria-haspopup")).toBe("menu");
+    });
+  });
+
+  // The reported bug: on an issue with no sub-issues the only way to leave was
+  // a menu whose second item pointed at a sub-tree that does not exist
+  // (MUL-5714).
+  describe("unsubscribe without sub-issues", () => {
+    const subscribedAsMember = [
+      {
+        issue_id: "issue-1",
+        user_type: "member" as const,
+        user_id: "user-1",
+        reason: "manual" as const,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    beforeEach(() => {
+      mockApiObj.listIssueSubscribers.mockResolvedValue(subscribedAsMember);
+      mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
+    });
+
+    afterEach(() => {
+      document.body.innerHTML = "";
+    });
+
+    // The label is the same either way, so aria-haspopup is what separates the
+    // menu trigger from the plain button. The subscribers query resolves first,
+    // so the control is briefly the trigger before the child count settles —
+    // wait for the collapsed form rather than grabbing the first match.
+    async function findDirectUnsubscribeButton() {
+      return waitFor(() => {
+        const el = screen.getByText("Unsubscribe");
+        expect(el.getAttribute("aria-haspopup")).toBeNull();
+        return el;
+      });
+    }
+
+    it("unsubscribes in one click, with no menu", async () => {
+      renderIssueDetail();
+
+      fireEvent.click(await findDirectUnsubscribeButton());
+
+      await waitFor(() =>
+        expect(mockApiObj.unsubscribeFromIssue).toHaveBeenCalledWith(
+          "issue-1",
+          "user-1",
+          "member",
+        ),
+      );
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+
+    // The scope choice, pinned. RemoveIssueSubscriber writes
+    // opt_out_scope='issue'; the subtree route writes 'subtree', which also
+    // blocks FUTURE children from re-subscribing the user. Collapsing the menu
+    // must not quietly upgrade a one-issue opt-out into a whole-tree one
+    // (server/pkg/db/queries/subscriber.sql).
+    it("uses the root-only route, never the subtree one", async () => {
+      renderIssueDetail();
+
+      fireEvent.click(await findDirectUnsubscribeButton());
+
+      await waitFor(() =>
+        expect(mockApiObj.unsubscribeFromIssue).toHaveBeenCalled(),
+      );
+      expect(mockApiObj.unsubscribeFromIssueSubtree).not.toHaveBeenCalled();
+    });
+
+    it("sends one request for a rapid double-click", async () => {
+      let release: (() => void) | undefined;
+      mockApiObj.unsubscribeFromIssue.mockReturnValue(
+        new Promise<void>((resolve) => {
+          release = () => resolve();
+        }),
+      );
+      renderIssueDetail();
+      const button = await findDirectUnsubscribeButton();
+
+      // Same tick, no await between. React Query flushes isPending in a
+      // microtask, so `disabled` has not landed yet and the second click still
+      // reaches an enabled button — the in-flight guard is what stops it. Two
+      // overlapping toggles is the one case the mutation's whole-list snapshot
+      // cannot survive: the second snapshots the first one's optimistic patch
+      // and rolls back to it (MUL-5714).
+      fireEvent.click(button);
+      fireEvent.click(button);
+
+      // Both handlers already ran synchronously; only the request dispatch is
+      // async. So once any call has landed, the count is final.
+      await waitFor(() =>
+        expect(mockApiObj.unsubscribeFromIssue).toHaveBeenCalled(),
+      );
+      expect(mockApiObj.unsubscribeFromIssue).toHaveBeenCalledTimes(1);
+      release?.();
+    });
+
+    it("disables the button while the toggle is in flight, then reports failure", async () => {
+      let reject: ((err: Error) => void) | undefined;
+      mockApiObj.unsubscribeFromIssue.mockReturnValue(
+        new Promise<void>((_resolve, rej) => {
+          reject = (err) => rej(err);
+        }),
+      );
+      renderIssueDetail();
+      const button = await findDirectUnsubscribeButton();
+
+      fireEvent.click(button);
+
+      await waitFor(() =>
+        expect((button as HTMLButtonElement).disabled).toBe(true),
+      );
+
+      reject?.(new Error("boom"));
+
+      // The optimistic patch rolls itself back, restoring the exact row the
+      // user started from — without this message that is indistinguishable
+      // from a button that never fired.
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith(
+          enIssues.detail.subscription_update_failed,
+        ),
+      );
+      await waitFor(() =>
+        expect((button as HTMLButtonElement).disabled).toBe(false),
+      );
+    });
+  });
+
+  // Before the subscribers query resolves the hook's list defaults to empty,
+  // which reads as "not subscribed" for everyone. Rendering that default
+  // showed a Subscribe button to people who were already subscribed, and a
+  // click landing in that window sent a subscribe instead of the unsubscribe
+  // they meant (MUL-5714).
+  describe("subscription state before the query resolves", () => {
+    afterEach(() => {
+      document.body.innerHTML = "";
+    });
+
+    it("renders no subscribe control while subscribers are loading", async () => {
+      mockApiObj.listIssueSubscribers.mockReturnValue(new Promise(() => {}));
+      renderIssueDetail();
+
+      // Wait for the issue itself, so this asserts on a rendered page rather
+      // than on the loading skeleton.
+      await screen.findByText("Implement authentication");
+
+      expect(screen.queryByText("Subscribe")).toBeNull();
+      expect(screen.queryByText("Unsubscribe")).toBeNull();
+    });
+
+    it("renders Subscribe once the query says the user is not subscribed", async () => {
+      mockApiObj.listIssueSubscribers.mockResolvedValue([]);
+      renderIssueDetail();
+
+      expect(await screen.findByText("Subscribe")).toBeTruthy();
     });
   });
 });
