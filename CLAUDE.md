@@ -183,9 +183,10 @@ Root-level reminders:
 ## UI Rules
 
 - Prefer shadcn/Base UI components over custom implementations. Add them with `pnpm ui:add <component>` from the repo root.
-- Use design tokens and semantic classes; avoid hardcoded colors.
+- Use design tokens and semantic classes; avoid hardcoded colors. Font sizes come from the role-named `--text-*` scale in `packages/ui/styles/tokens.css` (`text-caption`, `text-body`, `text-title`, …), which is the authoritative list — not Tailwind's default `text-sm` / `text-base` ramp.
+- An active/selected state must stay identifiable while hovered. Express it on a dimension hover does not touch (weight, text color), or define the `data-active:hover:` compound explicitly — otherwise hovering a selected row visually downgrades it to plain hover.
 - Do not introduce extra local state unless the design requires it.
-- Handle overflow, long text, scrolling, alignment, and spacing deliberately.
+- Handle overflow, long text, scrolling, alignment, and spacing deliberately. Prefer more spacing over adding a divider.
 - If a component is identical between web and desktop, it belongs in a shared package.
 
 ## Testing
