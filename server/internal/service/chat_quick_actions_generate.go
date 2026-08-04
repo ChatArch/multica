@@ -100,6 +100,13 @@ type ChatQuickActionsLLM interface {
 // agent-operations actions; this pass has no such context and must be told the
 // frame explicitly.
 //
+// Output language is NOT decided here. The server resolves it and appends an
+// OUTPUT LANGUAGE directive to the user message (chat_quick_actions_language.go);
+// this prompt only says that the directive wins. Naming a specific language in
+// these stable instructions is what this file must avoid — a model reading
+// "…in Chinese" in a rule about button width will sometimes take it as
+// permission to answer in Chinese (MUL-5689).
+//
 // The word "JSON" must stay in this text: response_format=json_object is
 // rejected upstream without it.
 const chatQuickActionsSystemPrompt = `You generate follow-up suggestions for a chat between a user and an AI agent.
@@ -122,17 +129,20 @@ Quality bar:
   rewordings of the same request.
 
 Field rules:
-- "label": the button text. A short verb phrase — at most 6 words in English, at
-  most 12 characters in Chinese. No trailing punctuation, no quotes, no emoji.
-  It is a button, not a sentence.
+- "label": the button text. A short verb phrase — at most 6 words, or at most 12
+  characters in a script that does not put spaces between words. No trailing
+  punctuation, no quotes, no emoji. It is a button, not a sentence.
 - "prompt": the full message sent on the user's behalf. First person, the user's
   own voice, and SELF-CONTAINED — the agent never sees the label, so the prompt
   must carry every detail itself. One or two sentences.
 - "primary": true on exactly one suggestion, the single most likely next step.
   false on all others.
 
-Write both fields in the same language the USER has been writing in, regardless
-of what language the agent replied in.
+Language: the user message ends with an OUTPUT LANGUAGE line. It is
+authoritative — write both fields in that language and in no other. Do not take
+the language from the agent's reply, from these instructions, or from the
+ALREADY SUGGESTED labels; those labels are listed only so you avoid repeating
+them, and they say nothing about what language to write in.
 
 Output JSON only, exactly this shape:
 {"actions":[{"label":"...","prompt":"...","primary":true}]}
@@ -176,7 +186,7 @@ func (s *TaskService) GenerateChatQuickActionsForTask(ctx context.Context, task 
 		return s.SupplementChatQuickActions(ctx, task, "", false)
 	}
 
-	prompt, err := s.buildChatQuickActionsPrompt(ctx, target)
+	prompt, err := s.buildChatQuickActionsPrompt(ctx, task, target)
 	if err != nil {
 		return err
 	}
@@ -304,7 +314,7 @@ func (s *TaskService) resolveChatQuickActionsPlaceholder(task db.AgentTaskQueue)
 // completion callback and this read would otherwise supply the context while
 // the result is still written to the older turn, and a newly-sent user message
 // would leave the window ending on a user row with no reply to build on.
-func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, target db.ChatMessage) (string, error) {
+func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, task db.AgentTaskQueue, target db.ChatMessage) (string, error) {
 	// Strictly older than target, newest-first; reversed below. Over-fetch so
 	// dropped rows (no_response, failures) don't shrink the window below the
 	// intended turn count.
@@ -336,7 +346,42 @@ func (s *TaskService) buildChatQuickActionsPrompt(ctx context.Context, target db
 		msgs = msgs[len(msgs)-(chatQuickActionsContextMessages-1):]
 	}
 	msgs = append(msgs, target)
-	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs)), nil
+	directive := chatQuickActionsLanguageDirective(
+		s.chatQuickActionsUserLanguage(ctx, task),
+		chatQuickActionsUserText(msgs),
+	)
+	return renderChatQuickActionsContext(msgs, collectPreviousChatQuickActions(msgs), directive), nil
+}
+
+// chatQuickActionsUserLanguage returns the stored UI language preference of the
+// person this turn belongs to, or "" when there is none to read.
+//
+// initiator_user_id is the authoritative sender of a chat turn where it is set;
+// it is NULL on turns queued before that column existed, so the session's
+// creator is the fallback. The two only diverge for channel-backed sessions,
+// where the creator is the installer rather than the speaker — and those never
+// reach a suggestion pass (see chatQuickActionsEligible).
+//
+// Best-effort throughout: a preference is an upgrade over script detection, not
+// a requirement, so every failure here degrades to "" rather than costing the
+// user their suggestions.
+func (s *TaskService) chatQuickActionsUserLanguage(ctx context.Context, task db.AgentTaskQueue) string {
+	userID := task.InitiatorUserID
+	if !userID.Valid {
+		session, err := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+		if err != nil {
+			return ""
+		}
+		userID = session.CreatorID
+	}
+	if !userID.Valid {
+		return ""
+	}
+	user, err := s.Queries.GetUser(ctx, userID)
+	if err != nil || !user.Language.Valid {
+		return ""
+	}
+	return user.Language.String
 }
 
 // collectPreviousChatQuickActions gathers the labels already offered in this
@@ -380,8 +425,11 @@ func collectPreviousChatQuickActions(msgs []db.ChatMessage) []string {
 // truncation rules are unit-testable without a database.
 //
 // msgs is oldest-first and its last entry must be the assistant reply the
-// suggestions are for.
-func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string) string {
+// suggestions are for. directive is the resolved OUTPUT LANGUAGE block, placed
+// last so it is the final constraint the model reads before the task line — the
+// conversation above it may be in any language, including one the pills must
+// not be written in.
+func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string, directive string) string {
 	var b strings.Builder
 	b.WriteString("CONVERSATION (oldest first):\n")
 	for i, msg := range msgs {
@@ -407,7 +455,10 @@ func renderChatQuickActionsContext(msgs []db.ChatMessage, previous []string) str
 		}
 	}
 
-	b.WriteString("\nProduce the follow-up suggestions for the latest agent reply.")
+	b.WriteString("\n")
+	b.WriteString(directive)
+
+	b.WriteString("\n\nProduce the follow-up suggestions for the latest agent reply.")
 	return b.String()
 }
 

@@ -29,7 +29,7 @@ func TestRenderChatQuickActionsContextLabelsSpeakersAndClosesWithTheTask(t *test
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("user", "why is this slow"),
 		chatMsg("assistant", "because it spawns a CLI per turn"),
-	}, nil)
+	}, nil, "OUTPUT LANGUAGE: English.")
 
 	if !strings.Contains(out, "[user]: why is this slow") {
 		t.Fatalf("user turn missing or mislabeled:\n%s", out)
@@ -45,12 +45,18 @@ func TestRenderChatQuickActionsContextLabelsSpeakersAndClosesWithTheTask(t *test
 	if !strings.HasSuffix(out, "Produce the follow-up suggestions for the latest agent reply.") {
 		t.Fatalf("prompt must end with the instruction:\n%s", out)
 	}
+	// The directive is the last constraint before the task line: everything
+	// above it is conversation that may be in another language entirely.
+	if !strings.Contains(out, "OUTPUT LANGUAGE: English.\n\nProduce the follow-up") {
+		t.Fatalf("language directive must close the prompt:\n%s", out)
+	}
 }
 
 func TestRenderChatQuickActionsContextListsPreviousLabels(t *testing.T) {
 	out := renderChatQuickActionsContext(
 		[]db.ChatMessage{chatMsg("assistant", "done")},
 		[]string{"看下 diff", "老 daemon 的影响"},
+		"OUTPUT LANGUAGE: English.",
 	)
 	if !strings.Contains(out, "- 看下 diff\n- 老 daemon 的影响") {
 		t.Fatalf("previous labels must be listed verbatim:\n%s", out)
@@ -70,7 +76,7 @@ func TestRenderChatQuickActionsContextKeepsHeadAndTailOfLongLatestReply(t *testi
 	tail := strings.Repeat("T", 500)
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("assistant", head+middle+tail),
-	}, nil)
+	}, nil, "")
 
 	if !strings.Contains(out, head) {
 		t.Fatal("truncated latest reply must keep its head")
@@ -88,7 +94,7 @@ func TestRenderChatQuickActionsContextKeepsHeadAndTailOfLongLatestReply(t *testi
 
 func TestRenderChatQuickActionsContextLeavesShortLatestReplyIntact(t *testing.T) {
 	reply := strings.Repeat("x", chatQuickActionsLatestBudget)
-	out := renderChatQuickActionsContext([]db.ChatMessage{chatMsg("assistant", reply)}, nil)
+	out := renderChatQuickActionsContext([]db.ChatMessage{chatMsg("assistant", reply)}, nil, "")
 	if strings.Contains(out, "…[truncated]…") {
 		t.Fatal("a reply exactly at the budget must not be truncated")
 	}
@@ -99,7 +105,7 @@ func TestRenderChatQuickActionsContextTruncatesOlderMessagesToTheSmallerBudget(t
 	out := renderChatQuickActionsContext([]db.ChatMessage{
 		chatMsg("user", long),
 		chatMsg("assistant", "short reply"),
-	}, nil)
+	}, nil, "")
 
 	if strings.Contains(out, long) {
 		t.Fatal("an older message over budget must be cut")
