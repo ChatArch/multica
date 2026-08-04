@@ -5,7 +5,14 @@ import { ArrowRight, Dices, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
-import { Label } from "@multica/ui/components/ui/label";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldTitle,
+} from "@multica/ui/components/ui/field";
 import { cn } from "@multica/ui/lib/utils";
 import type { OnboardingStep } from "@multica/core/onboarding";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
@@ -224,15 +231,17 @@ export function StepWorkspace({
     onContinue = () => {};
   }
 
+  // Built on the Field primitives rather than hand-rolled label/hint/error
+  // markup: three `flex flex-col gap-1.5` stacks with their own label sizing
+  // is exactly what Field/FieldLabel/FieldError standardise, and the manual
+  // version had already drifted — the labels were caption-sized and muted
+  // while every other form in the product labels at body weight.
   const createFields = (
-    <div className={cn("flex flex-col gap-5", STEP_MEASURE)}>
-      <div className="flex flex-col gap-1.5">
-        <Label
-          htmlFor="ws-name"
-          className="text-caption font-medium text-muted-foreground"
-        >
+    <FieldGroup className={STEP_MEASURE}>
+      <Field>
+        <FieldLabel htmlFor="ws-name">
           {t(($) => $.step_workspace.name_label)}
-        </Label>
+        </FieldLabel>
         <div className="flex items-center gap-2">
           <Input
             id="ws-name"
@@ -258,15 +267,12 @@ export function StepWorkspace({
             {t(($) => $.step_workspace.random_name)}
           </Button>
         </div>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label
-          htmlFor="ws-slug"
-          className="text-caption font-medium text-muted-foreground"
-        >
+      </Field>
+      <Field data-invalid={slugError ? true : undefined}>
+        <FieldLabel htmlFor="ws-slug">
           {t(($) => $.step_workspace.url_label)}
-        </Label>
-        <div className="flex items-center rounded-md border bg-muted transition-colors focus-within:border-foreground">
+        </FieldLabel>
+        <div className="flex items-center rounded-md border bg-muted transition-colors focus-within:border-foreground aria-invalid:border-destructive">
           <span className="select-none pl-3 font-mono text-body text-muted-foreground">
             {`${urlHost}/`}
           </span>
@@ -283,21 +289,21 @@ export function StepWorkspace({
             }}
           />
         </div>
-        {slugError && <p className="text-caption text-destructive">{slugError}</p>}
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <div className="text-caption font-medium text-muted-foreground">
-          {t(($) => $.step_workspace.issue_prefix_label)}
-        </div>
-        <div className="text-body leading-[1.55] text-muted-foreground">
+        {slugError ? <FieldError>{slugError}</FieldError> : null}
+      </Field>
+      {/* Derived, not entered — FieldTitle rather than FieldLabel, since
+          there is no control for a label to point at. */}
+      <Field>
+        <FieldTitle>{t(($) => $.step_workspace.issue_prefix_label)}</FieldTitle>
+        <FieldDescription>
           {t(($) => $.step_workspace.issue_prefix_prefix)}
           <span className="font-mono text-foreground">
             {issuePrefix(slug)}-123
           </span>
           {t(($) => $.step_workspace.issue_prefix_suffix)}
-        </div>
-      </div>
-    </div>
+        </FieldDescription>
+      </Field>
+    </FieldGroup>
   );
 
   return (

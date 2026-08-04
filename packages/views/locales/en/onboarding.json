@@ -63,7 +63,6 @@
     "hint_ready": "Looks good. Hit Submit when you're ready."
   },
   "questions": {
-    "eyebrow_about_you": "About you",
     "about_you": {
       "question": "Tell us a bit about you."
     },

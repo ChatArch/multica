@@ -17,7 +17,7 @@ import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
 import {
   STEP_BLOCK_PADDING,
-  STEP_COLUMN,
+  STEP_FRAME,
   StepShell,
 } from "../components/step-shell";
 import { CompactRuntimeRow } from "../components/compact-runtime-row";
@@ -120,7 +120,12 @@ export function StepPlatformFork({
       onStepChange={onStepChange}
       sidebarFooter={headerTrailing}
     >
-      <div className={cn(STEP_COLUMN, STEP_BLOCK_PADDING)}>
+      {/* On the frame, not the narrow column. Both measures centre, so a
+          620px column and a 920px frame put their left edges ~150px apart —
+          which made the headline jump right when you arrived here from the
+          workspace step. Sitting on the frame and capping the content below
+          keeps every step's left edge in the same place. */}
+      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
         <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
           {t(($) => $.step_platform.eyebrow)}
         </div>

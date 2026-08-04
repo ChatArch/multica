@@ -63,7 +63,6 @@
     "hint_ready": "OK です。準備ができたら送信を押してください。"
   },
   "questions": {
-    "eyebrow_about_you": "あなたについて",
     "about_you": {
       "question": "あなたについて少し教えてください。"
     },

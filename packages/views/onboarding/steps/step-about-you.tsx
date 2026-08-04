@@ -194,9 +194,11 @@ export function StepAboutYou({
       sidebarFooter={headerTrailing}
     >
       <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-        <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {t(($) => $.questions.eyebrow_about_you)}
-        </div>
+        {/* No eyebrow here. It read "About you", which is now the rail's
+            label for this very step — the page said its own name twice,
+            once in grey caps and once in the headline below it. The other
+            steps keep theirs because they say something the rail doesn't
+            ("Connect a computer", "Workspace creation is disabled"). */}
         <h1 className="text-balance font-serif text-display font-medium leading-[1.15] tracking-tight text-foreground">
           {t(($) => $.questions.about_you.question)}
         </h1>

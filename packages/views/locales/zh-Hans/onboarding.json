@@ -63,7 +63,6 @@
     "hint_ready": "看起来不错，准备好就点提交。"
   },
   "questions": {
-    "eyebrow_about_you": "关于你",
     "about_you": {
       "question": "简单介绍一下你自己。"
     },
