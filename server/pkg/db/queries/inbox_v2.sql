@@ -266,3 +266,72 @@ JOIN inbox_group g ON g.id = e.group_id
 WHERE e.id = @event_id
   AND g.workspace_id = @workspace_id
   AND g.recipient_id = @recipient_id;
+
+-- name: MarkAllInboxGroupsRead :execrows
+-- Batch counterpart of MarkInboxGroupRead.
+--
+-- Each group is pushed to its OWN latest_seq rather than to a snapshot taken
+-- when the request started: the cursor is per group, so "read everything" means
+-- "each group is read through its own newest event". An event arriving while
+-- the statement runs lands above the cursor it just set and stays unread, which
+-- is the behaviour the old boolean update could not express.
+UPDATE inbox_group
+SET read_through_seq = latest_seq,
+    manual_unread    = false,
+    state_version    = state_version + 1,
+    updated_at       = @now
+WHERE workspace_id = @workspace_id
+  AND recipient_id = @recipient_id
+  AND archived_at IS NULL
+  AND (manual_unread OR read_through_seq < latest_seq);
+
+-- name: ArchiveAllInboxGroups :execrows
+UPDATE inbox_group
+SET archived_at      = @now,
+    read_through_seq = latest_seq,
+    manual_unread    = false,
+    state_version    = state_version + 1,
+    updated_at       = @now
+WHERE workspace_id = @workspace_id
+  AND recipient_id = @recipient_id
+  AND archived_at IS NULL;
+
+-- name: ArchiveReadInboxGroups :execrows
+-- "Archive everything I have already read". The read predicate is the same
+-- expression the unread count uses, negated — one definition, so the button and
+-- the badge can never disagree about which rows it will take.
+UPDATE inbox_group
+SET archived_at   = @now,
+    state_version = state_version + 1,
+    updated_at    = @now
+WHERE workspace_id = @workspace_id
+  AND recipient_id = @recipient_id
+  AND archived_at IS NULL
+  AND NOT (manual_unread OR read_through_seq < latest_seq);
+
+-- name: ArchiveCompletedInboxGroups :execrows
+-- Mirrors the legacy ArchiveCompletedInbox: notifications about issues that are
+-- finished. Only issue-sourced groups can qualify, which the source_kind filter
+-- makes explicit rather than relying on the join to drop the rest.
+UPDATE inbox_group g
+SET archived_at      = @now,
+    read_through_seq = g.latest_seq,
+    manual_unread    = false,
+    state_version    = g.state_version + 1,
+    updated_at       = @now
+WHERE g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id
+  AND g.archived_at IS NULL
+  AND g.source_kind = 'issue'
+  AND g.source_id IN (SELECT id FROM issue WHERE status IN ('done', 'cancelled'));
+
+-- name: CountUnreadInboxGroupsByWorkspace :many
+-- Cross-workspace unread summary for the workspace switcher. Account-level by
+-- nature: keyed only on the user, ignoring whichever workspace is active.
+SELECT workspace_id, COUNT(*) AS count
+FROM inbox_group
+WHERE recipient_id = @recipient_id
+  AND archived_at IS NULL
+  AND (snoozed_until IS NULL OR snoozed_until < @now)
+  AND (manual_unread OR read_through_seq < latest_seq)
+GROUP BY workspace_id;

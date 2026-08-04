@@ -119,6 +119,63 @@ func (q *Queries) AdvanceInboxGroupForEvent(ctx context.Context, arg AdvanceInbo
 	return i, err
 }
 
+const archiveAllInboxGroups = `-- name: ArchiveAllInboxGroups :execrows
+UPDATE inbox_group
+SET archived_at      = $1,
+    read_through_seq = latest_seq,
+    manual_unread    = false,
+    state_version    = state_version + 1,
+    updated_at       = $1
+WHERE workspace_id = $2
+  AND recipient_id = $3
+  AND archived_at IS NULL
+`
+
+type ArchiveAllInboxGroupsParams struct {
+	Now         pgtype.Timestamptz `json:"now"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+}
+
+func (q *Queries) ArchiveAllInboxGroups(ctx context.Context, arg ArchiveAllInboxGroupsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveAllInboxGroups, arg.Now, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const archiveCompletedInboxGroups = `-- name: ArchiveCompletedInboxGroups :execrows
+UPDATE inbox_group g
+SET archived_at      = $1,
+    read_through_seq = g.latest_seq,
+    manual_unread    = false,
+    state_version    = g.state_version + 1,
+    updated_at       = $1
+WHERE g.workspace_id = $2
+  AND g.recipient_id = $3
+  AND g.archived_at IS NULL
+  AND g.source_kind = 'issue'
+  AND g.source_id IN (SELECT id FROM issue WHERE status IN ('done', 'cancelled'))
+`
+
+type ArchiveCompletedInboxGroupsParams struct {
+	Now         pgtype.Timestamptz `json:"now"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+}
+
+// Mirrors the legacy ArchiveCompletedInbox: notifications about issues that are
+// finished. Only issue-sourced groups can qualify, which the source_kind filter
+// makes explicit rather than relying on the join to drop the rest.
+func (q *Queries) ArchiveCompletedInboxGroups(ctx context.Context, arg ArchiveCompletedInboxGroupsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveCompletedInboxGroups, arg.Now, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const archiveInboxGroup = `-- name: ArchiveInboxGroup :one
 UPDATE inbox_group
 SET archived_at      = $1,
@@ -168,6 +225,34 @@ func (q *Queries) ArchiveInboxGroup(ctx context.Context, arg ArchiveInboxGroupPa
 	return i, err
 }
 
+const archiveReadInboxGroups = `-- name: ArchiveReadInboxGroups :execrows
+UPDATE inbox_group
+SET archived_at   = $1,
+    state_version = state_version + 1,
+    updated_at    = $1
+WHERE workspace_id = $2
+  AND recipient_id = $3
+  AND archived_at IS NULL
+  AND NOT (manual_unread OR read_through_seq < latest_seq)
+`
+
+type ArchiveReadInboxGroupsParams struct {
+	Now         pgtype.Timestamptz `json:"now"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+}
+
+// "Archive everything I have already read". The read predicate is the same
+// expression the unread count uses, negated — one definition, so the button and
+// the badge can never disagree about which rows it will take.
+func (q *Queries) ArchiveReadInboxGroups(ctx context.Context, arg ArchiveReadInboxGroupsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveReadInboxGroups, arg.Now, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countUnreadInboxGroups = `-- name: CountUnreadInboxGroups :one
 SELECT COUNT(*) FROM inbox_group
 WHERE workspace_id = $1
@@ -190,6 +275,48 @@ func (q *Queries) CountUnreadInboxGroups(ctx context.Context, arg CountUnreadInb
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const countUnreadInboxGroupsByWorkspace = `-- name: CountUnreadInboxGroupsByWorkspace :many
+SELECT workspace_id, COUNT(*) AS count
+FROM inbox_group
+WHERE recipient_id = $1
+  AND archived_at IS NULL
+  AND (snoozed_until IS NULL OR snoozed_until < $2)
+  AND (manual_unread OR read_through_seq < latest_seq)
+GROUP BY workspace_id
+`
+
+type CountUnreadInboxGroupsByWorkspaceParams struct {
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+	Now         pgtype.Timestamptz `json:"now"`
+}
+
+type CountUnreadInboxGroupsByWorkspaceRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Count       int64       `json:"count"`
+}
+
+// Cross-workspace unread summary for the workspace switcher. Account-level by
+// nature: keyed only on the user, ignoring whichever workspace is active.
+func (q *Queries) CountUnreadInboxGroupsByWorkspace(ctx context.Context, arg CountUnreadInboxGroupsByWorkspaceParams) ([]CountUnreadInboxGroupsByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, countUnreadInboxGroupsByWorkspace, arg.RecipientID, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountUnreadInboxGroupsByWorkspaceRow{}
+	for rows.Next() {
+		var i CountUnreadInboxGroupsByWorkspaceRow
+		if err := rows.Scan(&i.WorkspaceID, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const deleteInboxEventsForDeletedGroups = `-- name: DeleteInboxEventsForDeletedGroups :exec
@@ -923,6 +1050,39 @@ func (q *Queries) ListUnreadInboxEventsForGroup(ctx context.Context, arg ListUnr
 		return nil, err
 	}
 	return items, nil
+}
+
+const markAllInboxGroupsRead = `-- name: MarkAllInboxGroupsRead :execrows
+UPDATE inbox_group
+SET read_through_seq = latest_seq,
+    manual_unread    = false,
+    state_version    = state_version + 1,
+    updated_at       = $1
+WHERE workspace_id = $2
+  AND recipient_id = $3
+  AND archived_at IS NULL
+  AND (manual_unread OR read_through_seq < latest_seq)
+`
+
+type MarkAllInboxGroupsReadParams struct {
+	Now         pgtype.Timestamptz `json:"now"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+}
+
+// Batch counterpart of MarkInboxGroupRead.
+//
+// Each group is pushed to its OWN latest_seq rather than to a snapshot taken
+// when the request started: the cursor is per group, so "read everything" means
+// "each group is read through its own newest event". An event arriving while
+// the statement runs lands above the cursor it just set and stays unread, which
+// is the behaviour the old boolean update could not express.
+func (q *Queries) MarkAllInboxGroupsRead(ctx context.Context, arg MarkAllInboxGroupsReadParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markAllInboxGroupsRead, arg.Now, arg.WorkspaceID, arg.RecipientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markInboxGroupRead = `-- name: MarkInboxGroupRead :one

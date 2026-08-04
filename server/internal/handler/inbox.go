@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service/inboxv2"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -104,6 +105,16 @@ func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p := h.inboxProjection(); p != nil {
+		rows, err := p.List(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list inbox")
+			return
+		}
+		writeJSON(w, http.StatusOK, projectedInboxRows(rows))
+		return
+	}
+
 	items, err := h.Queries.ListInboxItems(r.Context(), db.ListInboxItemsParams{
 		WorkspaceID:   wsUUID,
 		RecipientType: "member",
@@ -141,6 +152,16 @@ func (h *Handler) ListArchivedInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p := h.inboxProjection(); p != nil {
+		rows, err := p.ListArchived(r.Context(), wsUUID, parseUUID(userID))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list archived inbox")
+			return
+		}
+		writeJSON(w, http.StatusOK, projectedInboxRows(rows))
+		return
+	}
+
 	items, err := h.Queries.ListArchivedInboxItems(r.Context(), db.ListArchivedInboxItemsParams{
 		WorkspaceID:   wsUUID,
 		RecipientType: "member",
@@ -161,6 +182,12 @@ func (h *Handler) ListArchivedInbox(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) MarkInboxRead(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	if p := h.inboxProjection(); p != nil {
+		h.projectedInboxWrite(w, r, id, p.MarkRead, protocol.EventInboxRead, "failed to mark read")
+		return
+	}
+
 	prev, ok := h.loadInboxItemForUser(w, r, id)
 	if !ok {
 		return
@@ -190,6 +217,12 @@ func (h *Handler) MarkInboxRead(w http.ResponseWriter, r *http.Request) {
 // Scope is the single item, matching MarkInboxRead — see the query comment.
 func (h *Handler) MarkInboxUnread(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	if p := h.inboxProjection(); p != nil {
+		h.projectedInboxWrite(w, r, id, p.MarkUnread, protocol.EventInboxUnread, "failed to mark unread")
+		return
+	}
+
 	prev, ok := h.loadInboxItemForUser(w, r, id)
 	if !ok {
 		return
@@ -213,6 +246,12 @@ func (h *Handler) MarkInboxUnread(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ArchiveInboxItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	if p := h.inboxProjection(); p != nil {
+		h.projectedInboxWrite(w, r, id, p.Archive, protocol.EventInboxArchived, "failed to archive")
+		return
+	}
+
 	prev, ok := h.loadInboxItemForUser(w, r, id)
 	if !ok {
 		return
@@ -255,6 +294,12 @@ func (h *Handler) ArchiveInboxItem(w http.ResponseWriter, r *http.Request) {
 // non-archived items, so restoring one is a real addition, not a bug.
 func (h *Handler) UnarchiveInboxItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	if p := h.inboxProjection(); p != nil {
+		h.projectedInboxWrite(w, r, id, p.Unarchive, protocol.EventInboxUnarchived, "failed to unarchive")
+		return
+	}
+
 	prev, ok := h.loadInboxItemForUser(w, r, id)
 	if !ok {
 		return
@@ -298,6 +343,16 @@ func (h *Handler) CountUnreadInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p := h.inboxProjection(); p != nil {
+		count, err := p.CountUnread(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to count unread inbox")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int64{"count": count})
+		return
+	}
+
 	count, err := h.Queries.CountUnreadInbox(r.Context(), db.CountUnreadInboxParams{
 		WorkspaceID:   wsUUID,
 		RecipientType: "member",
@@ -330,6 +385,23 @@ func (h *Handler) UnreadInboxSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p := h.inboxProjection(); p != nil {
+		summary, err := p.UnreadSummary(r.Context(), parseUUID(userID), inboxNow())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to summarize unread inbox")
+			return
+		}
+		resp := make([]InboxWorkspaceUnreadResponse, len(summary))
+		for i, row := range summary {
+			resp[i] = InboxWorkspaceUnreadResponse{
+				WorkspaceID: uuidToString(row.WorkspaceID),
+				Count:       row.Count,
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	rows, err := h.Queries.CountUnreadInboxByWorkspace(r.Context(), parseUUID(userID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to summarize unread inbox")
@@ -358,10 +430,16 @@ func (h *Handler) MarkAllInboxRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.Queries.MarkAllInboxRead(r.Context(), db.MarkAllInboxReadParams{
-		WorkspaceID: wsUUID,
-		RecipientID: parseUUID(userID),
-	})
+	count, err := h.projectedOrLegacyBatch(r, wsUUID, parseUUID(userID),
+		func(p *inboxv2.LegacyProjection) (int64, error) {
+			return p.MarkAllRead(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		},
+		func() (int64, error) {
+			return h.Queries.MarkAllInboxRead(r.Context(), db.MarkAllInboxReadParams{
+				WorkspaceID: wsUUID,
+				RecipientID: parseUUID(userID),
+			})
+		})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark all inbox read")
 		return
@@ -387,10 +465,16 @@ func (h *Handler) ArchiveAllInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.Queries.ArchiveAllInbox(r.Context(), db.ArchiveAllInboxParams{
-		WorkspaceID: wsUUID,
-		RecipientID: parseUUID(userID),
-	})
+	count, err := h.projectedOrLegacyBatch(r, wsUUID, parseUUID(userID),
+		func(p *inboxv2.LegacyProjection) (int64, error) {
+			return p.ArchiveAll(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		},
+		func() (int64, error) {
+			return h.Queries.ArchiveAllInbox(r.Context(), db.ArchiveAllInboxParams{
+				WorkspaceID: wsUUID,
+				RecipientID: parseUUID(userID),
+			})
+		})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive all inbox")
 		return
@@ -416,10 +500,16 @@ func (h *Handler) ArchiveAllReadInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.Queries.ArchiveAllReadInbox(r.Context(), db.ArchiveAllReadInboxParams{
-		WorkspaceID: wsUUID,
-		RecipientID: parseUUID(userID),
-	})
+	count, err := h.projectedOrLegacyBatch(r, wsUUID, parseUUID(userID),
+		func(p *inboxv2.LegacyProjection) (int64, error) {
+			return p.ArchiveRead(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		},
+		func() (int64, error) {
+			return h.Queries.ArchiveAllReadInbox(r.Context(), db.ArchiveAllReadInboxParams{
+				WorkspaceID: wsUUID,
+				RecipientID: parseUUID(userID),
+			})
+		})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive all read inbox")
 		return
@@ -445,10 +535,16 @@ func (h *Handler) ArchiveCompletedInbox(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	count, err := h.Queries.ArchiveCompletedInbox(r.Context(), db.ArchiveCompletedInboxParams{
-		WorkspaceID: wsUUID,
-		RecipientID: parseUUID(userID),
-	})
+	count, err := h.projectedOrLegacyBatch(r, wsUUID, parseUUID(userID),
+		func(p *inboxv2.LegacyProjection) (int64, error) {
+			return p.ArchiveCompleted(r.Context(), wsUUID, parseUUID(userID), inboxNow())
+		},
+		func() (int64, error) {
+			return h.Queries.ArchiveCompletedInbox(r.Context(), db.ArchiveCompletedInboxParams{
+				WorkspaceID: wsUUID,
+				RecipientID: parseUUID(userID),
+			})
+		})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive completed inbox")
 		return
