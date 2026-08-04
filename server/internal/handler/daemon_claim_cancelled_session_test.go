@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -731,22 +730,22 @@ func TestCancelTask_ConcurrentWithChatSessionDelete(t *testing.T) {
 		deleteErr := make(chan error, 1)
 		go func() {
 			<-start
-			_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+			callCtx, cancel := raceCtx()
+			defer cancel()
+			_, err := testHandler.TaskService.CancelTaskWithResult(callCtx, parseUUID(taskID),
 				service.CancelTaskOptions{ClientSupportsDraftRestore: true})
 			cancelErr <- err
 		}()
 		go func() {
 			<-start
-			deleteErr <- deleteChatSessionLikeHandler(context.Background(), chatSessionID)
+			callCtx, cancel := raceCtx()
+			defer cancel()
+			deleteErr <- deleteChatSessionLikeHandler(callCtx, chatSessionID)
 		}()
 		close(start)
 
-		if err := <-cancelErr; err != nil && isDeadlock(err) {
-			t.Fatalf("iteration %d: cancel deadlocked against chat delete: %v", i, err)
-		}
-		if err := <-deleteErr; err != nil && isDeadlock(err) {
-			t.Fatalf("iteration %d: chat delete deadlocked against cancel: %v", i, err)
-		}
+		assertRaceSucceeded(t, i, "cancel", <-cancelErr)
+		assertRaceSucceeded(t, i, "chat delete", <-deleteErr)
 
 		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
 		testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID)
@@ -865,12 +864,16 @@ func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
 		{
 			name: "cancel-vs-complete",
 			first: func(taskID string) error {
-				_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+				callCtx, cancel := raceCtx()
+				defer cancel()
+				_, err := testHandler.TaskService.CancelTaskWithResult(callCtx, parseUUID(taskID),
 					service.CancelTaskOptions{ClientSupportsDraftRestore: true})
 				return err
 			},
 			other: func(taskID string) error {
-				_, err := testHandler.TaskService.CompleteTask(context.Background(), parseUUID(taskID),
+				callCtx, cancel := raceCtx()
+				defer cancel()
+				_, err := testHandler.TaskService.CompleteTask(callCtx, parseUUID(taskID),
 					[]byte(`"done"`), "turn2-session", "/tmp/turn2-workdir", false, "")
 				return err
 			},
@@ -882,17 +885,25 @@ func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
 				req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
 					map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
 					testWorkspaceID, daemonID)
+				reqCtx, cancel := context.WithTimeout(req.Context(), raceTimeout)
+				defer cancel()
 				rctx := chi.NewRouteContext()
 				rctx.URLParams.Add("taskId", taskID)
-				req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+				req = req.WithContext(context.WithValue(reqCtx, chi.RouteCtxKey, rctx))
 				testHandler.PinTaskSession(w, req)
+				// Any non-204 fails, deliberately: a pin that loses a deadlock is
+				// reported by the handler as a plain 500, so a check that only
+				// recognised *pgconn.PgError(40P01) would skip the very failure
+				// this test exists to catch.
 				if w.Code != http.StatusNoContent {
 					return errors.New("pin failed: " + w.Body.String())
 				}
 				return nil
 			},
 			other: func(taskID string) error {
-				_, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID),
+				callCtx, cancel := raceCtx()
+				defer cancel()
+				_, err := testHandler.TaskService.FailTask(callCtx, parseUUID(taskID),
 					"boom", "turn3-session", "/tmp/turn3-workdir", "agent_error", false, "")
 				return err
 			},
@@ -932,12 +943,8 @@ func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
 				go func() { <-start; otherErr <- c.other(taskID) }()
 				close(start)
 
-				if err := <-firstErr; err != nil && isDeadlock(err) {
-					t.Fatalf("iteration %d: deadlock: %v", i, err)
-				}
-				if err := <-otherErr; err != nil && isDeadlock(err) {
-					t.Fatalf("iteration %d: deadlock: %v", i, err)
-				}
+				assertRaceSucceeded(t, i, "first", <-firstErr)
+				assertRaceSucceeded(t, i, "other", <-otherErr)
 
 				testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, chatSessionID)
 				testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID)
@@ -970,9 +977,20 @@ func deleteChatSessionLikeHandler(ctx context.Context, chatSessionID string) err
 	return tx.Commit(ctx)
 }
 
-func isDeadlock(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+// assertRaceSucceeded fails on anything except the one benign outcome these
+// races have: whoever moved the task to a terminal state first leaves the loser
+// matching no row (pgx.ErrNoRows).
+//
+// Deliberately NOT a 40P01-only check. A deadlock victim inside an HTTP handler
+// is reported as a plain 500 with no *pgconn.PgError to unwrap, so matching the
+// SQLSTATE alone would silently pass exactly the failure these tests exist to
+// catch. Anything unexpected is a failure, and the error text says what it was.
+func assertRaceSucceeded(t *testing.T, iteration int, label string, err error) {
+	t.Helper()
+	if err == nil || errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
+	t.Fatalf("iteration %d: %s failed: %v", iteration, label, err)
 }
 
 // beginWarmedTx opens a transaction that is safe to hold a row lock in for the
@@ -1017,11 +1035,13 @@ func beginWarmedTx(t *testing.T, ctx context.Context) pgx.Tx {
 	return tx
 }
 
-// raceCtx bounds a racing call so a stalled connection surfaces as a test
-// failure with a real message instead of wedging the package until the
-// 10-minute timeout. Far above the sub-second these paths actually take.
+// raceTimeout bounds every racing call below so a stalled connection surfaces
+// as a test failure with a real message instead of wedging the package until
+// the 10-minute timeout. Far above the sub-second these paths actually take.
+const raceTimeout = 30 * time.Second
+
 func raceCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), raceTimeout)
 }
 
 // pinTaskSessionViaAPI drives the real daemon endpoint so the test covers the
