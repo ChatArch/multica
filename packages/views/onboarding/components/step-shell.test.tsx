@@ -5,11 +5,11 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enOnboarding from "../../locales/en/onboarding.json";
 import {
-  STEP_BLOCK_PADDING,
   STEP_COLUMN,
-  STEP_FRAME,
   STEP_GUTTER,
   STEP_MEASURE,
+  StepFooter,
+  StepHeading,
   StepShell,
 } from "./step-shell";
 
@@ -40,22 +40,57 @@ describe("onboarding step shell", () => {
     expect(main.className).not.toMatch(/\bmax-w-/);
   });
 
-  it("centres both measures so content stays on one centreline", () => {
-    for (const measure of [STEP_FRAME, STEP_COLUMN]) {
-      expect(measure).toContain("mx-auto");
-      expect(measure).toMatch(/max-w-\[\d+px\]/);
-      expect(measure).not.toMatch(/\bp[xlr]?-/);
-    }
-    expect(STEP_BLOCK_PADDING).toMatch(/^py-/);
+  // One measure, not three. Two centred measures of different widths do not
+  // share a left edge, which is how the platform fork ended up ~150px right
+  // of every other step.
+  it("centres a single content measure", () => {
+    expect(STEP_COLUMN).toContain("mx-auto");
+    expect(STEP_COLUMN).toMatch(/max-w-\[[\d.]+rem\]/);
+    expect(STEP_COLUMN).not.toMatch(/\bp[xlr]?-/);
   });
 
-  // STEP_MEASURE caps prose and form fields inside a step that sits on the
-  // frame. It must NOT centre: centring it would pull the content off the
-  // frame's left edge, which is the alignment the frame exists to provide.
-  it("keeps the in-frame reading measure left-aligned and padding-free", () => {
-    expect(STEP_MEASURE).toMatch(/max-w-\[\d+px\]/);
+  // The column fills the pane so StepFooter's `mt-auto` has something to push
+  // against; without it the actions ride up under short content.
+  it("makes the column fill the pane so the footer can pin to the bottom", () => {
+    const { container } = renderShell();
+
+    const column = container.querySelector("main > div")!;
+    expect(column.className).toContain("min-h-full");
+    expect(column.className).toContain("flex-col");
+  });
+
+  it("keeps the in-column control cap left-aligned and padding-free", () => {
+    expect(STEP_MEASURE).toMatch(/max-w-\[[\d.]+rem\]/);
     expect(STEP_MEASURE).not.toContain("mx-auto");
     expect(STEP_MEASURE).not.toMatch(/\bp[xlr]?-/);
+  });
+
+  // The panes persist across steps, so a screen reader user gets no
+  // navigation event when the step changes — the heading has to announce.
+  it("announces the step heading and renders it as the page h1", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <StepHeading title="Name your workspace" description="Pick a URL." />
+      </I18nProvider>,
+    );
+
+    const heading = screen.getByRole("heading", { name: "Name your workspace" });
+    expect(heading.tagName).toBe("H1");
+    expect(heading.closest("[aria-live]")).not.toBeNull();
+    expect(screen.getByText("Pick a URL.")).toBeInTheDocument();
+  });
+
+  it("pins the step actions to the bottom of the column", () => {
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <StepFooter hint="Name it to continue.">
+          <button type="button">Continue</button>
+        </StepFooter>
+      </I18nProvider>,
+    );
+
+    expect(container.firstElementChild!.className).toContain("mt-auto");
+    expect(screen.getByText("Name it to continue.")).toBeInTheDocument();
   });
 
   it("renders Back only when the step can go back", () => {

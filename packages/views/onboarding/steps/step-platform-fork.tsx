@@ -16,8 +16,8 @@ import type { OnboardingStep } from "@multica/core/onboarding";
 import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayLabel } from "@multica/core/runtimes";
 import {
-  STEP_BLOCK_PADDING,
-  STEP_FRAME,
+  StepFooter,
+  StepHeading,
   StepShell,
 } from "../components/step-shell";
 import { CompactRuntimeRow } from "../components/compact-runtime-row";
@@ -120,23 +120,16 @@ export function StepPlatformFork({
       onStepChange={onStepChange}
       sidebarFooter={headerTrailing}
     >
-      {/* On the frame, not the narrow column. Both measures centre, so a
-          620px column and a 920px frame put their left edges ~150px apart —
-          which made the headline jump right when you arrived here from the
-          workspace step. Sitting on the frame and capping the content below
-          keeps every step's left edge in the same place. */}
-      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-        <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {t(($) => $.step_platform.eyebrow)}
-        </div>
-        <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-          {t(($) => $.step_platform.headline)}
-        </h1>
-        <p className="mt-4 max-w-[560px] text-body-lg leading-[1.55] text-muted-foreground">
-          {t(($) => $.step_platform.lede)}
-        </p>
+      <div className="flex flex-col gap-8 pt-2 sm:pt-6">
+        {/* The eyebrow read "Connect a computer" directly above a headline
+            that starts with the same three words. The block has no eyebrow
+            slot and the rail already names the step, so it goes. */}
+        <StepHeading
+          title={t(($) => $.step_platform.headline)}
+          description={t(($) => $.step_platform.lede)}
+        />
 
-        <div className="mt-10 flex max-w-[560px] flex-col gap-3.5">
+        <div className="flex flex-col gap-2">
           <ForkPrimary onClick={pickDesktop} downloaded={downloaded} />
 
           <ForkAlt
@@ -154,22 +147,20 @@ export function StepPlatformFork({
           />
         </div>
 
-        {/* Inline action bar — hint on the left, Skip on the right.
-            Advancement for the CLI path is owned by the CLI
-            dialog's own "Connect & continue" button; Skip creates
-            the single self-serve onboarding issue. */}
-        <div className="mt-8 flex max-w-[560px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <span
-            aria-live="polite"
-            className="text-caption text-muted-foreground"
-          >
-            {footerHint}
-          </span>
-          <Button variant="secondary" onClick={() => onNext(null)}>
-            {t(($) => $.step_runtime.skip)}
-          </Button>
-        </div>
       </div>
+
+      {/* Advancement for the CLI path is owned by the CLI dialog's own
+          "Connect & continue" button; Skip creates the single self-serve
+          onboarding issue. */}
+      <StepFooter hint={footerHint}>
+        <Button
+          variant="ghost"
+          className="w-full"
+          onClick={() => onNext(null)}
+        >
+          {t(($) => $.step_runtime.skip)}
+        </Button>
+      </StepFooter>
 
     <CliInstallDialog
       open={dialog === "cli"}

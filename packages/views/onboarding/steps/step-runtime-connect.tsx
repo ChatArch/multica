@@ -19,8 +19,7 @@ import { RuntimePicker } from "../../agents/components/runtime-picker";
 import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
 import {
-  STEP_BLOCK_PADDING,
-  STEP_FRAME,
+  StepFooter,
   STEP_MEASURE,
   StepShell,
 } from "../components/step-shell";
@@ -261,7 +260,7 @@ function FancyView({
           hard cut. */}
       <div
         key={phase}
-        className={cn("animate-onboarding-enter", STEP_FRAME, STEP_BLOCK_PADDING)}
+        className="animate-onboarding-enter flex flex-col gap-8 pt-2 sm:pt-6"
       >
         <MikaIntro />
 
@@ -295,40 +294,30 @@ function FancyView({
               - Continue: only actionable once a runtime is picked, so
                 it renders only in the found phase instead of sitting
                 permanently disabled through scanning / empty. */}
-        <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-          <span
-            aria-live="polite"
-            className="mr-auto text-caption text-muted-foreground"
-          >
-            {footerHint}
-          </span>
-          {phase !== "empty" && (
-            <div className="flex items-center gap-2">
-              <Button
-                size="lg"
-                variant="secondary"
-                disabled={submitting}
-                onClick={handleSkip}
-              >
-                {t(($) => $.step_runtime.skip)}
-              </Button>
-              {phase === "found" && (
-                <Button
-                  size="lg"
-                  disabled={!canContinue || submitting}
-                  onClick={handleContinue}
-                >
-                  {submitting && (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  )}
-                  {t(($) => $.step_runtime.continue)}
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
       </div>
+
+      <StepFooter hint={footerHint}>
+        {phase === "found" && (
+          <Button
+            className="w-full"
+            disabled={!canContinue || submitting}
+            onClick={handleContinue}
+          >
+            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {t(($) => $.step_runtime.continue)}
+          </Button>
+        )}
+        {phase !== "empty" && (
+          <Button
+            variant="ghost"
+            className="w-full"
+            disabled={submitting}
+            onClick={handleSkip}
+          >
+            {t(($) => $.step_runtime.skip)}
+          </Button>
+        )}
+      </StepFooter>
     </StepShell>
   );
 }

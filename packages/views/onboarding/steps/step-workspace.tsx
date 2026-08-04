@@ -1,7 +1,7 @@
 "use client";
 
 import { type ReactNode, useRef, useState } from "react";
-import { ArrowRight, Dices, Plus } from "lucide-react";
+import { Dices, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -23,8 +23,8 @@ import { useConfigStore } from "@multica/core/config";
 import { workspaceUrlHost } from "@multica/core/workspace/workspace-url";
 import { useLogout } from "../../auth";
 import {
-  STEP_BLOCK_PADDING,
-  STEP_FRAME,
+  StepFooter,
+  StepHeading,
   STEP_MEASURE,
   StepShell,
 } from "../components/step-shell";
@@ -314,36 +314,33 @@ export function StepWorkspace({
       onStepChange={onStepChange}
       sidebarFooter={headerTrailing}
     >
-      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-        <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-          {reusing
-            ? workspaceCreationAllowed
-              ? t(($) => $.step_workspace.eyebrow_resume)
-              : t(($) => $.step_workspace.creation_disabled_eyebrow_resume)
-            : workspaceCreationAllowed
-              ? t(($) => $.step_workspace.eyebrow_first)
-              : t(($) => $.step_workspace.creation_disabled_eyebrow)}
-        </div>
-        <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-          {reusing
-            ? workspaceCreationAllowed
-              ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
-              : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
-            : workspaceCreationAllowed
-              ? t(($) => $.step_workspace.headline_first)
-              : t(($) => $.step_workspace.creation_disabled_headline)}
-        </h1>
-        <p className={cn("mt-4 text-body-lg leading-[1.55] text-foreground", STEP_MEASURE)}>
-          {reusing
-            ? workspaceCreationAllowed
-              ? t(($) => $.step_workspace.lede_resume)
-              : t(($) => $.step_workspace.creation_disabled_lede_resume)
-            : workspaceCreationAllowed
-              ? t(($) => $.step_workspace.lede_first)
-              : t(($) => $.step_workspace.creation_disabled_lede)}
-        </p>
+      <div className="flex flex-col gap-8 pt-2 sm:pt-6">
+        {/* The eyebrow is gone with the rest of them, but its disabled-state
+            wording is not: "Workspace creation is disabled" was the only
+            thing on this screen that said so before the notice below, so
+            that variant is folded into the heading's own copy. */}
+        <StepHeading
+          title={
+            reusing
+              ? workspaceCreationAllowed
+                ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
+                : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
+              : workspaceCreationAllowed
+                ? t(($) => $.step_workspace.headline_first)
+                : t(($) => $.step_workspace.creation_disabled_headline)
+          }
+          description={
+            reusing
+              ? workspaceCreationAllowed
+                ? t(($) => $.step_workspace.lede_resume)
+                : t(($) => $.step_workspace.creation_disabled_lede_resume)
+              : workspaceCreationAllowed
+                ? t(($) => $.step_workspace.lede_first)
+                : t(($) => $.step_workspace.creation_disabled_lede)
+          }
+        />
 
-        <div className="mt-10">
+        <div>
           {reusing ? (
             <div className="flex flex-col gap-3">
               <ExistingWorkspaceCard
@@ -371,21 +368,19 @@ export function StepWorkspace({
           )}
         </div>
 
-        {!(workspaceCreationDisabled && !reusing) && (
-          <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-            <span
-              aria-live="polite"
-              className="mr-auto text-caption text-muted-foreground"
-            >
-              {hint}
-            </span>
-            <Button size="lg" disabled={continueDisabled} onClick={onContinue}>
-              {continueLabel}
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
       </div>
+
+      {!(workspaceCreationDisabled && !reusing) && (
+        <StepFooter hint={hint}>
+          <Button
+            className="w-full"
+            disabled={continueDisabled}
+            onClick={onContinue}
+          >
+            {continueLabel}
+          </Button>
+        </StepFooter>
+      )}
     </StepShell>
   );
 }

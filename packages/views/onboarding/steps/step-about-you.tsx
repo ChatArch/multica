@@ -2,7 +2,6 @@
 
 import type { ReactNode } from "react";
 import {
-  ArrowRight,
   Brain,
   Briefcase,
   Code2,
@@ -21,11 +20,10 @@ import {
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import type { QuestionnaireAnswers, Role, UseCase } from "@multica/core/onboarding";
-import { cn } from "@multica/ui/lib/utils";
 import type { OnboardingStep } from "@multica/core/onboarding";
 import {
-  STEP_BLOCK_PADDING,
-  STEP_FRAME,
+  StepFooter,
+  StepHeading,
   StepShell,
 } from "../components/step-shell";
 import {
@@ -193,18 +191,10 @@ export function StepAboutYou({
       onStepChange={onStepChange}
       sidebarFooter={headerTrailing}
     >
-      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-        {/* No eyebrow here. It read "About you", which is now the rail's
-            label for this very step — the page said its own name twice,
-            once in grey caps and once in the headline below it. The other
-            steps keep theirs because they say something the rail doesn't
-            ("Connect a computer", "Workspace creation is disabled"). */}
-        <h1 className="text-balance font-serif text-display font-medium leading-[1.15] tracking-tight text-foreground">
-          {t(($) => $.questions.about_you.question)}
-        </h1>
+      <div className="flex flex-col gap-8 pt-2 sm:pt-6">
+        <StepHeading title={t(($) => $.questions.about_you.question)} />
 
         <QuestionGroup
-          number={1}
           question={t(($) => $.questions.role.question)}
           options={roleOptions}
           selectedSlugs={roleSelected}
@@ -216,7 +206,6 @@ export function StepAboutYou({
         />
 
         <QuestionGroup
-          number={2}
           question={t(($) => $.questions.use_case.question)}
           options={useCaseOptions}
           selectedSlugs={useCaseSlugs}
@@ -228,24 +217,16 @@ export function StepAboutYou({
           multiSelect
         />
 
-        <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-          <span
-            aria-live="polite"
-            className="mr-auto text-caption text-muted-foreground"
-          >
-            {footerHint}
-          </span>
-          <div className="flex items-center gap-2">
-            <Button size="lg" variant="secondary" onClick={handleSkip}>
-              {t(($) => $.common.skip)}
-            </Button>
-            <Button size="lg" disabled={!canContinue} onClick={confirmAdvance}>
-              {t(($) => $.common.continue)}
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
       </div>
+
+      <StepFooter hint={footerHint}>
+        <Button className="w-full" disabled={!canContinue} onClick={confirmAdvance}>
+          {t(($) => $.common.continue)}
+        </Button>
+        <Button variant="ghost" className="w-full" onClick={handleSkip}>
+          {t(($) => $.common.skip)}
+        </Button>
+      </StepFooter>
     </StepShell>
   );
 }
@@ -253,12 +234,11 @@ export function StepAboutYou({
 StepAboutYou.displayName = "StepAboutYou";
 
 /**
- * One question group: mono index + sub-question heading + option card
- * grid. Selection semantics live in the parent's handlers; this stays
- * a layout shell so both groups render identically.
+ * One question group: sub-question label + a single column of option cards.
+ * Selection semantics live in the parent's handlers; this stays a layout
+ * shell so both groups render identically.
  */
 function QuestionGroup({
-  number,
   question,
   options,
   selectedSlugs,
@@ -269,7 +249,6 @@ function QuestionGroup({
   onConfirm,
   multiSelect = false,
 }: {
-  number: number;
   question: string;
   options: readonly QuestionOption[];
   selectedSlugs: readonly string[];
@@ -287,19 +266,12 @@ function QuestionGroup({
     : false;
 
   return (
-    <section className="mt-8">
-      <div className="flex items-baseline gap-3">
-        <span aria-hidden className="font-mono text-caption text-muted-foreground">
-          {String(number).padStart(2, "0")}
-        </span>
-        <h2 className="text-title font-medium leading-snug text-foreground">
-          {question}
-        </h2>
-      </div>
+    <section className="flex flex-col gap-3">
+      <h2 className="text-label font-medium text-foreground">{question}</h2>
       <fieldset
         role={multiSelect ? "group" : "radiogroup"}
         aria-label={question}
-        className="m-0 mt-3 grid grid-cols-1 gap-2.5 p-0 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className="m-0 flex flex-row flex-wrap gap-2 p-0"
       >
         {options.map((option) =>
           option.isOther ? (

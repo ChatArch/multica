@@ -1,9 +1,15 @@
 "use client";
 
 import { Sparkles } from "lucide-react";
-import { cn } from "@multica/ui/lib/utils";
+import {
+  Item,
+  ItemContent,
+  ItemDescription,
+  ItemMedia,
+  ItemTitle,
+} from "@multica/ui/components/ui/item";
 import { useT } from "../../i18n";
-import { STEP_MEASURE } from "./step-shell";
+import { StepHeading } from "./step-shell";
 
 /**
  * The subject of step 3, stated as an object rather than a footnote.
@@ -23,32 +29,25 @@ import { STEP_MEASURE } from "./step-shell";
 export function MikaIntro() {
   const { t } = useT("onboarding");
   return (
-    <>
-      <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-        {t(($) => $.mika_intro.headline)}
-      </h1>
-      <div
-        className={cn(
-          "mt-6 flex items-start gap-4 rounded-xl border bg-card px-5 py-4",
-          STEP_MEASURE,
-        )}
-      >
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
-          <Sparkles aria-hidden className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-body font-medium text-foreground">
+    <div className="flex flex-col gap-5">
+      <StepHeading title={t(($) => $.mika_intro.headline)} />
+      <Item variant="outline">
+        <ItemMedia>
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
+            <Sparkles aria-hidden className="size-4" />
+          </span>
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle>
             {t(($) => $.mika_intro.name)}
             <span className="text-muted-foreground">
               {" · "}
               {t(($) => $.mika_intro.role)}
             </span>
-          </p>
-          <p className="mt-1 text-body leading-[1.55] text-muted-foreground">
-            {t(($) => $.mika_intro.blurb)}
-          </p>
-        </div>
-      </div>
-    </>
+          </ItemTitle>
+          <ItemDescription>{t(($) => $.mika_intro.blurb)}</ItemDescription>
+        </ItemContent>
+      </Item>
+    </div>
   );
 }
