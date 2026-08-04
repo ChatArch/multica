@@ -762,7 +762,7 @@ func TestUnreadEventsForGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	events, err := f.store.Queries.ListUnreadInboxEventsForGroup(ctx, db.ListUnreadInboxEventsForGroupParams{
-		GroupID: g.ID, ReadThroughSeq: g.ReadThroughSeq,
+		GroupID: g.ID, WorkspaceID: f.ws, RecipientID: f.user, ReadThroughSeq: g.ReadThroughSeq,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -772,5 +772,131 @@ func TestUnreadEventsForGroup(t *testing.T) {
 	}
 	if events[0].EventSeq != 2 || events[1].EventSeq != 3 {
 		t.Fatalf("unread events must be oldest-first, got %d,%d", events[0].EventSeq, events[1].EventSeq)
+	}
+}
+
+// A group id on its own must not be enough to read someone's notification
+// history. Without this the events endpoint would be a plain IDOR: knowing a
+// UUID would return another person's inbox contents.
+func TestEventQueriesAreScopedToTheOwner(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	res, err := f.store.Append(ctx, f.comment(t, uuid.New().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID := res.Group.ID
+	intruder := newUUID()
+	otherWS := newUUID()
+
+	cases := []struct {
+		name        string
+		workspaceID pgtype.UUID
+		recipientID pgtype.UUID
+		wantRows    int
+	}{
+		{"owner", f.ws, f.user, 1},
+		{"another recipient", f.ws, intruder, 0},
+		{"another workspace", otherWS, f.user, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			history, err := f.store.Queries.ListInboxEventsForGroup(ctx, db.ListInboxEventsForGroupParams{
+				GroupID: groupID, WorkspaceID: tc.workspaceID, RecipientID: tc.recipientID, PageSize: 50,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(history) != tc.wantRows {
+				t.Errorf("ListInboxEventsForGroup returned %d rows, want %d", len(history), tc.wantRows)
+			}
+			unread, err := f.store.Queries.ListUnreadInboxEventsForGroup(ctx, db.ListUnreadInboxEventsForGroupParams{
+				GroupID: groupID, WorkspaceID: tc.workspaceID, RecipientID: tc.recipientID, ReadThroughSeq: 0,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(unread) != tc.wantRows {
+				t.Errorf("ListUnreadInboxEventsForGroup returned %d rows, want %d", len(unread), tc.wantRows)
+			}
+		})
+	}
+}
+
+// The frozen producer contract, checked against the database rather than
+// against the registry alone. Each case is a real producer shape.
+func TestFrozenProducerTargetContract(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	q := db.New(f.pool)
+
+	group, err := q.AcquireInboxGroup(ctx, db.AcquireInboxGroupParams{
+		WorkspaceID: f.ws, RecipientID: f.user,
+		SourceKind: string(SourceIssue), SourceID: f.issue, Now: ts(f.now),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		typ        EventType
+		targetKind string
+		withID     bool
+		wantOK     bool
+	}{
+		// reaction_added covers both anchors, which is why its target is
+		// optional rather than required.
+		{"reaction on a comment", TypeReactionAdded, "comment", true, true},
+		{"reaction on the issue itself", TypeReactionAdded, "", false, true},
+		{"reaction pointing at a run", TypeReactionAdded, "run", true, false},
+
+		// Agent/task outcomes with a verified producer: run target required.
+		{"task_failed with its run", TypeTaskFailed, "run", true, true},
+		{"task_failed without a run", TypeTaskFailed, "", false, false},
+		{"quick_create_done with its run", TypeQuickCreateDone, "run", true, true},
+		{"quick_create_done without a run", TypeQuickCreateDone, "", false, false},
+		{"quick_create_failed without a run", TypeQuickCreateFailed, "", false, false},
+
+		{"autopilot_paused with its autopilot", TypeAutopilotPaused, "autopilot", true, true},
+		{"autopilot_paused without one", TypeAutopilotPaused, "", false, false},
+
+		// No producer exists for these, so they stay permissive.
+		{"task_completed without a run", TypeTaskCompleted, "", false, true},
+		{"agent_blocked pointing at a comment", TypeAgentBlocked, "comment", true, false},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var kind pgtype.Text
+			if tc.targetKind != "" {
+				kind = pgtype.Text{String: tc.targetKind, Valid: true}
+			}
+			var id pgtype.UUID
+			if tc.withID {
+				id = newUUID()
+			}
+			_, err := q.InsertInboxEvent(ctx, db.InsertInboxEventParams{
+				GroupID: group.ID, WorkspaceID: f.ws,
+				EventSeq: int64(500 + i), Type: string(tc.typ),
+				TargetKind: kind, TargetID: id,
+				Payload: []byte("{}"), PayloadVersion: 1,
+				DeliveryKey: "v1:frozen-" + tc.name, Now: ts(f.now),
+			})
+			if tc.wantOK && err != nil {
+				t.Fatalf("database rejected a valid producer shape: %v", err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatal("database accepted a shape the frozen contract forbids")
+			}
+
+			// The Go validator must agree with the database, in both
+			// directions — that is the whole point of having both.
+			goErr := ValidateTarget(tc.typ, TargetKind(tc.targetKind), tc.withID)
+			if (goErr == nil) != tc.wantOK {
+				t.Errorf("ValidateTarget disagrees with the database: err=%v, database accepted=%v", goErr, tc.wantOK)
+			}
+		})
 	}
 }

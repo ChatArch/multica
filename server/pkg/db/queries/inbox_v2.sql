@@ -168,17 +168,31 @@ WHERE workspace_id = @workspace_id
 -- name: ListInboxEventsForGroup :many
 -- Event history for one group, newest first. Backs "N new updates" when a group
 -- is opened with several unread events.
-SELECT * FROM inbox_event
-WHERE group_id = @group_id
-ORDER BY event_seq DESC
+--
+-- Joined to inbox_group and scoped by (workspace_id, recipient_id) rather than
+-- trusting the group id alone. A bare group UUID arriving from a request is not
+-- proof of ownership, and an events endpoint that took one would hand any
+-- authenticated user another person's notification history. Scoping here means
+-- the guarantee does not depend on every future caller remembering to load the
+-- group through GetInboxGroupForRecipient first.
+SELECT e.* FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.group_id = @group_id
+  AND g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id
+ORDER BY e.event_seq DESC
 LIMIT @page_size;
 
 -- name: ListUnreadInboxEventsForGroup :many
 -- The events a group is unread *for*, oldest first. The newest of these is the
--- one a click jumps to.
-SELECT * FROM inbox_event
-WHERE group_id = @group_id AND event_seq > @read_through_seq
-ORDER BY event_seq ASC;
+-- one a click jumps to. Same ownership scoping as ListInboxEventsForGroup.
+SELECT e.* FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.group_id = @group_id
+  AND g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id
+  AND e.event_seq > @read_through_seq
+ORDER BY e.event_seq ASC;
 
 -- name: DeleteInboxGroupsForSource :exec
 -- Lifecycle channel: the source entity was deleted. No database cascade exists

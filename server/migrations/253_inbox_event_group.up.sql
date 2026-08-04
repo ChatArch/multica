@@ -99,9 +99,43 @@ CREATE TABLE IF NOT EXISTS inbox_event (
     -- `NULL = 'comment'` is NULL, so a plain equality would wave through the
     -- exact row this constraint exists to stop — a comment notification with no
     -- comment.
+    --
+    -- reaction_added is deliberately NOT in this list. The same type string is
+    -- emitted for reactions on a comment and reactions on the issue itself
+    -- (cmd/server/notification_listeners.go, issue_reaction:added), and the
+    -- issue case genuinely has no comment. Splitting it into two types would
+    -- change a string every client already renders, so the contract is instead
+    -- "a comment if there is one" — enforced by the kind restriction below.
     CONSTRAINT inbox_event_comment_target CHECK (
-        type NOT IN ('new_comment', 'mentioned', 'reaction_added')
+        type NOT IN ('new_comment', 'mentioned')
         OR target_kind IS NOT DISTINCT FROM 'comment'
+    ),
+
+    -- Types that carry a run: the agent/task outcomes whose producers all have
+    -- the originating task id in hand. Required rather than optional so a
+    -- producer cannot quietly emit an unclickable row.
+    CONSTRAINT inbox_event_run_target CHECK (
+        type NOT IN (
+            'task_failed',
+            'quick_create_done', 'quick_create_failed', 'quick_create_unconfirmed'
+        )
+        OR target_kind IS NOT DISTINCT FROM 'run'
+    ),
+
+    CONSTRAINT inbox_event_autopilot_target CHECK (
+        type <> 'autopilot_paused'
+        OR target_kind IS NOT DISTINCT FROM 'autopilot'
+    ),
+
+    -- Per-type kind restriction for the types whose target is optional. Without
+    -- this a reaction could point at a run and still satisfy every constraint
+    -- above.
+    CONSTRAINT inbox_event_optional_target_kind CHECK (
+        type <> 'reaction_added' OR target_kind IS NULL OR target_kind = 'comment'
+    ),
+    CONSTRAINT inbox_event_agent_optional_target_kind CHECK (
+        type NOT IN ('task_completed', 'agent_blocked', 'agent_completed')
+        OR target_kind IS NULL OR target_kind = 'run'
     ),
 
     -- Field and status changes must NOT carry a target. They are about the

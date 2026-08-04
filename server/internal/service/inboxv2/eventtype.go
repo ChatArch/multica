@@ -93,20 +93,35 @@ var EventTypes = map[EventType]EventTypeSpec{
 	TypeIssueSubscribed: {Rule: TargetForbidden},
 
 	// Comment-bearing: the entire point is "open this comment".
-	TypeNewComment:    {Rule: TargetRequired, Kind: TargetComment},
-	TypeMentioned:     {Rule: TargetRequired, Kind: TargetComment},
-	TypeReactionAdded: {Rule: TargetRequired, Kind: TargetComment},
+	TypeNewComment: {Rule: TargetRequired, Kind: TargetComment},
+	TypeMentioned:  {Rule: TargetRequired, Kind: TargetComment},
 
-	// Agent/task outcomes. Pending the solution-design mapping table.
-	TypeTaskCompleted:          {Rule: TargetOptional, Kind: TargetRun},
-	TypeTaskFailed:             {Rule: TargetOptional, Kind: TargetRun},
-	TypeAgentBlocked:           {Rule: TargetOptional, Kind: TargetRun},
-	TypeAgentCompleted:         {Rule: TargetOptional, Kind: TargetRun},
-	TypeQuickCreateDone:        {Rule: TargetOptional, Kind: TargetRun},
-	TypeQuickCreateFailed:      {Rule: TargetOptional, Kind: TargetRun},
-	TypeQuickCreateUnconfirmed: {Rule: TargetOptional, Kind: TargetRun},
+	// reaction_added is optional rather than required because the same type
+	// string covers reactions on a comment AND reactions on the issue itself
+	// (cmd/server/notification_listeners.go, issue_reaction:added), and the
+	// issue case has no comment to point at. Requiring one would make every
+	// issue reaction fail the database CHECK at delivery time.
+	TypeReactionAdded: {Rule: TargetOptional, Kind: TargetComment},
 
-	TypeAutopilotPaused: {Rule: TargetOptional, Kind: TargetAutopilot},
+	// Agent/task outcomes whose producers all have the originating task id in
+	// hand, so the target is required: quick-create builds details with
+	// task_id (internal/service/task.go), and both task:failed publishers put
+	// task_id in the event payload (internal/service/task.go,
+	// cmd/server/runtime_sweeper.go).
+	TypeTaskFailed:             {Rule: TargetRequired, Kind: TargetRun},
+	TypeQuickCreateDone:        {Rule: TargetRequired, Kind: TargetRun},
+	TypeQuickCreateFailed:      {Rule: TargetRequired, Kind: TargetRun},
+	TypeQuickCreateUnconfirmed: {Rule: TargetRequired, Kind: TargetRun},
+
+	// No producer in the repository emits these three today. Freezing a
+	// required target for a producer that does not exist would be inventing a
+	// contract, so they stay permissive until one appears.
+	TypeTaskCompleted:  {Rule: TargetOptional, Kind: TargetRun},
+	TypeAgentBlocked:   {Rule: TargetOptional, Kind: TargetRun},
+	TypeAgentCompleted: {Rule: TargetOptional, Kind: TargetRun},
+
+	// The pause monitor always knows which autopilot paused.
+	TypeAutopilotPaused: {Rule: TargetRequired, Kind: TargetAutopilot},
 }
 
 // ValidateTarget checks a (type, target) pair against the registry.

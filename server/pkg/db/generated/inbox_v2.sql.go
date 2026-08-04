@@ -451,21 +451,38 @@ func (q *Queries) ListArchivedInboxGroups(ctx context.Context, arg ListArchivedI
 }
 
 const listInboxEventsForGroup = `-- name: ListInboxEventsForGroup :many
-SELECT id, group_id, workspace_id, event_seq, type, actor_type, actor_id, target_kind, target_id, payload, payload_version, delivery_key, created_at FROM inbox_event
-WHERE group_id = $1
-ORDER BY event_seq DESC
-LIMIT $2
+SELECT e.id, e.group_id, e.workspace_id, e.event_seq, e.type, e.actor_type, e.actor_id, e.target_kind, e.target_id, e.payload, e.payload_version, e.delivery_key, e.created_at FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.group_id = $1
+  AND g.workspace_id = $2
+  AND g.recipient_id = $3
+ORDER BY e.event_seq DESC
+LIMIT $4
 `
 
 type ListInboxEventsForGroupParams struct {
-	GroupID  pgtype.UUID `json:"group_id"`
-	PageSize int32       `json:"page_size"`
+	GroupID     pgtype.UUID `json:"group_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	PageSize    int32       `json:"page_size"`
 }
 
 // Event history for one group, newest first. Backs "N new updates" when a group
 // is opened with several unread events.
+//
+// Joined to inbox_group and scoped by (workspace_id, recipient_id) rather than
+// trusting the group id alone. A bare group UUID arriving from a request is not
+// proof of ownership, and an events endpoint that took one would hand any
+// authenticated user another person's notification history. Scoping here means
+// the guarantee does not depend on every future caller remembering to load the
+// group through GetInboxGroupForRecipient first.
 func (q *Queries) ListInboxEventsForGroup(ctx context.Context, arg ListInboxEventsForGroupParams) ([]InboxEvent, error) {
-	rows, err := q.db.Query(ctx, listInboxEventsForGroup, arg.GroupID, arg.PageSize)
+	rows, err := q.db.Query(ctx, listInboxEventsForGroup,
+		arg.GroupID,
+		arg.WorkspaceID,
+		arg.RecipientID,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -635,20 +652,31 @@ func (q *Queries) ListInboxGroups(ctx context.Context, arg ListInboxGroupsParams
 }
 
 const listUnreadInboxEventsForGroup = `-- name: ListUnreadInboxEventsForGroup :many
-SELECT id, group_id, workspace_id, event_seq, type, actor_type, actor_id, target_kind, target_id, payload, payload_version, delivery_key, created_at FROM inbox_event
-WHERE group_id = $1 AND event_seq > $2
-ORDER BY event_seq ASC
+SELECT e.id, e.group_id, e.workspace_id, e.event_seq, e.type, e.actor_type, e.actor_id, e.target_kind, e.target_id, e.payload, e.payload_version, e.delivery_key, e.created_at FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.group_id = $1
+  AND g.workspace_id = $2
+  AND g.recipient_id = $3
+  AND e.event_seq > $4
+ORDER BY e.event_seq ASC
 `
 
 type ListUnreadInboxEventsForGroupParams struct {
 	GroupID        pgtype.UUID `json:"group_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	RecipientID    pgtype.UUID `json:"recipient_id"`
 	ReadThroughSeq int64       `json:"read_through_seq"`
 }
 
 // The events a group is unread *for*, oldest first. The newest of these is the
-// one a click jumps to.
+// one a click jumps to. Same ownership scoping as ListInboxEventsForGroup.
 func (q *Queries) ListUnreadInboxEventsForGroup(ctx context.Context, arg ListUnreadInboxEventsForGroupParams) ([]InboxEvent, error) {
-	rows, err := q.db.Query(ctx, listUnreadInboxEventsForGroup, arg.GroupID, arg.ReadThroughSeq)
+	rows, err := q.db.Query(ctx, listUnreadInboxEventsForGroup,
+		arg.GroupID,
+		arg.WorkspaceID,
+		arg.RecipientID,
+		arg.ReadThroughSeq,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -39,12 +39,18 @@ var identityFor = map[EventType]func(in IdentityInput) (EntityIdentity, error){
 	TypeNewComment: byComment,
 	TypeMentioned:  byComment,
 	// A reaction is not identified by its comment alone: the same comment can
-	// collect many reactions, and each is a separate notification.
+	// collect many reactions, and each is a separate notification. Reactions on
+	// the issue itself have no comment, so the issue stands in for it — see the
+	// reaction_added note in EventTypes.
 	TypeReactionAdded: func(in IdentityInput) (EntityIdentity, error) {
-		if in.CommentID == "" || in.Emoji == "" || in.ActorID == "" {
-			return EntityIdentity{}, fmt.Errorf("inboxv2: reaction_added needs comment, emoji and actor")
+		anchor := in.CommentID
+		if anchor == "" {
+			anchor = in.IssueID
 		}
-		return EntityIdentity{Parts: []string{in.CommentID, in.Emoji, in.ActorID}}, nil
+		if anchor == "" || in.Emoji == "" || in.ActorID == "" {
+			return EntityIdentity{}, fmt.Errorf("inboxv2: reaction_added needs a comment or issue, plus emoji and actor")
+		}
+		return EntityIdentity{Parts: []string{anchor, in.Emoji, in.ActorID}}, nil
 	},
 
 	// Agent/task outcomes are identified by the run that produced them.
@@ -115,9 +121,18 @@ func byOriginTask(in IdentityInput) (EntityIdentity, error) {
 	return EntityIdentity{Parts: []string{in.OriginTaskID}}, nil
 }
 
+// byFieldChange identifies one edit of one field on one issue.
+//
+// ChangeID is the issue's updated_at at the moment of the edit, which is what
+// the producers actually have: issue:updated carries the updated IssueResponse
+// and no separate change-event id exists on the bus. It has the property the
+// key needs — a retry of the same edit recomputes the same value, while two
+// distinct edits differ — which (issue, field, from, to) would not: flipping a
+// status to in_progress and back to todo would otherwise collide with the
+// original edit and be silently deduplicated away.
 func byFieldChange(in IdentityInput) (EntityIdentity, error) {
 	if in.IssueID == "" || in.Field == "" || in.ChangeID == "" {
-		return EntityIdentity{}, fmt.Errorf("inboxv2: field change needs issue, field and change id")
+		return EntityIdentity{}, fmt.Errorf("inboxv2: field change needs issue, field and change id (issue updated_at)")
 	}
 	return EntityIdentity{Parts: []string{in.IssueID, in.Field, in.ChangeID}}, nil
 }

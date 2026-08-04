@@ -132,10 +132,21 @@ func TestValidateTarget(t *testing.T) {
 		{"comment type with wrong kind", TypeNewComment, TargetRun, true, true},
 		{"status change without target", TypeStatusChanged, "", false, false},
 		{"status change with target", TypeStatusChanged, TargetComment, true, true},
-		{"optional type with target", TypeTaskFailed, TargetRun, true, false},
-		{"optional type without target", TypeTaskFailed, "", false, false},
-		{"kind without id", TypeTaskFailed, TargetRun, false, true},
-		{"id without kind", TypeTaskFailed, "", true, true},
+		{"optional type with target", TypeTaskCompleted, TargetRun, true, false},
+		{"optional type without target", TypeTaskCompleted, "", false, false},
+		{"optional type with wrong kind", TypeTaskCompleted, TargetComment, true, true},
+		// Frozen producer contract: these have a producer that always knows
+		// the run / autopilot, so the target is required rather than optional.
+		{"task_failed with its run", TypeTaskFailed, TargetRun, true, false},
+		{"task_failed without a run", TypeTaskFailed, "", false, true},
+		{"quick create without a run", TypeQuickCreateDone, "", false, true},
+		{"autopilot paused without one", TypeAutopilotPaused, "", false, true},
+		// reaction_added carries a comment only when the reaction is on one.
+		{"reaction on a comment", TypeReactionAdded, TargetComment, true, false},
+		{"reaction on the issue itself", TypeReactionAdded, "", false, false},
+		{"reaction pointing at a run", TypeReactionAdded, TargetRun, true, true},
+		{"kind without id", TypeTaskCompleted, TargetRun, false, true},
+		{"id without kind", TypeTaskCompleted, "", true, true},
 		{"unknown type", EventType("nope"), "", false, true},
 	}
 	for _, tc := range tests {
