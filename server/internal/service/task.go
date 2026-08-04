@@ -4822,13 +4822,14 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 	// same decision encoded in two places that can drift.
 	prefix := s.getIssuePrefix(workspaceID)
 	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
-	details, _ := json.Marshal(map[string]any{
+	detailsMap := map[string]any{
 		"task_id":         util.UUIDToString(task.ID),
 		"agent_id":        util.UUIDToString(task.AgentID),
 		"issue_id":        util.UUIDToString(issue.ID),
 		"identifier":      identifier,
 		"original_prompt": qc.Prompt,
-	})
+	}
+	details, _ := json.Marshal(detailsMap)
 	item, err := inboxWriter(s.TxStarter, s.Queries).CreateInboxItem(ctx, db.CreateInboxItemParams{
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -4841,7 +4842,8 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		ActorType:     pgtype.Text{String: "agent", Valid: true},
 		ActorID:       task.AgentID,
 		Details:       details,
-	}, quickCreateDelivery(inboxv2.TypeQuickCreateDone, task.ID, util.UUIDToString(issue.ID)))
+	}, withSnapshot(quickCreateDelivery(inboxv2.TypeQuickCreateDone, task.ID, util.UUIDToString(issue.ID)),
+		issue.Title, "", "info", util.UUIDToString(issue.ID), detailsMap))
 	if err != nil {
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
@@ -4922,12 +4924,13 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 	// from cancellation, but keep a bound so a wedged DB cannot pin us.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quickCreateNotifyTimeout)
 	defer cancel()
-	details, _ := json.Marshal(map[string]any{
+	detailsMap := map[string]any{
 		"task_id":         util.UUIDToString(task.ID),
 		"agent_id":        util.UUIDToString(task.AgentID),
 		"original_prompt": qc.Prompt,
 		"error":           redact.Text(errMsg),
-	})
+	}
+	details, _ := json.Marshal(detailsMap)
 	item, err := inboxWriter(s.TxStarter, s.Queries).CreateInboxItem(ctx, db.CreateInboxItemParams{
 		WorkspaceID:   workspaceID,
 		RecipientType: "member",
@@ -4940,7 +4943,8 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 		ActorType:     pgtype.Text{String: "agent", Valid: true},
 		ActorID:       task.AgentID,
 		Details:       details,
-	}, quickCreateDelivery(inboxv2.EventType(inboxType), task.ID, ""))
+	}, withSnapshot(quickCreateDelivery(inboxv2.EventType(inboxType), task.ID, ""),
+		title, redact.Text(errMsg), "action_required", "", detailsMap))
 	if err != nil {
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
 		return

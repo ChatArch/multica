@@ -281,6 +281,67 @@ func (q *Queries) FindInboxEventByDeliveryKey(ctx context.Context, deliveryKey s
 	return i, err
 }
 
+const findInboxGroupByEventID = `-- name: FindInboxGroupByEventID :one
+SELECT g.id, g.workspace_id, g.recipient_id, g.source_kind, g.source_id, g.latest_seq, g.latest_event_id, g.latest_event_at, g.read_through_seq, g.manual_unread, g.state_version, g.archived_at, g.snoozed_until, g.surfaced_at, g.created_at, g.updated_at, e.id, e.group_id, e.workspace_id, e.event_seq, e.type, e.actor_type, e.actor_id, e.target_kind, e.target_id, e.payload, e.payload_version, e.delivery_key, e.created_at
+FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.id = $1
+  AND g.workspace_id = $2
+  AND g.recipient_id = $3
+`
+
+type FindInboxGroupByEventIDParams struct {
+	EventID     pgtype.UUID `json:"event_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+}
+
+type FindInboxGroupByEventIDRow struct {
+	InboxGroup InboxGroup `json:"inbox_group"`
+	InboxEvent InboxEvent `json:"inbox_event"`
+}
+
+// Legacy id translation: old single-item write endpoints address a row by its
+// event id, so the projection has to resolve that back to the group the write
+// actually applies to. Scoped by recipient so a stray id cannot reach another
+// person's group.
+func (q *Queries) FindInboxGroupByEventID(ctx context.Context, arg FindInboxGroupByEventIDParams) (FindInboxGroupByEventIDRow, error) {
+	row := q.db.QueryRow(ctx, findInboxGroupByEventID, arg.EventID, arg.WorkspaceID, arg.RecipientID)
+	var i FindInboxGroupByEventIDRow
+	err := row.Scan(
+		&i.InboxGroup.ID,
+		&i.InboxGroup.WorkspaceID,
+		&i.InboxGroup.RecipientID,
+		&i.InboxGroup.SourceKind,
+		&i.InboxGroup.SourceID,
+		&i.InboxGroup.LatestSeq,
+		&i.InboxGroup.LatestEventID,
+		&i.InboxGroup.LatestEventAt,
+		&i.InboxGroup.ReadThroughSeq,
+		&i.InboxGroup.ManualUnread,
+		&i.InboxGroup.StateVersion,
+		&i.InboxGroup.ArchivedAt,
+		&i.InboxGroup.SnoozedUntil,
+		&i.InboxGroup.SurfacedAt,
+		&i.InboxGroup.CreatedAt,
+		&i.InboxGroup.UpdatedAt,
+		&i.InboxEvent.ID,
+		&i.InboxEvent.GroupID,
+		&i.InboxEvent.WorkspaceID,
+		&i.InboxEvent.EventSeq,
+		&i.InboxEvent.Type,
+		&i.InboxEvent.ActorType,
+		&i.InboxEvent.ActorID,
+		&i.InboxEvent.TargetKind,
+		&i.InboxEvent.TargetID,
+		&i.InboxEvent.Payload,
+		&i.InboxEvent.PayloadVersion,
+		&i.InboxEvent.DeliveryKey,
+		&i.InboxEvent.CreatedAt,
+	)
+	return i, err
+}
+
 const getInboxGroupForRecipient = `-- name: GetInboxGroupForRecipient :one
 SELECT id, workspace_id, recipient_id, source_kind, source_id, latest_seq, latest_event_id, latest_event_at, read_through_seq, manual_unread, state_version, archived_at, snoozed_until, surfaced_at, created_at, updated_at FROM inbox_group
 WHERE id = $1 AND workspace_id = $2 AND recipient_id = $3
@@ -439,6 +500,82 @@ func (q *Queries) ListArchivedInboxGroups(ctx context.Context, arg ListArchivedI
 			&i.SurfacedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listArchivedInboxGroupsWithLatestEvent = `-- name: ListArchivedInboxGroupsWithLatestEvent :many
+SELECT g.id, g.workspace_id, g.recipient_id, g.source_kind, g.source_id, g.latest_seq, g.latest_event_id, g.latest_event_at, g.read_through_seq, g.manual_unread, g.state_version, g.archived_at, g.snoozed_until, g.surfaced_at, g.created_at, g.updated_at, e.id, e.group_id, e.workspace_id, e.event_seq, e.type, e.actor_type, e.actor_id, e.target_kind, e.target_id, e.payload, e.payload_version, e.delivery_key, e.created_at
+FROM inbox_group g
+JOIN inbox_event e ON e.id = g.latest_event_id
+WHERE g.workspace_id = $1
+  AND g.recipient_id = $2
+  AND g.archived_at IS NOT NULL
+ORDER BY g.archived_at DESC, g.id DESC
+LIMIT $3
+`
+
+type ListArchivedInboxGroupsWithLatestEventParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	PageSize    int32       `json:"page_size"`
+}
+
+type ListArchivedInboxGroupsWithLatestEventRow struct {
+	InboxGroup InboxGroup `json:"inbox_group"`
+	InboxEvent InboxEvent `json:"inbox_event"`
+}
+
+// Archived counterpart. The two lists are mutually exclusive by construction
+// here: a group is either archived or it is not, which is what removes the old
+// table's "same issue shows in both views" problem rather than papering over it
+// with a NOT EXISTS subquery.
+func (q *Queries) ListArchivedInboxGroupsWithLatestEvent(ctx context.Context, arg ListArchivedInboxGroupsWithLatestEventParams) ([]ListArchivedInboxGroupsWithLatestEventRow, error) {
+	rows, err := q.db.Query(ctx, listArchivedInboxGroupsWithLatestEvent, arg.WorkspaceID, arg.RecipientID, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListArchivedInboxGroupsWithLatestEventRow{}
+	for rows.Next() {
+		var i ListArchivedInboxGroupsWithLatestEventRow
+		if err := rows.Scan(
+			&i.InboxGroup.ID,
+			&i.InboxGroup.WorkspaceID,
+			&i.InboxGroup.RecipientID,
+			&i.InboxGroup.SourceKind,
+			&i.InboxGroup.SourceID,
+			&i.InboxGroup.LatestSeq,
+			&i.InboxGroup.LatestEventID,
+			&i.InboxGroup.LatestEventAt,
+			&i.InboxGroup.ReadThroughSeq,
+			&i.InboxGroup.ManualUnread,
+			&i.InboxGroup.StateVersion,
+			&i.InboxGroup.ArchivedAt,
+			&i.InboxGroup.SnoozedUntil,
+			&i.InboxGroup.SurfacedAt,
+			&i.InboxGroup.CreatedAt,
+			&i.InboxGroup.UpdatedAt,
+			&i.InboxEvent.ID,
+			&i.InboxEvent.GroupID,
+			&i.InboxEvent.WorkspaceID,
+			&i.InboxEvent.EventSeq,
+			&i.InboxEvent.Type,
+			&i.InboxEvent.ActorType,
+			&i.InboxEvent.ActorID,
+			&i.InboxEvent.TargetKind,
+			&i.InboxEvent.TargetID,
+			&i.InboxEvent.Payload,
+			&i.InboxEvent.PayloadVersion,
+			&i.InboxEvent.DeliveryKey,
+			&i.InboxEvent.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -640,6 +777,85 @@ func (q *Queries) ListInboxGroups(ctx context.Context, arg ListInboxGroupsParams
 			&i.SurfacedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboxGroupsWithLatestEvent = `-- name: ListInboxGroupsWithLatestEvent :many
+SELECT g.id, g.workspace_id, g.recipient_id, g.source_kind, g.source_id, g.latest_seq, g.latest_event_id, g.latest_event_at, g.read_through_seq, g.manual_unread, g.state_version, g.archived_at, g.snoozed_until, g.surfaced_at, g.created_at, g.updated_at, e.id, e.group_id, e.workspace_id, e.event_seq, e.type, e.actor_type, e.actor_id, e.target_kind, e.target_id, e.payload, e.payload_version, e.delivery_key, e.created_at
+FROM inbox_group g
+JOIN inbox_event e ON e.id = g.latest_event_id
+WHERE g.workspace_id = $1
+  AND g.recipient_id = $2
+  AND g.archived_at IS NULL
+  AND (g.snoozed_until IS NULL OR g.snoozed_until < $3)
+ORDER BY g.surfaced_at DESC, g.id DESC
+`
+
+type ListInboxGroupsWithLatestEventParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+	Now         pgtype.Timestamptz `json:"now"`
+}
+
+type ListInboxGroupsWithLatestEventRow struct {
+	InboxGroup InboxGroup `json:"inbox_group"`
+	InboxEvent InboxEvent `json:"inbox_event"`
+}
+
+// The projection source for the legacy GET /api/inbox.
+//
+// One row per group, joined to the group's latest event, which is exactly the
+// shape the old clients fold to themselves — so their fold becomes an identity
+// operation and their unread counts and archived view line up without any
+// client change. The join is on latest_event_id rather than a correlated MAX
+// so the list stays one index scan per group.
+func (q *Queries) ListInboxGroupsWithLatestEvent(ctx context.Context, arg ListInboxGroupsWithLatestEventParams) ([]ListInboxGroupsWithLatestEventRow, error) {
+	rows, err := q.db.Query(ctx, listInboxGroupsWithLatestEvent, arg.WorkspaceID, arg.RecipientID, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInboxGroupsWithLatestEventRow{}
+	for rows.Next() {
+		var i ListInboxGroupsWithLatestEventRow
+		if err := rows.Scan(
+			&i.InboxGroup.ID,
+			&i.InboxGroup.WorkspaceID,
+			&i.InboxGroup.RecipientID,
+			&i.InboxGroup.SourceKind,
+			&i.InboxGroup.SourceID,
+			&i.InboxGroup.LatestSeq,
+			&i.InboxGroup.LatestEventID,
+			&i.InboxGroup.LatestEventAt,
+			&i.InboxGroup.ReadThroughSeq,
+			&i.InboxGroup.ManualUnread,
+			&i.InboxGroup.StateVersion,
+			&i.InboxGroup.ArchivedAt,
+			&i.InboxGroup.SnoozedUntil,
+			&i.InboxGroup.SurfacedAt,
+			&i.InboxGroup.CreatedAt,
+			&i.InboxGroup.UpdatedAt,
+			&i.InboxEvent.ID,
+			&i.InboxEvent.GroupID,
+			&i.InboxEvent.WorkspaceID,
+			&i.InboxEvent.EventSeq,
+			&i.InboxEvent.Type,
+			&i.InboxEvent.ActorType,
+			&i.InboxEvent.ActorID,
+			&i.InboxEvent.TargetKind,
+			&i.InboxEvent.TargetID,
+			&i.InboxEvent.Payload,
+			&i.InboxEvent.PayloadVersion,
+			&i.InboxEvent.DeliveryKey,
+			&i.InboxEvent.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

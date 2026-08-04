@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -9,6 +10,29 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// withSnapshot attaches the legacy render snapshot to a delivery.
+//
+// The projection renders from this and nothing else, so whatever the legacy row
+// would have shown has to be captured here at delivery time. details arrives as
+// the JSON the producer already built for the legacy column; decoding and
+// re-encoding it through map[string]string is what guarantees no numeric value
+// survives into a client that parses details as string->string.
+func withSnapshot(d inboxv2.Delivery, title, body, severity, issueID, issueStatus string, details []byte) inboxv2.Delivery {
+	var raw map[string]any
+	if len(details) > 0 {
+		_ = json.Unmarshal(details, &raw)
+	}
+	d.Payload = inboxv2.LegacyPayload{
+		Title:       title,
+		Body:        body,
+		Severity:    severity,
+		IssueID:     issueID,
+		IssueStatus: issueStatus,
+		Details:     inboxv2.StringDetails(raw),
+	}.Encode()
+	return d
+}
 
 // The delivery descriptors below are the producer half of the type contract in
 // inboxv2.EventTypes. Each one records what this producer actually knows, so

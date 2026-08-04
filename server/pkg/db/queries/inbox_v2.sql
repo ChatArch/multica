@@ -223,3 +223,46 @@ WHERE workspace_id = @workspace_id AND recipient_id = @recipient_id;
 -- name: ListInboxGroupIDsForSource :many
 SELECT id FROM inbox_group
 WHERE workspace_id = @workspace_id AND source_kind = @source_kind AND source_id = @source_id;
+
+-- name: ListInboxGroupsWithLatestEvent :many
+-- The projection source for the legacy GET /api/inbox.
+--
+-- One row per group, joined to the group's latest event, which is exactly the
+-- shape the old clients fold to themselves — so their fold becomes an identity
+-- operation and their unread counts and archived view line up without any
+-- client change. The join is on latest_event_id rather than a correlated MAX
+-- so the list stays one index scan per group.
+SELECT sqlc.embed(g), sqlc.embed(e)
+FROM inbox_group g
+JOIN inbox_event e ON e.id = g.latest_event_id
+WHERE g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id
+  AND g.archived_at IS NULL
+  AND (g.snoozed_until IS NULL OR g.snoozed_until < @now)
+ORDER BY g.surfaced_at DESC, g.id DESC;
+
+-- name: ListArchivedInboxGroupsWithLatestEvent :many
+-- Archived counterpart. The two lists are mutually exclusive by construction
+-- here: a group is either archived or it is not, which is what removes the old
+-- table's "same issue shows in both views" problem rather than papering over it
+-- with a NOT EXISTS subquery.
+SELECT sqlc.embed(g), sqlc.embed(e)
+FROM inbox_group g
+JOIN inbox_event e ON e.id = g.latest_event_id
+WHERE g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id
+  AND g.archived_at IS NOT NULL
+ORDER BY g.archived_at DESC, g.id DESC
+LIMIT @page_size;
+
+-- name: FindInboxGroupByEventID :one
+-- Legacy id translation: old single-item write endpoints address a row by its
+-- event id, so the projection has to resolve that back to the group the write
+-- actually applies to. Scoped by recipient so a stray id cannot reach another
+-- person's group.
+SELECT sqlc.embed(g), sqlc.embed(e)
+FROM inbox_event e
+JOIN inbox_group g ON g.id = e.group_id
+WHERE e.id = @event_id
+  AND g.workspace_id = @workspace_id
+  AND g.recipient_id = @recipient_id;

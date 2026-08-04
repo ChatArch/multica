@@ -16,6 +16,20 @@ func inboxWriter(tx TxStarter, q *db.Queries) *inboxv2.Writer {
 	return inboxv2.NewWriter(tx, q)
 }
 
+// withSnapshot attaches the legacy render snapshot, flattening the producer's
+// details map to strings. See inboxv2.LegacyPayload for why the flattening is
+// not optional.
+func withSnapshot(d inboxv2.Delivery, title, body, severity, issueID string, details map[string]any) inboxv2.Delivery {
+	d.Payload = inboxv2.LegacyPayload{
+		Title:    title,
+		Body:     body,
+		Severity: severity,
+		IssueID:  issueID,
+		Details:  inboxv2.StringDetails(details),
+	}.Encode()
+	return d
+}
+
 // quickCreateDelivery describes a quick-create outcome.
 //
 // The originating task is both the identity and the jump target: it survives a

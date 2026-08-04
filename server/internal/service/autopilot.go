@@ -767,10 +767,11 @@ func (s *AutopilotService) notifyAutopilotSubscribersOnCreate(
 	if len(subscribers) == 0 {
 		return
 	}
-	details, _ := json.Marshal(map[string]string{
+	detailsMap := map[string]any{
 		"autopilot_id": util.UUIDToString(ap.ID),
 		"reason":       "autopilot",
-	})
+	}
+	details, _ := json.Marshal(detailsMap)
 	for _, sub := range subscribers {
 		// Autopilot subscribers are restricted to user_type='member' at the
 		// handler boundary; defend in case that constraint is ever relaxed
@@ -790,7 +791,8 @@ func (s *AutopilotService) notifyAutopilotSubscribersOnCreate(
 			ActorType:     pgtype.Text{String: "agent", Valid: true},
 			ActorID:       leaderID,
 			Details:       details,
-		}, issueSubscribedDelivery(issue, util.UUIDToString(leaderID)))
+		}, withSnapshot(issueSubscribedDelivery(issue, util.UUIDToString(leaderID)),
+			issue.Title, "", "info", util.UUIDToString(issue.ID), detailsMap))
 		if err != nil {
 			slog.Error("autopilot subscriber inbox write failed",
 				"autopilot_id", util.UUIDToString(ap.ID),
