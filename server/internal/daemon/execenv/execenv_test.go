@@ -5262,8 +5262,10 @@ func TestTaskInitiatorBlockMember(t *testing.T) {
 	for _, want := range []string{
 		"## Task Initiator",
 		"initiated by **Bohan** (bohan@example.com), a member of this workspace",
+		"is who you are answering",
 		"apply any per-person privacy or access rules",
 		"credentials stay scoped to the runtime owner",
+		"do not assume the initiator can see everything you can",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("expected initiator block to contain %q\n---\n%s", want, block)
