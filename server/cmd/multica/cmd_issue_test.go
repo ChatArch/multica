@@ -3418,3 +3418,34 @@ func TestRunIssueUpdateOmitsPositionWhenUnset(t *testing.T) {
 		t.Fatalf("position must be absent from the body when --position is not passed, got %#v", body["position"])
 	}
 }
+
+// TestIssueCommentListHelpCarriesReadContract pins the read-surface contract
+// that MUL-5442 moved out of the runtime brief into this command's --help: the
+// --recent saturation semantics (MUL-5372) and the pagination cursor labels.
+// The brief now only points here — if these leave the help, the pointer
+// dangles and the over-read trap returns undocumented.
+func TestIssueCommentListHelpCarriesReadContract(t *testing.T) {
+	recent := issueCommentListCmd.Flags().Lookup("recent")
+	if recent == nil {
+		t.Fatal("comment list has no --recent flag")
+	}
+	for _, want := range []string{
+		"caps THREADS, not comments",
+		"no per-thread cap",
+		"fewer than N root threads",
+		"--roots-only + --thread --tail",
+	} {
+		if !strings.Contains(recent.Usage, want) {
+			t.Errorf("--recent help missing %q, got: %s", want, recent.Usage)
+		}
+	}
+	before := issueCommentListCmd.Flags().Lookup("before")
+	if before == nil {
+		t.Fatal("comment list has no --before flag")
+	}
+	for _, want := range []string{"Next thread cursor", "Next reply cursor"} {
+		if !strings.Contains(before.Usage, want) {
+			t.Errorf("--before help missing %q, got: %s", want, before.Usage)
+		}
+	}
+}
