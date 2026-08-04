@@ -75,6 +75,18 @@ func TestBuildPiArgsCustomArgsAppended(t *testing.T) {
 	}
 }
 
+func TestBuildPiArgsDropsAPIKeyFromCustomArgs(t *testing.T) {
+	args := buildPiArgs("prompt", "/tmp/s.jsonl", ExecOptions{
+		CustomArgs: []string{"--api-key", "super-secret", "--tools", "read"},
+	}, slog.Default())
+
+	for _, arg := range args {
+		if arg == "--api-key" || arg == "super-secret" {
+			t.Fatalf("API key leaked into Pi argv: %v", args)
+		}
+	}
+}
+
 // TestPiExecuteAttachesStdinPipe verifies that the Pi backend spawns the
 // child with an explicit stdin pipe (FIFO) instead of leaving cmd.Stdin
 // nil. Without an explicit pipe, Pi has been observed to block under

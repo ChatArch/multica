@@ -265,3 +265,19 @@ describe("AgentOverviewPane Environment tab visibility", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("AgentOverviewPane Runtime tab visibility", () => {
+  it.each(["openclaw", "pi"])("shows Runtime for the %s provider", (provider) => {
+    renderPane([makeRuntime(provider)]);
+    openSettings();
+    expect(screen.getByRole("tab", { name: /^Runtime$/i })).toBeInTheDocument();
+  });
+
+  it("hides Pi secret configuration from users who cannot manage the agent", () => {
+    renderPane([makeRuntime("pi")], { canEdit: false });
+    openSettings();
+    expect(
+      screen.queryByRole("tab", { name: /^Runtime$/i }),
+    ).not.toBeInTheDocument();
+  });
+});

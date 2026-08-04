@@ -251,7 +251,7 @@
     "mcp_config": "MCP",
     "composio_mcp": "MCP アプリ",
     "integrations": "連携",
-    "runtime_config": "ルーティング",
+    "runtime_config": "ランタイム",
     "discard_dialog_title": "保存していない変更を破棄しますか？",
     "discard_dialog_description": "このタブに保存していない変更があります。今移動すると変更は破棄されます。",
     "discard_keep": "編集を続ける",
@@ -476,6 +476,23 @@
       "tls_hint": "http:// の代わりに https:// でダイヤル",
       "saved_toast": "ルーティング設定を保存しました",
       "save_failed_toast": "ルーティング設定の保存に失敗しました"
+    },
+    "pi_runtime_config": {
+      "intro": "Pi が使用するモデルエンドポイントを設定します。非機密フィールドはエージェントに保存され、API key は監査対象の環境変数エンドポイントに別途保存されます。",
+      "provider_label": "Provider ID",
+      "api_label": "API 形式",
+      "base_url_label": "Base URL",
+      "model_label": "モデル ID",
+      "incomplete_error": "Provider、API 形式、Base URL、モデル ID はすべて必須です。",
+      "provider_error": "Provider ID には英数字、ピリオド、アンダースコア、ハイフンのみ使用できます。",
+      "base_url_error": "認証情報を含まない HTTPS URL を使用してください。HTTP はループバックアドレスでのみ使用できます。",
+      "api_key_label": "LLM API key",
+      "api_key_hint": "キーは runtime_config や Pi models.json には書き込まれません。",
+      "reveal_action": "表示して編集",
+      "toggle_key": "API key の表示を切り替える",
+      "reveal_failed_toast": "API key を表示できませんでした",
+      "saved_toast": "Pi ランタイム設定を保存しました",
+      "save_failed_toast": "Pi ランタイム設定の保存に失敗しました"
     },
     "skills": {
       "assigned_title": "エージェントに割り当て済み",

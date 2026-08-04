@@ -259,7 +259,7 @@
     "mcp_config": "MCP",
     "composio_mcp": "MCP 应用",
     "integrations": "集成",
-    "runtime_config": "路由",
+    "runtime_config": "运行时",
     "discard_dialog_title": "放弃未保存的修改？",
     "discard_dialog_description": "当前 tab 有未保存的修改，离开会丢弃这些修改。",
     "discard_keep": "继续编辑",
@@ -583,6 +583,23 @@
       "tls_hint": "用 https:// 代替 http:// 连接",
       "saved_toast": "路由配置已保存",
       "save_failed_toast": "保存路由配置失败"
+    },
+    "pi_runtime_config": {
+      "intro": "配置 Pi 使用的模型端点。非敏感字段随智能体保存；API key 单独存放在受审计的环境变量接口中。",
+      "provider_label": "Provider ID",
+      "api_label": "API 格式",
+      "base_url_label": "Base URL",
+      "model_label": "模型 ID",
+      "incomplete_error": "Provider、API 格式、Base URL 和模型 ID 必须全部填写。",
+      "provider_error": "Provider ID 只能包含字母、数字、点、下划线和连字符。",
+      "base_url_error": "请使用不含内嵌凭据的 HTTPS URL；仅回环地址允许使用 HTTP。",
+      "api_key_label": "LLM API key",
+      "api_key_hint": "密钥不会写入 runtime_config 或 Pi models.json。",
+      "reveal_action": "查看并编辑",
+      "toggle_key": "显示或隐藏 API key",
+      "reveal_failed_toast": "读取 API key 失败",
+      "saved_toast": "Pi 运行时配置已保存",
+      "save_failed_toast": "保存 Pi 运行时配置失败"
     },
     "skills": {
       "intro": "这里展示该智能体实际拥有的全部 skill。工作区 skill 可在此管理；从 Codex 和 Claude Code 继承的 skill 也可以按智能体单独关闭。",

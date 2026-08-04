@@ -259,7 +259,7 @@
     "mcp_config": "MCP",
     "composio_mcp": "MCP 앱",
     "integrations": "연동",
-    "runtime_config": "라우팅",
+    "runtime_config": "런타임",
     "discard_dialog_title": "저장하지 않은 변경사항을 버릴까요?",
     "discard_dialog_description": "이 탭에 저장하지 않은 변경사항이 있습니다. 지금 나가면 변경사항이 사라집니다.",
     "discard_keep": "계속 편집",
@@ -484,6 +484,23 @@
       "tls_hint": "http:// 대신 https://로 다이얼",
       "saved_toast": "라우팅 설정이 저장되었습니다",
       "save_failed_toast": "라우팅 설정 저장 실패"
+    },
+    "pi_runtime_config": {
+      "intro": "Pi가 사용할 모델 엔드포인트를 설정합니다. 비밀이 아닌 필드는 에이전트와 함께 저장되고 API key는 감사되는 환경 변수 엔드포인트에 별도로 저장됩니다.",
+      "provider_label": "Provider ID",
+      "api_label": "API 형식",
+      "base_url_label": "Base URL",
+      "model_label": "모델 ID",
+      "incomplete_error": "Provider, API 형식, Base URL, 모델 ID를 모두 입력해야 합니다.",
+      "provider_error": "Provider ID에는 문자, 숫자, 점, 밑줄, 하이픈만 사용할 수 있습니다.",
+      "base_url_error": "자격 증명이 포함되지 않은 HTTPS URL을 사용하세요. HTTP는 루프백 주소에서만 허용됩니다.",
+      "api_key_label": "LLM API key",
+      "api_key_hint": "키는 runtime_config 또는 Pi models.json에 기록되지 않습니다.",
+      "reveal_action": "표시 및 편집",
+      "toggle_key": "API key 표시 또는 숨기기",
+      "reveal_failed_toast": "API key를 표시하지 못했습니다",
+      "saved_toast": "Pi 런타임 설정이 저장되었습니다",
+      "save_failed_toast": "Pi 런타임 설정 저장 실패"
     },
     "skills": {
       "assigned_title": "에이전트에 할당됨",

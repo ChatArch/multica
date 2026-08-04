@@ -480,6 +480,7 @@ var piBlockedArgs = map[string]blockedArgMode{
 	"--print":   blockedStandalone, // alias for -p
 	"--mode":    blockedWithValue,  // "json" event stream protocol
 	"--session": blockedWithValue,  // daemon manages the session path
+	"--api-key": blockedWithValue,  // secrets must come from per-agent env, never process argv
 }
 
 // buildPiArgs assembles the argv for a one-shot Pi invocation.

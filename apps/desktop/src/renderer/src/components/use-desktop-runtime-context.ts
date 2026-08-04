@@ -50,6 +50,7 @@ export function useDesktopRuntimeContext(): DesktopRuntimeContext {
       status.deviceName ?? lastIdentity.deviceName ?? hostName,
     bootstrapping:
       status.state === "installing_cli" ||
+      status.state === "installing_runtime" ||
       status.state === "starting" ||
       status.state === "running",
   };

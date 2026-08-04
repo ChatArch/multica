@@ -208,7 +208,12 @@ export function AgentOverviewPane({
         // showing the tab to anyone else guarantees a 403 on "Reveal & edit".
         // The server stays the boundary; this only removes a dead entry point.
         if (tab.id === "env") return canEdit;
-        if (tab.id === "runtime_config") return runtime?.provider === "openclaw";
+        if (tab.id === "runtime_config") {
+          return (
+            runtime?.provider === "openclaw" ||
+            (runtime?.provider === "pi" && canEdit)
+          );
+        }
         return true;
       }),
     [canEdit, runtime?.provider],
@@ -468,6 +473,8 @@ export function AgentOverviewPane({
                   )}
                   {effectiveView === "runtime_config" && (
                     <RuntimeConfigTab
+                      key={agent.id}
+                      provider={runtime?.provider ?? ""}
                       agent={agent}
                       onSave={(updates) => onUpdate(agent.id, updates)}
                       onDirtyChange={setActiveDirty}

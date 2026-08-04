@@ -24,6 +24,7 @@ import type {
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
+import { parseManagedRuntimeInstallResult } from "./managed-runtime-install-result";
 import {
   daemonLifecycleUnreachable,
   isDaemonExternallyManaged,
@@ -67,6 +68,7 @@ let getMainWindow: () => BrowserWindow | null = () => null;
 let operationInProgress = false;
 let cachedCliBinary: string | null | undefined = undefined;
 let cliResolvePromise: Promise<string | null> | null = null;
+const managedRuntimeInstallPromises = new Map<string, Promise<void>>();
 let cachedCliBinaryVersion: string | null | undefined = undefined;
 // Set when a CLI version mismatch was detected but the running daemon is
 // busy executing tasks. The poll loop retries the check on each tick and
@@ -309,7 +311,11 @@ async function fetchHealth(): Promise<DaemonStatus> {
   // While the CLI is being downloaded or has permanently failed, short-circuit
   // polling — there's nothing to probe yet and /health calls would just return
   // "stopped", which would overwrite the correct setup state in the UI.
-  if (currentState === "installing_cli" || currentState === "cli_not_found") {
+  if (
+    currentState === "installing_cli" ||
+    currentState === "installing_runtime" ||
+    currentState === "cli_not_found"
+  ) {
     return { state: currentState };
   }
 
@@ -556,6 +562,57 @@ async function getCliBinaryVersion(): Promise<string | null> {
   }
   cachedCliBinaryVersion = await probeCliBinary(bin, "path");
   return cachedCliBinaryVersion;
+}
+
+async function ensureManagedRuntime(
+  bin: string,
+  provider: string,
+): Promise<void> {
+  const inFlight = managedRuntimeInstallPromises.get(provider);
+  if (inFlight) return inFlight;
+
+  const install = new Promise<void>((resolve, reject) => {
+    execFile(
+      bin,
+      ["daemon", "install-runtime", provider, "--output", "json"],
+      {
+        timeout: 190_000,
+        env: desktopSpawnEnv(),
+        maxBuffer: 64 * 1024,
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        try {
+          const result = parseManagedRuntimeInstallResult(stdout, provider);
+          console.log(
+            `[daemon] ${provider} runtime ready at ${result.path} (${result.source}${result.installed ? ", installed" : ""})`,
+          );
+          resolve();
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+  });
+  managedRuntimeInstallPromises.set(provider, install);
+  try {
+    await install;
+  } finally {
+    managedRuntimeInstallPromises.delete(provider);
+  }
+}
+
+async function ensureDesktopManagedRuntimes(bin: string): Promise<void> {
+  try {
+    await ensureManagedRuntime(bin, "pi");
+  } catch (err) {
+    // Pi setup must not prevent a user-installed Claude/Codex/etc. runtime
+    // from starting. The next app launch or explicit daemon start retries.
+    console.warn("[daemon] Pi runtime setup failed; continuing without Pi:", err);
+  }
 }
 
 /**
@@ -913,6 +970,8 @@ async function startDaemon(): Promise<{ success: boolean; error?: string }> {
   const bin = await resolveCliBinary();
   if (!bin) return { success: false, error: "multica CLI is not installed" };
 
+  await ensureDesktopManagedRuntimes(bin);
+
   const active = await ensureActiveProfile();
   const existing = await fetchHealthAtPort(active.port);
   if (daemonStatusAlive(existing?.status)) {
@@ -1044,6 +1103,9 @@ async function bootstrapCli(): Promise<void> {
     sendStatus({ state: "cli_not_found" });
     return;
   }
+  currentState = "installing_runtime";
+  sendStatus({ state: "installing_runtime" });
+  await ensureDesktopManagedRuntimes(bin);
   currentState = "stopped";
   sendStatus({ state: "stopped" });
   startPolling();

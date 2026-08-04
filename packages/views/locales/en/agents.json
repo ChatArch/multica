@@ -268,7 +268,7 @@
     "mcp_config": "MCP",
     "composio_mcp": "MCP Apps",
     "integrations": "Integrations",
-    "runtime_config": "Routing",
+    "runtime_config": "Runtime",
     "discard_dialog_title": "Discard unsaved changes?",
     "discard_dialog_description": "You have unsaved changes in this tab. Leaving now will discard them.",
     "discard_keep": "Keep editing",
@@ -594,6 +594,23 @@
       "tls_hint": "Dial https:// instead of http://",
       "saved_toast": "Routing config saved",
       "save_failed_toast": "Failed to save routing config"
+    },
+    "pi_runtime_config": {
+      "intro": "Configure the model endpoint used by Pi. Non-secret fields are stored with the agent; the API key is stored separately in the audited environment endpoint.",
+      "provider_label": "Provider ID",
+      "api_label": "API format",
+      "base_url_label": "Base URL",
+      "model_label": "Model ID",
+      "incomplete_error": "Provider, API format, Base URL, and Model ID are all required.",
+      "provider_error": "Provider ID may contain letters, numbers, dots, underscores, and hyphens.",
+      "base_url_error": "Use an HTTPS URL without embedded credentials. HTTP is allowed only for loopback addresses.",
+      "api_key_label": "LLM API key",
+      "api_key_hint": "The key is never written to runtime_config or Pi models.json.",
+      "reveal_action": "Reveal & edit",
+      "toggle_key": "Show or hide API key",
+      "reveal_failed_toast": "Failed to reveal the API key",
+      "saved_toast": "Pi runtime config saved",
+      "save_failed_toast": "Failed to save Pi runtime config"
     },
     "skills": {
       "intro": "This is the agent's effective skill set. Workspace skills are managed here; inherited Codex and Claude Code skills can also be turned off per agent.",

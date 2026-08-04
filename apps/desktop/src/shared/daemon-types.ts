@@ -4,6 +4,7 @@ export type DaemonState =
   | "starting"
   | "stopping"
   | "installing_cli"
+  | "installing_runtime"
   | "cli_not_found"
   // The daemon can't start because the server rejected its credentials (the
   // cached PAT expired / was revoked, or the session token is dead). Without
@@ -55,6 +56,7 @@ export const DAEMON_STATE_COLORS: Record<DaemonState, string> = {
   starting: "bg-amber-500 animate-pulse",
   stopping: "bg-amber-500 animate-pulse",
   installing_cli: "bg-sky-500 animate-pulse",
+  installing_runtime: "bg-sky-500 animate-pulse",
   cli_not_found: "bg-red-500",
   auth_expired: "bg-red-500",
 };
@@ -65,6 +67,7 @@ export const DAEMON_STATE_LABELS: Record<DaemonState, string> = {
   starting: "Starting…",
   stopping: "Stopping…",
   installing_cli: "Setting up…",
+  installing_runtime: "Installing Pi…",
   cli_not_found: "Setup Failed",
   auth_expired: "Sign-in required",
 };
@@ -118,6 +121,8 @@ export function daemonStateDescription(state: DaemonState, runtimeCount: number)
       return "Shutting down the local daemon…";
     case "installing_cli":
       return "Setting up the runtime for the first time. Only happens once.";
+    case "installing_runtime":
+      return "Checking for Pi and installing it when needed…";
     case "cli_not_found":
       return "Setup failed · couldn't download the runtime. Check your network.";
     case "auth_expired":

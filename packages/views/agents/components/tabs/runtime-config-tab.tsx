@@ -17,6 +17,7 @@ import { Label } from "@multica/ui/components/ui/label";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { toast } from "sonner";
 import { useT } from "../../../i18n";
+import { PiRuntimeConfigTab } from "./pi-runtime-config-tab";
 
 // Form state mirrors OpenclawRuntimeConfig, but always carries a defined
 // mode value so the radio group is fully controlled. Empty-string mode
@@ -77,6 +78,19 @@ function formToConfig(state: FormState): OpenclawRuntimeConfig {
 }
 
 export function RuntimeConfigTab({
+  provider,
+  ...props
+}: {
+  provider: string;
+  agent: Agent;
+  onSave: (updates: { runtime_config: Record<string, unknown> }) => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
+  if (provider === "pi") return <PiRuntimeConfigTab {...props} />;
+  return <OpenclawRuntimeConfigTab {...props} />;
+}
+
+function OpenclawRuntimeConfigTab({
   agent,
   onSave,
   onDirtyChange,
