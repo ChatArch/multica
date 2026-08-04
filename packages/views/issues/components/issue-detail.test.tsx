@@ -1922,6 +1922,89 @@ describe("IssueDetail (shared)", () => {
       expect(await screen.findByText("Subscribe")).toBeTruthy();
     });
   });
+
+  // Same cold-cache hazard as the Subscribe button, but worse to act on. Every
+  // checkbox here is drawn from the subscribers list, so an unresolved query
+  // renders everyone — including people who ARE subscribed — as unchecked.
+  // Clicking one of those rows sends an explicit subscribe, which rewrites the
+  // target's reason to 'manual' and clears any opt-out scope
+  // (server/pkg/db/queries/subscriber.sql), discarding a delegated
+  // subscription or a deliberate opt-out (MUL-5714).
+  describe("subscriber picker before the query resolves", () => {
+    // The picker sits next to the subscribe control in the Activity header.
+    // Anchor on the heading, not on that control — the whole point of these
+    // cases is that it is not rendered yet.
+    async function openSubscriberPicker() {
+      const heading = await screen.findByText("Activity");
+      const header = heading.parentElement?.parentElement;
+      const trigger = header?.querySelector('[data-slot="popover-trigger"]');
+      if (!trigger) throw new Error("subscriber picker trigger not found");
+      fireEvent.click(trigger);
+      return waitFor(() => {
+        const content = document.querySelector('[data-slot="popover-content"]');
+        if (!content) throw new Error("picker did not open");
+        return content;
+      });
+    }
+
+    function memberRow(content: Element) {
+      const row = Array.from(
+        content.querySelectorAll('[data-slot="command-item"]'),
+      ).find((el) => el.textContent?.includes("Test User"));
+      if (!row) throw new Error("member row not found");
+      return row;
+    }
+
+    it("disables the rows while subscribers are loading", async () => {
+      mockApiObj.listIssueSubscribers.mockReturnValue(new Promise(() => {}));
+      renderIssueDetail();
+
+      const row = memberRow(await openSubscriberPicker());
+
+      expect(row.getAttribute("data-disabled")).toBe("true");
+
+      fireEvent.click(row);
+
+      expect(mockApiObj.subscribeToIssue).not.toHaveBeenCalled();
+      expect(mockApiObj.unsubscribeFromIssue).not.toHaveBeenCalled();
+    });
+
+    it("disables the rows when the subscribers query failed", async () => {
+      mockApiObj.listIssueSubscribers.mockRejectedValue(new Error("boom"));
+      renderIssueDetail();
+
+      const row = memberRow(await openSubscriberPicker());
+
+      expect(row.getAttribute("data-disabled")).toBe("true");
+
+      fireEvent.click(row);
+
+      expect(mockApiObj.subscribeToIssue).not.toHaveBeenCalled();
+      expect(mockApiObj.unsubscribeFromIssue).not.toHaveBeenCalled();
+    });
+
+    it("enables the rows once the query has a real answer", async () => {
+      mockApiObj.listIssueSubscribers.mockResolvedValue([]);
+      renderIssueDetail();
+      // Wait for the resolved state before opening, so this is not just the
+      // pending case passing by accident.
+      await screen.findByText("Subscribe");
+
+      const row = memberRow(await openSubscriberPicker());
+
+      expect(row.getAttribute("data-disabled")).not.toBe("true");
+
+      fireEvent.click(row);
+
+      await waitFor(() =>
+        expect(mockApiObj.subscribeToIssue).toHaveBeenCalledWith(
+          "issue-1",
+          "user-1",
+          "member",
+        ),
+      );
+    });
+  });
 });
 
 describe("groupSubIssuesByStage", () => {

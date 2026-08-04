@@ -6,6 +6,7 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
+import { issueKeys } from "@multica/core/issues/queries";
 import { ApiError } from "@multica/core/api/client";
 import type { ApiClient } from "@multica/core/api/client";
 
@@ -57,9 +58,12 @@ function renderSubscribers() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return renderHook(() => useIssueSubscribers("issue-1", "user-1"), {
-    wrapper: wrapper(queryClient),
-  });
+  return {
+    ...renderHook(() => useIssueSubscribers("issue-1", "user-1"), {
+      wrapper: wrapper(queryClient),
+    }),
+    queryClient,
+  };
 }
 
 /**
@@ -264,9 +268,13 @@ describe("useIssueSubscribers subscriptionKnown", () => {
       },
     } as unknown as ApiClient);
 
-    const { result } = renderSubscribers();
+    const { result, queryClient } = renderSubscribers();
 
-    await waitFor(() => expect(result.current.subscribersError).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(issueKeys.subscribers("issue-1"))?.status,
+      ).toBe("error"),
+    );
     expect(result.current.subscriptionKnown).toBe(false);
   });
 });

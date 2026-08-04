@@ -39,12 +39,9 @@ function isMissingRouteError(err: unknown): boolean {
 export function useIssueSubscribers(issueId: string, userId?: string) {
   const qc = useQueryClient();
   const { t } = useT("issues");
-  const {
-    data: subscribers = [],
-    isPending: subscribersLoading,
-    isSuccess,
-    error: subscribersError,
-  } = useQuery(issueSubscribersOptions(issueId));
+  const { data: subscribers = [], isSuccess } = useQuery(
+    issueSubscribersOptions(issueId),
+  );
 
   const toggleMutation = useToggleIssueSubscriber(issueId);
   const subtreeMutation = useUnsubscribeFromIssueSubtree(issueId);
@@ -126,12 +123,14 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
     (s) => s.user_type === "member" && s.user_id === userId,
   );
   const isSubscribed = !!ownSubscription;
-  // `isSubscribed` is derived from `data ?? []`, so before the query resolves
-  // it reads "not subscribed" for everyone — including people who are. Callers
-  // must gate on this instead of rendering that default: a Subscribe button
-  // shown to an already-subscribed user is wrong on screen, and a click landing
-  // in that window sends a subscribe rather than the unsubscribe they meant
-  // (MUL-5714). A failed query stays unknown too; only a resolved one is truth.
+  // Both `subscribers` and `isSubscribed` come from `data ?? []`, so before the
+  // query resolves they read "nobody is subscribed" — including for people who
+  // are. EVERY control derived from them must gate on this rather than render
+  // the default, and that means the subscriber picker too, not just the
+  // subscribe button: an unchecked row for someone already subscribed sends an
+  // explicit subscribe, which rewrites their reason to 'manual' and clears any
+  // opt-out scope (server/pkg/db/queries/subscriber.sql). A failed query stays
+  // unknown as well; only a resolved one is truth (MUL-5714).
   const subscriptionKnown = isSuccess;
   // Why the current user is watching. Drives the "your agent created this on
   // your behalf" explanation — a subscription nobody remembers opting into
@@ -208,8 +207,6 @@ export function useIssueSubscribers(issueId: string, userId?: string) {
 
   return {
     subscribers,
-    subscribersLoading,
-    subscribersError,
     subscriptionKnown,
     isSubscribed,
     subscriptionReason,

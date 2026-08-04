@@ -133,14 +133,23 @@ function SubscriberPopoverContent({
   agents,
   subscribers,
   toggleSubscriber,
-  togglePending,
+  togglesDisabled,
   t,
 }: {
   members: { user_id: string; name: string }[];
   agents: { id: string; name: string; archived_at?: string | null }[];
   subscribers: { user_type: string; user_id: string }[];
   toggleSubscriber: (id: string, type: "member" | "agent", subscribed: boolean) => void;
-  togglePending: boolean;
+  /**
+   * Every checkbox here is drawn from `subscribers`, which defaults to an empty
+   * list until the query resolves — so an unresolved query renders everyone as
+   * unsubscribed. Acting on that is not a harmless no-op: an explicit subscribe
+   * rewrites the target's reason to 'manual' and clears any opt-out scope
+   * (server/pkg/db/queries/subscriber.sql), which would quietly discard a
+   * delegated subscription or someone's deliberate opt-out. So these rows wait
+   * for a real answer, not just for the in-flight mutation (MUL-5714).
+   */
+  togglesDisabled: boolean;
   t: ActivityT;
 }) {
   const [search, setSearch] = useState("");
@@ -177,7 +186,7 @@ function SubscriberPopoverContent({
                   <CommandItem
                     key={`member-${m.user_id}`}
                     onSelect={() => toggleSubscriber(m.user_id, "member", isSubbed)}
-                    disabled={togglePending}
+                    disabled={togglesDisabled}
                     className="flex items-center gap-2.5"
                   >
                     <Checkbox checked={isSubbed} className="pointer-events-none" />
@@ -197,7 +206,7 @@ function SubscriberPopoverContent({
                   <CommandItem
                     key={`agent-${a.id}`}
                     onSelect={() => toggleSubscriber(a.id, "agent", isSubbed)}
-                    disabled={togglePending}
+                    disabled={togglesDisabled}
                     className="flex items-center gap-2.5"
                   >
                     <Checkbox checked={isSubbed} className="pointer-events-none" />
@@ -2756,7 +2765,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     agents={agents}
                     subscribers={subscribers}
                     toggleSubscriber={toggleSubscriber}
-                    togglePending={togglePending}
+                    togglesDisabled={
+                      !subscriptionKnown || togglePending || !user?.id
+                    }
                     t={t}
                   />
                 </Popover>
