@@ -338,29 +338,29 @@ func TestCancelTask_PointerAdvanceIsAtomicWithStatusFlip(t *testing.T) {
 	}
 
 	// Hold the chat row from another connection so the pointer write blocks.
-	conn, err := testPool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire blocking conn: %v", err)
-	}
-	defer conn.Release()
-	blockTx, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin blocking tx: %v", err)
-	}
+	blockTx := beginWarmedTx(t, ctx)
 	if _, err := blockTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
 		t.Fatalf("lock chat session: %v", err)
 	}
 
 	cancelDone := make(chan error, 1)
 	go func() {
-		_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+		callCtx, cancel := raceCtx()
+		defer cancel()
+		_, err := testHandler.TaskService.CancelTaskWithResult(callCtx, parseUUID(taskID),
 			service.CancelTaskOptions{ClientSupportsDraftRestore: true})
 		cancelDone <- err
 	}()
 
 	// While the pointer write is blocked, the cancellation must not be visible.
+	// Read on the holding transaction: it is READ COMMITTED, so it still sees
+	// whatever the cancel has committed, and it needs no new lock to do so.
 	time.Sleep(300 * time.Millisecond)
-	if got := taskStatus(t, taskID); got == "cancelled" {
+	var statusDuringBlock string
+	if err := blockTx.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&statusDuringBlock); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if statusDuringBlock == "cancelled" {
 		t.Fatalf("task became cancelled while the pointer advance was still blocked: a follow-up claimed in this gap resumes the stale session")
 	}
 
@@ -554,15 +554,7 @@ func TestPinTaskSession_PointerAdvanceIsAtomicWithPin(t *testing.T) {
 		t.Fatalf("setup: create queued follow-up: %v", err)
 	}
 
-	conn, err := testPool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire blocking conn: %v", err)
-	}
-	defer conn.Release()
-	blockTx, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin blocking tx: %v", err)
-	}
+	blockTx := beginWarmedTx(t, ctx)
 	if _, err := blockTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
 		t.Fatalf("lock chat session: %v", err)
 	}
@@ -573,18 +565,23 @@ func TestPinTaskSession_PointerAdvanceIsAtomicWithPin(t *testing.T) {
 		req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
 			map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
 			testWorkspaceID, daemonID)
+		// Derive from the request's own context so the daemon identity survives;
+		// the timeout only bounds a stall.
+		reqCtx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
+		defer cancel()
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("taskId", taskID)
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = req.WithContext(context.WithValue(reqCtx, chi.RouteCtxKey, rctx))
 		testHandler.PinTaskSession(w, req)
 		pinDone <- w.Code
 	}()
 
 	// Blocked on the chat row: the task row must not be carrying the new
-	// session yet, or a follow-up could claim the gap and resume turn1.
+	// session yet, or a follow-up could claim the gap and resume turn1. Read on
+	// the holding transaction so this needs no new table lock.
 	time.Sleep(300 * time.Millisecond)
 	var pinnedSoFar *string
-	if err := testPool.QueryRow(ctx, `SELECT session_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&pinnedSoFar); err != nil {
+	if err := blockTx.QueryRow(ctx, `SELECT session_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&pinnedSoFar); err != nil {
 		t.Fatalf("read task session: %v", err)
 	}
 	if pinnedSoFar != nil {
@@ -648,23 +645,21 @@ func TestCancelTask_TakesChatSessionLockBeforeTask(t *testing.T) {
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
+	// Both transactions are opened and warmed BEFORE anything is locked: a
+	// connection taken mid-hold can queue behind a sibling package's DDL.
+	deleterTx := beginWarmedTx(t, ctx)
+	probeTx := beginWarmedTx(t, ctx)
+
 	// Stand in for DeleteChatSession's first statement.
-	deleter, err := testPool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire deleter conn: %v", err)
-	}
-	defer deleter.Release()
-	deleterTx, err := deleter.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin deleter tx: %v", err)
-	}
 	if _, err := deleterTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
 		t.Fatalf("lock chat session: %v", err)
 	}
 
 	cancelDone := make(chan error, 1)
 	go func() {
-		_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+		callCtx, cancel := raceCtx()
+		defer cancel()
+		_, err := testHandler.TaskService.CancelTaskWithResult(callCtx, parseUUID(taskID),
 			service.CancelTaskOptions{ClientSupportsDraftRestore: true})
 		cancelDone <- err
 	}()
@@ -672,15 +667,6 @@ func TestCancelTask_TakesChatSessionLockBeforeTask(t *testing.T) {
 
 	// The deleter's next step would be cancelling the session's tasks. If the
 	// cancel already holds that row, the two are in a cycle.
-	probe, err := testPool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire probe conn: %v", err)
-	}
-	defer probe.Release()
-	probeTx, err := probe.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin probe tx: %v", err)
-	}
 	var probed string
 	if err := probeTx.QueryRow(ctx,
 		`SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE NOWAIT`, taskID,
@@ -767,6 +753,199 @@ func TestCancelTask_ConcurrentWithChatSessionDelete(t *testing.T) {
 	}
 }
 
+// TestTerminalReports_TakeChatSessionLockBeforeTask extends the lock-order
+// invariant to the terminal reports. Cancel and the pin take chat_session
+// first; CompleteTask / FailTask writing the task row first is the other half
+// of the same crossing pair, and the daemon issues its pin from a goroutine
+// independent of the report, so the two really do overlap.
+//
+// Same proof as the cancel case: with the session held elsewhere, the report
+// must be waiting on the SESSION and holding no lock on the task row.
+func TestTerminalReports_TakeChatSessionLockBeforeTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	report := map[string]func(taskID string) error{
+		"complete": func(taskID string) error {
+			callCtx, cancel := raceCtx()
+			defer cancel()
+			_, err := testHandler.TaskService.CompleteTask(callCtx, parseUUID(taskID),
+				[]byte(`"done"`), "turn2-session", "/tmp/turn2-workdir", false, "")
+			return err
+		},
+		"fail": func(taskID string) error {
+			callCtx, cancel := raceCtx()
+			defer cancel()
+			_, err := testHandler.TaskService.FailTask(callCtx, parseUUID(taskID),
+				"boom", "turn2-session", "/tmp/turn2-workdir", "agent_error", false, "")
+			return err
+		},
+	}
+
+	for name, run := range report {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+
+			var chatSessionID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO chat_session (
+					workspace_id, agent_id, creator_id, title,
+					session_id, work_dir, runtime_id
+				)
+				VALUES ($1, $2, $3, 'report lock order', 'turn1-session', '/tmp/turn1-workdir', $4)
+				RETURNING id
+			`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&chatSessionID); err != nil {
+				t.Fatalf("setup: create chat session: %v", err)
+			}
+			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID) })
+
+			var taskID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO agent_task_queue (
+					agent_id, runtime_id, chat_session_id, status, priority, started_at
+				)
+				VALUES ($1, $2, $3, 'running', 0, now())
+				RETURNING id
+			`, agentID, runtimeID, chatSessionID).Scan(&taskID); err != nil {
+				t.Fatalf("setup: create running chat task: %v", err)
+			}
+			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+			// Opened and warmed before anything is locked; see beginWarmedTx.
+			holderTx := beginWarmedTx(t, ctx)
+			probeTx := beginWarmedTx(t, ctx)
+
+			if _, err := holderTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
+				t.Fatalf("lock chat session: %v", err)
+			}
+
+			reportDone := make(chan error, 1)
+			go func() { reportDone <- run(taskID) }()
+			time.Sleep(300 * time.Millisecond)
+
+			var probed string
+			if err := probeTx.QueryRow(ctx,
+				`SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE NOWAIT`, taskID,
+			).Scan(&probed); err != nil {
+				probeTx.Rollback(ctx)
+				holderTx.Rollback(ctx)
+				<-reportDone
+				t.Fatalf("%s holds the task row while waiting for the chat session — inverted lock order deadlocks against cancel/pin: %v", name, err)
+			}
+			probeTx.Rollback(ctx)
+
+			if err := holderTx.Rollback(ctx); err != nil {
+				t.Fatalf("release chat session lock: %v", err)
+			}
+			if err := <-reportDone; err != nil {
+				t.Fatalf("%s task: %v", name, err)
+			}
+		})
+	}
+}
+
+// TestCancelAndPin_ConcurrentWithTerminalReport runs the crossing pairs for
+// real. Whoever wins, neither side may come back with a deadlock.
+func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
+
+	// cancel vs complete, and the daemon's independent pin goroutine vs fail.
+	contenders := []struct {
+		name  string
+		first func(taskID string) error
+		other func(taskID string) error
+	}{
+		{
+			name: "cancel-vs-complete",
+			first: func(taskID string) error {
+				_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+					service.CancelTaskOptions{ClientSupportsDraftRestore: true})
+				return err
+			},
+			other: func(taskID string) error {
+				_, err := testHandler.TaskService.CompleteTask(context.Background(), parseUUID(taskID),
+					[]byte(`"done"`), "turn2-session", "/tmp/turn2-workdir", false, "")
+				return err
+			},
+		},
+		{
+			name: "pin-vs-fail",
+			first: func(taskID string) error {
+				w := httptest.NewRecorder()
+				req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
+					map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
+					testWorkspaceID, daemonID)
+				rctx := chi.NewRouteContext()
+				rctx.URLParams.Add("taskId", taskID)
+				req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+				testHandler.PinTaskSession(w, req)
+				if w.Code != http.StatusNoContent {
+					return errors.New("pin failed: " + w.Body.String())
+				}
+				return nil
+			},
+			other: func(taskID string) error {
+				_, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(taskID),
+					"boom", "turn3-session", "/tmp/turn3-workdir", "agent_error", false, "")
+				return err
+			},
+		},
+	}
+
+	for _, c := range contenders {
+		t.Run(c.name, func(t *testing.T) {
+			for i := 0; i < 12; i++ {
+				var chatSessionID string
+				if err := testPool.QueryRow(ctx, `
+					INSERT INTO chat_session (
+						workspace_id, agent_id, creator_id, title,
+						session_id, work_dir, runtime_id
+					)
+					VALUES ($1, $2, $3, 'race', 'turn1-session', '/tmp/turn1-workdir', $4)
+					RETURNING id
+				`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&chatSessionID); err != nil {
+					t.Fatalf("setup: create chat session: %v", err)
+				}
+
+				var taskID string
+				if err := testPool.QueryRow(ctx, `
+					INSERT INTO agent_task_queue (
+						agent_id, runtime_id, chat_session_id, status, priority, started_at
+					)
+					VALUES ($1, $2, $3, 'running', 0, now())
+					RETURNING id
+				`, agentID, runtimeID, chatSessionID).Scan(&taskID); err != nil {
+					t.Fatalf("setup: create running chat task: %v", err)
+				}
+
+				start := make(chan struct{})
+				firstErr := make(chan error, 1)
+				otherErr := make(chan error, 1)
+				go func() { <-start; firstErr <- c.first(taskID) }()
+				go func() { <-start; otherErr <- c.other(taskID) }()
+				close(start)
+
+				if err := <-firstErr; err != nil && isDeadlock(err) {
+					t.Fatalf("iteration %d: deadlock: %v", i, err)
+				}
+				if err := <-otherErr; err != nil && isDeadlock(err) {
+					t.Fatalf("iteration %d: deadlock: %v", i, err)
+				}
+
+				testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, chatSessionID)
+				testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID)
+			}
+		})
+	}
+}
+
 // deleteChatSessionLikeHandler replays DeleteChatSession's locking protocol
 // (lock the session, then cascade into agent_task_queue) so the concurrency
 // test exercises the real order without going through HTTP auth.
@@ -794,6 +973,55 @@ func deleteChatSessionLikeHandler(ctx context.Context, chatSessionID string) err
 func isDeadlock(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+// beginWarmedTx opens a transaction that is safe to hold a row lock in for the
+// length of a test.
+//
+// The tests below block a writer by holding a row, then read other rows to
+// observe what the writer has and has not committed. Doing those reads on a
+// FRESH pooled connection is what made them hang: the whole suite shares one
+// database, a sibling package can queue DDL (ACCESS EXCLUSIVE) against these
+// tables at any moment, and once that request is pending every later
+// ACCESS SHARE request queues behind it — including ours, while we are still
+// holding the row the DDL is waiting for. Nothing here is a cycle PostgreSQL
+// can break, so the package sat until the 10-minute test timeout.
+//
+// Taking both table locks up front means this transaction never asks for a new
+// one while holding a row, and the reads then ride the same connection.
+func beginWarmedTx(t *testing.T, ctx context.Context) pgx.Tx {
+	t.Helper()
+
+	conn, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		conn.Release()
+		t.Fatalf("begin tx: %v", err)
+	}
+	t.Cleanup(func() {
+		// Both are no-ops when the test already released them explicitly.
+		tx.Rollback(context.Background())
+		conn.Release()
+	})
+	for _, warm := range []string{
+		`SELECT 1 FROM chat_session LIMIT 1`,
+		`SELECT 1 FROM agent_task_queue LIMIT 1`,
+	} {
+		if _, err := tx.Exec(ctx, warm); err != nil {
+			t.Fatalf("warm table locks: %v", err)
+		}
+	}
+	return tx
+}
+
+// raceCtx bounds a racing call so a stalled connection surfaces as a test
+// failure with a real message instead of wedging the package until the
+// 10-minute timeout. Far above the sub-second these paths actually take.
+func raceCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 // pinTaskSessionViaAPI drives the real daemon endpoint so the test covers the
