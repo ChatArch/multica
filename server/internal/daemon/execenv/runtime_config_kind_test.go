@@ -199,6 +199,17 @@ func TestBriefDueDateTeachesCalendarDayFormat(t *testing.T) {
 	}
 }
 
+// TestBriefOwnsAutopilotIssueCommandsGuard pins the guard's single emission
+// point: the autopilot brief carries AutopilotIssueCommandsGuard, and the
+// per-turn prompt defers to it (daemon.TestBuildPromptAutopilotRunOnly pins
+// the deferral side). MUL-5696.
+func TestBriefOwnsAutopilotIssueCommandsGuard(t *testing.T) {
+	out := buildMetaSkillContent("claude", TaskContextForEnv{AutopilotRunID: "run-1"})
+	if !strings.Contains(out, AutopilotIssueCommandsGuard) {
+		t.Errorf("autopilot brief missing AutopilotIssueCommandsGuard — the per-turn prompt defers to this single emission point")
+	}
+}
+
 // TestSlimQuickCreateAvailableCommands locks the minimal-variant content
 // for quick-create's Available Commands: `issue create` present, every
 // other Core command absent (the hard guardrails forbid the call).
