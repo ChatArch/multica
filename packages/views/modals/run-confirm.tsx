@@ -20,6 +20,9 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { agentListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import { runtimeListOptions, readRuntimeCliVersion, handoffSupported } from "@multica/core/runtimes";
+import { useShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
+import { isImeComposing } from "@multica/core/utils";
+import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useT } from "../i18n";
 
 const MAX_HANDOFF_NOTE = 2000;
@@ -79,6 +82,7 @@ export function RunConfirmModal({
 }) {
   const { t } = useT("modals");
   const { getActorName } = useActorName();
+  const sendShortcut = useShortcut("send");
   const d = (data ?? {}) as RunConfirmData;
   const issueIds = d.issueIds ?? [];
 
@@ -164,6 +168,28 @@ export function RunConfirmModal({
     }
   };
 
+  /**
+   * The configured `send` chord confirms the assignment, the same chord that
+   * creates from the issue composer (MUL-5694).
+   *
+   * Bound on the dialog rather than on the note box so the keycap the confirm
+   * button advertises does not depend on the note being typable: the chord
+   * still confirms when an old runtime disables the box, or when focus is on
+   * the popup itself. A focused button is the one exception, below.
+   */
+  const onDialogKeyDown = (e: React.KeyboardEvent) => {
+    // A held chord submits once, and the Enter that commits an IME
+    // composition is the user picking a candidate, never a confirmation.
+    if (e.defaultPrevented || e.repeat || isImeComposing(e)) return;
+    if (!shortcutMatchesEvent(sendShortcut, e.nativeEvent)) return;
+    // A focused button already activates itself on Enter, so confirming here
+    // too would fire two writes — and on "Don't start yet" they would even
+    // disagree about suppress_run.
+    if (e.target instanceof HTMLElement && e.target.closest("button")) return;
+    e.preventDefault();
+    void submit(false);
+  };
+
   // States the action, not a prediction: the assignment is certain, the run is
   // conditional, so the copy names no run count.
   const headline: ReactNode = boldName(
@@ -179,7 +205,7 @@ export function RunConfirmModal({
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v && !submitting) onClose(); }}>
-      <DialogContent>
+      <DialogContent onKeyDown={onDialogKeyDown}>
         <DialogHeader>
           <DialogTitle>{t(($) => $.run_confirm.title_assign)}</DialogTitle>
           <DialogDescription>{headline}</DialogDescription>
@@ -212,7 +238,24 @@ export function RunConfirmModal({
             {pendingAction === "suppress" ? <Spinner className="size-4" /> : t(($) => $.run_confirm.dont_start)}
           </Button>
           <Button type="button" disabled={submitting} onClick={() => submit(false)}>
-            {pendingAction === "go" ? <Spinner className="size-4" /> : t(($) => $.run_confirm.confirm_assign)}
+            {pendingAction === "go" ? (
+              <Spinner className="size-4" />
+            ) : (
+              <>
+                {t(($) => $.run_confirm.confirm_assign)}
+                {/* Decorative: the accessible name stays "Confirm assignment",
+                    not "Confirm assignment Command Enter". Absent when `send`
+                    is unbound. */}
+                {sendShortcut ? (
+                  <ShortcutKeycaps
+                    shortcut={sendShortcut}
+                    decorative
+                    className="ml-1"
+                    keyClassName="border-background/30 bg-background/15 text-primary-foreground shadow-none"
+                  />
+                ) : null}
+              </>
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>
