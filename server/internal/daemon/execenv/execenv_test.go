@@ -5624,10 +5624,17 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			"decision",
 			// Safety boundaries — these are the negative rules that
 			// keep metadata from rotting into a second description /
-			// log dump. Pinned as one sentence since MUL-5442 merged the
-			// ban list into the Write-on-exit bullet.
-			"Never pin secrets, tokens, or API keys, logs or comment summaries, or runtime bookkeeping",
-			"single-run details belong in the result comment",
+			// log dump. Pinned as separate semantic anchors (not one
+			// sentence) so the phrasing can be rewritten without CI churn,
+			// while dropping any single ban — or the bookkeeping examples
+			// that define that category's boundary — still fails (MUL-5442
+			// review).
+			"secrets/tokens/API keys",
+			"logs/comment summaries",
+			"runtime bookkeeping such as",
+			"attempts, run timestamps, or agent IDs",
+			"single-run details",
+			"belong in the result comment",
 			"snake_case ASCII",
 		},
 	}
