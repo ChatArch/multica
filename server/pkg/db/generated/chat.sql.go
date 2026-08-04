@@ -259,7 +259,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    quick_actions_disabled, regenerate_quick_actions_for, fire_at
+    fire_at
 )
 VALUES (
     $1, $2, NULL,
@@ -273,30 +273,26 @@ VALUES (
     $12,
     $13,
     $14,
-    COALESCE($15::boolean, FALSE),
-    $16,
     $6::timestamptz
 )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for
 `
 
 type CreateChatTaskParams struct {
-	AgentID                   pgtype.UUID        `json:"agent_id"`
-	RuntimeID                 pgtype.UUID        `json:"runtime_id"`
-	Priority                  int32              `json:"priority"`
-	ChatSessionID             pgtype.UUID        `json:"chat_session_id"`
-	InitiatorUserID           pgtype.UUID        `json:"initiator_user_id"`
-	FireAt                    pgtype.Timestamptz `json:"fire_at"`
-	OriginatorUserID          pgtype.UUID        `json:"originator_user_id"`
-	AccountableUserID         pgtype.UUID        `json:"accountable_user_id"`
-	ForceFreshSession         pgtype.Bool        `json:"force_fresh_session"`
-	RuntimeMcpOverlay         []byte             `json:"runtime_mcp_overlay"`
-	RuntimeConnectedApps      []byte             `json:"runtime_connected_apps"`
-	OriginatorSource          pgtype.Text        `json:"originator_source"`
-	TriggerEvidenceKind       pgtype.Text        `json:"trigger_evidence_kind"`
-	TriggerEvidenceRefID      pgtype.UUID        `json:"trigger_evidence_ref_id"`
-	QuickActionsDisabled      pgtype.Bool        `json:"quick_actions_disabled"`
-	RegenerateQuickActionsFor pgtype.UUID        `json:"regenerate_quick_actions_for"`
+	AgentID              pgtype.UUID        `json:"agent_id"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	Priority             int32              `json:"priority"`
+	ChatSessionID        pgtype.UUID        `json:"chat_session_id"`
+	InitiatorUserID      pgtype.UUID        `json:"initiator_user_id"`
+	FireAt               pgtype.Timestamptz `json:"fire_at"`
+	OriginatorUserID     pgtype.UUID        `json:"originator_user_id"`
+	AccountableUserID    pgtype.UUID        `json:"accountable_user_id"`
+	ForceFreshSession    pgtype.Bool        `json:"force_fresh_session"`
+	RuntimeMcpOverlay    []byte             `json:"runtime_mcp_overlay"`
+	RuntimeConnectedApps []byte             `json:"runtime_connected_apps"`
+	OriginatorSource     pgtype.Text        `json:"originator_source"`
+	TriggerEvidenceKind  pgtype.Text        `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID pgtype.UUID        `json:"trigger_evidence_ref_id"`
 }
 
 // The chat sender (initiator) is a direct_human originator and accountable;
@@ -318,8 +314,6 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		arg.OriginatorSource,
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
-		arg.QuickActionsDisabled,
-		arg.RegenerateQuickActionsFor,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -478,25 +472,6 @@ func (q *Queries) DeleteChatDraftRestore(ctx context.Context, arg DeleteChatDraf
 	return result.RowsAffected(), nil
 }
 
-const deleteChatDraftRestoresByArchivedRuntimeAgents = `-- name: DeleteChatDraftRestoresByArchivedRuntimeAgents :exec
-DELETE FROM chat_draft_restore
-WHERE chat_session_id IN (
-    SELECT cs.id FROM chat_session cs
-    JOIN agent a ON a.id = cs.agent_id
-    WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-)
-`
-
-// chat_session cascades from agent, so hard-deleting a runtime's archived agents
-// silently drops their sessions — and, without an FK, would strand the pending
-// restores (which still hold the user's prompt text) forever. Prune them in the
-// same tx, BEFORE the agent rows go: the join below needs them. Mirrors
-// DeleteChannelInstallationsByArchivedRuntimeAgents.
-func (q *Queries) DeleteChatDraftRestoresByArchivedRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteChatDraftRestoresByArchivedRuntimeAgents, runtimeID)
-	return err
-}
-
 const deleteChatDraftRestoresBySession = `-- name: DeleteChatDraftRestoresBySession :exec
 DELETE FROM chat_draft_restore
 WHERE chat_session_id = $1
@@ -518,10 +493,14 @@ WHERE chat_session_id IN (
 )
 `
 
-// Same cascade, for the system agents a runtime teardown also hard-deletes
-// (DeleteSystemAgentsByRuntime). Split from the archived-agent prune because the
-// runtime-profile teardown deletes only archived agents: pruning system-agent
-// sessions there would destroy restores whose session survives.
+// chat_session cascades from agent, so hard-deleting a runtime's system agents
+// silently drops their sessions — and, without an FK, would strand the pending
+// restores (which still hold the user's prompt text) forever. Prune them in the
+// same tx, BEFORE the agent rows go: the join below needs them. Mirrors
+// DeleteChannelInstallationsBySystemRuntimeAgents.
+//
+// Only system agents are hard-deleted on runtime teardown since MUL-5559; user
+// agents (archived or not) are unbound and keep their sessions and restores.
 func (q *Queries) DeleteChatDraftRestoresBySystemRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteChatDraftRestoresBySystemRuntimeAgents, runtimeID)
 	return err
@@ -979,6 +958,113 @@ type LinkUnownedChannelChatMessagesToTaskParams struct {
 func (q *Queries) LinkUnownedChannelChatMessagesToTask(ctx context.Context, arg LinkUnownedChannelChatMessagesToTaskParams) error {
 	_, err := q.db.Exec(ctx, linkUnownedChannelChatMessagesToTask, arg.TaskID, arg.ChatSessionID)
 	return err
+}
+
+const listAgentBuilderSessionsByCreator = `-- name: ListAgentBuilderSessionsByCreator :many
+SELECT cs.id,
+       cs.title,
+       cs.created_at,
+       cs.updated_at,
+       a.runtime_id,
+       COALESCE(lm.content, '') AS last_message_content,
+       COALESCE(lm.role, '') AS last_message_role,
+       lm.created_at AS last_message_at,
+       d.draft AS stored_draft
+FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+LEFT JOIN agent_builder_draft d ON d.chat_session_id = cs.id
+LEFT JOIN LATERAL (
+  SELECT content, role, created_at
+    FROM chat_message m
+   WHERE m.chat_session_id = cs.id
+   ORDER BY m.created_at DESC
+   LIMIT 1
+) lm ON true
+WHERE cs.workspace_id = $1
+  AND cs.creator_id = $2
+  AND cs.status = 'active'
+  AND a.kind = 'system'
+  AND a.system_key LIKE 'agent_builder:%'
+  AND (lm.created_at IS NOT NULL OR d.chat_session_id IS NOT NULL)
+ORDER BY COALESCE(lm.created_at, d.updated_at, cs.updated_at) DESC
+`
+
+type ListAgentBuilderSessionsByCreatorParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+}
+
+type ListAgentBuilderSessionsByCreatorRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	Title              string             `json:"title"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	RuntimeID          pgtype.UUID        `json:"runtime_id"`
+	LastMessageContent string             `json:"last_message_content"`
+	LastMessageRole    string             `json:"last_message_role"`
+	LastMessageAt      pgtype.Timestamptz `json:"last_message_at"`
+	StoredDraft        []byte             `json:"stored_draft"`
+}
+
+// The caller's unfinished agent-creation conversations.
+//
+// These never appear in ListChatSessionsByCreator: that list is filtered
+// against ListAllAgents, which is `kind = 'user'` only, so a builder session —
+// whose agent is the hidden `kind = 'system'` carrier — is invisible to every
+// chat surface by construction. This statement is the only way back to one,
+// which is why the studio may stop deleting them on navigation.
+//
+// `a.runtime_id` is the whole point of the join. The carrier is what
+// SendDirectChatMessage reads to stamp a chat task's runtime, so it is the only
+// truthful answer to "where does this conversation run". Deliberately NOT
+// cs.runtime_id: that is the daemon's resume pointer, left stale on purpose
+// after a runtime switch (see RebindAgentBuilderRuntime), so resuming from it
+// would put the picker on a runtime that no longer executes anything — the
+// exact split MUL-5163 removed.
+//
+// A conversation qualifies once it holds something the user would miss: a
+// message, or a saved configuration. Requiring a message alone was wrong — the
+// form on the right is editable from the moment the session exists and
+// autosaves, so someone can open the builder, type a name, and leave before the
+// first turn. That session has real work in it and was unreachable. Requiring
+// neither is also wrong: a session opened and abandoned untouched is not a
+// draft, and would put an empty row in front of the user on every accidental
+// entry into the flow.
+// The stored draft rides along instead of needing its own fetch: the studio
+// renders this list beside the conversation it is switching between, so the
+// configuration for the row the user picks has to be in hand at click time.
+// LEFT JOIN because a conversation that has only ever been driven by the AI has
+// no saved draft — the client replays the last <agent_draft> block in that case.
+// A draft-only session has no message to sort by; fall back to when its
+// configuration was last written so it still lands in activity order.
+func (q *Queries) ListAgentBuilderSessionsByCreator(ctx context.Context, arg ListAgentBuilderSessionsByCreatorParams) ([]ListAgentBuilderSessionsByCreatorRow, error) {
+	rows, err := q.db.Query(ctx, listAgentBuilderSessionsByCreator, arg.WorkspaceID, arg.CreatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentBuilderSessionsByCreatorRow{}
+	for rows.Next() {
+		var i ListAgentBuilderSessionsByCreatorRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RuntimeID,
+			&i.LastMessageContent,
+			&i.LastMessageRole,
+			&i.LastMessageAt,
+			&i.StoredDraft,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAllChatSessionsByCreator = `-- name: ListAllChatSessionsByCreator :many
@@ -1510,34 +1596,6 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	var id_2 pgtype.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
-}
-
-const lockChatSessionsByArchivedRuntimeAgents = `-- name: LockChatSessionsByArchivedRuntimeAgents :many
-SELECT cs.id FROM chat_session cs
-JOIN agent a ON a.id = cs.agent_id
-WHERE a.runtime_id = $1 AND a.archived_at IS NOT NULL
-ORDER BY cs.id
-FOR UPDATE OF cs
-`
-
-func (q *Queries) LockChatSessionsByArchivedRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockChatSessionsByArchivedRuntimeAgents, runtimeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const lockChatSessionsBySystemRuntimeAgents = `-- name: LockChatSessionsBySystemRuntimeAgents :many

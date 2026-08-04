@@ -626,6 +626,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same no-FK chore, for the agent configuration a builder conversation was
+	// editing. A no-op for ordinary chats, which never have one.
+	if err := qtx.DeleteAgentBuilderDraft(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete agent builder draft")
+		return
+	}
+
 	if err := qtx.DeleteChatSession(r.Context(), db.DeleteChatSessionParams{
 		ID:          session.ID,
 		WorkspaceID: session.WorkspaceID,
@@ -667,10 +674,6 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 type SendChatMessageRequest struct {
 	Content       string   `json:"content"`
 	AttachmentIDs []string `json:"attachment_ids"`
-	// QuickActionsEnabled lets the sender opt this turn out of follow-up
-	// suggestion generation (Settings → Chat toggle). Pointer so an absent
-	// field (older clients) means enabled — only an explicit false disables.
-	QuickActionsEnabled *bool `json:"quick_actions_enabled"`
 }
 
 type SendChatMessageResponse struct {
@@ -754,7 +757,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !agent.RuntimeID.Valid {
-		writeError(w, http.StatusConflict, "chat agent has no runtime")
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAgentRuntimeRequired)
 		return
 	}
 
@@ -792,8 +795,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// creator-only), so they are the task initiator — surfaced to the agent
 	// under `## Task Initiator`. actorType/actorID were resolved above for the
 	// invoke gate.
-	quickActionsDisabled := req.QuickActionsEnabled != nil && !*req.QuickActionsEnabled
-	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), quickActionsDisabled)
+	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to send chat message: "+err.Error())
 		return
@@ -909,14 +911,13 @@ type RegenerateChatQuickActionsRequest struct {
 
 type RegenerateChatQuickActionsResponse struct {
 	MessageID string `json:"message_id"`
-	TaskID    string `json:"task_id"`
 }
 
-// RegenerateChatQuickActions re-runs the daemon suggestion pass for a session's
-// latest assistant turn on explicit user request (the "refresh" button on the
-// quick-actions row, MUL-5149). It enqueues a background regenerate task; the
-// refreshed pills arrive over the same chat:quick_actions realtime path as the
-// automatic pass. Same gate as sending a message — it enqueues an agent run.
+// RegenerateChatQuickActions re-runs the suggestion pass for a session's latest
+// assistant turn on explicit user request (the "refresh" button on the
+// quick-actions row, MUL-5149). Generation is server-side, so this spawns no
+// agent run; the refreshed pills arrive over the same chat:quick_actions
+// realtime path as the automatic pass.
 func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -942,13 +943,11 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusConflict, "chat agent is archived")
 		return
 	}
-	if !agent.RuntimeID.Valid {
-		writeError(w, http.StatusConflict, "chat agent has no runtime")
-		return
-	}
-	// Enqueuing a suggestion pass runs the agent and spends quota, so it must
-	// clear the same INVOKE gate as a normal send (MUL-4525), not just the
-	// softer view gate in gateChatSessionForUser.
+	// The refresh no longer runs the agent, but it is still a user-triggered
+	// spend against that agent's conversation, so it keeps clearing the same
+	// INVOKE gate as a send (MUL-4525) rather than the softer view gate in
+	// gateChatSessionForUser. Deliberately NOT relaxed as a side effect of
+	// moving generation server-side.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
@@ -965,7 +964,7 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	messageID, task, err := h.TaskService.RegenerateChatQuickActions(r.Context(), session, parseUUID(userID), expectedMessageID)
+	messageID, targetTask, err := h.TaskService.RegenerateChatQuickActions(r.Context(), session, expectedMessageID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrChatQuickActionsStale):
@@ -974,26 +973,24 @@ func (h *Handler) RegenerateChatQuickActions(w http.ResponseWriter, r *http.Requ
 			// its optimistic marker and re-offers refresh on the new turn.
 			writeError(w, http.StatusConflict, "a newer reply arrived — refresh it instead")
 		case errors.Is(err, service.ErrChatQuickActionsBusy):
-			// A turn or another refresh is already running for this session; the
-			// result would be stale or a duplicate. 409 → the client rolls back
+			// A turn is already running for this session; it is about to replace
+			// the reply these pills would hang on. 409 → the client rolls back
 			// and can refresh once the session settles.
 			writeError(w, http.StatusConflict, "still working — try refreshing in a moment")
 		case errors.Is(err, service.ErrChatQuickActionsNoTurn):
 			writeError(w, http.StatusConflict, "no assistant reply to refresh yet")
-		case errors.Is(err, service.ErrChatQuickActionsNotResumable):
-			writeError(w, http.StatusConflict, "this conversation can't be refreshed right now")
-		case errors.Is(err, service.ErrChatTaskAgentArchived):
-			writeError(w, http.StatusConflict, "chat agent is archived")
-		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
-			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.Is(err, service.ErrChatQuickActionsUnavailable):
+			writeError(w, http.StatusServiceUnavailable, "suggestions are not available on this deployment")
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to regenerate quick actions")
 		}
 		return
 	}
+	// Detached like the automatic pass: answer 202 now, deliver the refreshed
+	// pills over chat:quick_actions.
+	h.TaskService.GenerateChatQuickActionsAsync(targetTask, service.ChatQuickActionsRefresh)
 	writeJSON(w, http.StatusAccepted, RegenerateChatQuickActionsResponse{
 		MessageID: uuidToString(messageID),
-		TaskID:    uuidToString(task.ID),
 	})
 }
 
@@ -1251,17 +1248,16 @@ func (h *Handler) ConsumeChatDraftRestore(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// pruneRuntimeAgentChatDraftRestores drops the pending draft restores of every
-// chat_session a runtime teardown is about to remove through the agent cascade
-// (chat_session.agent_id is ON DELETE CASCADE, migration 033). chat_draft_restore
-// has no FK (MUL-3515) and no reaper, so a restore left behind keeps the user's
-// prompt text forever, unreachable and undeletable.
+// pruneRuntimeSystemAgentChatDraftRestores drops the pending draft restores of
+// every chat_session a runtime teardown is about to remove through the agent
+// cascade (chat_session.agent_id is ON DELETE CASCADE, migration 033).
+// chat_draft_restore has no FK (MUL-3515) and no reaper, so a restore left
+// behind keeps the user's prompt text forever, unreachable and undeletable.
 //
 // Every runtime/agent teardown path must call this in its own transaction and
-// BEFORE deleting the agent rows — the queries join through them. includeSystemAgents
-// mirrors whether the caller also runs DeleteSystemAgentsByRuntime: the
-// runtime-profile teardown deletes only archived agents, and pruning system-agent
-// sessions there would destroy restores whose session survives.
+// BEFORE deleting the agent rows — the queries join through them. Only system
+// agents are in scope: since MUL-5559 a runtime delete unbinds its user agents
+// instead of deleting them, so their sessions and restores must survive.
 //
 // The sessions are locked before the sweep: that is the deleter half of the
 // mutual-exclusion protocol with FinalizeDeferredCancelledChat, which would
@@ -1271,20 +1267,16 @@ func (h *Handler) ConsumeChatDraftRestore(w http.ResponseWriter, r *http.Request
 // The workspace teardown has its own copy of this shape (locks, then sweeps
 // inside the DeleteWorkspace CTE) because that statement's prune must stay in
 // the same statement as the workspace row it commits with.
-func pruneRuntimeAgentChatDraftRestores(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, includeSystemAgents bool) error {
-	if _, err := q.LockChatSessionsByArchivedRuntimeAgents(ctx, runtimeID); err != nil {
-		return err
-	}
-	if err := q.DeleteChatDraftRestoresByArchivedRuntimeAgents(ctx, runtimeID); err != nil {
-		return err
-	}
-	if !includeSystemAgents {
-		return nil
-	}
+func pruneRuntimeSystemAgentChatDraftRestores(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID) error {
 	if _, err := q.LockChatSessionsBySystemRuntimeAgents(ctx, runtimeID); err != nil {
 		return err
 	}
-	return q.DeleteChatDraftRestoresBySystemRuntimeAgents(ctx, runtimeID)
+	if err := q.DeleteChatDraftRestoresBySystemRuntimeAgents(ctx, runtimeID); err != nil {
+		return err
+	}
+	// Builder drafts only ever hang off a system carrier, so they are pruned
+	// here and nowhere else — the archived-agent sweep above has none to find.
+	return q.DeleteAgentBuilderDraftsBySystemRuntimeAgents(ctx, runtimeID)
 }
 
 // PendingChatTasksResponse is the aggregate view consumed by the FAB.

@@ -869,7 +869,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
-		r.Post("/tasks/{taskId}/quick-actions", h.SupplementTaskQuickActions)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
@@ -1148,6 +1147,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
+					r.Post("/unsubscribe/subtree", h.UnsubscribeFromIssueSubtree)
 					r.Get("/active-task", h.GetActiveTaskForIssue)
 					r.Post("/tasks/{taskId}/cancel", h.CancelTask)
 					r.Post("/rerun", h.RerunIssue)
@@ -1339,8 +1339,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/{slug}", h.GetAgentTemplate)
 			})
 			r.Route("/api/agent-builder/sessions", func(r chi.Router) {
+				// The creation studio's unfinished drafts. Builder sessions are
+				// invisible to every chat list (their carrier is kind='system'),
+				// so this is the only route back to one.
+				r.Get("/", h.ListAgentBuilderSessions)
 				r.Post("/", h.CreateAgentBuilderSession)
 				r.Patch("/{sessionId}/runtime", h.SwitchAgentBuilderRuntime)
+				// Autosaved configuration, including edits the user has typed
+				// but not sent. Read back through the list above.
+				r.Put("/{sessionId}/draft", h.SaveAgentBuilderDraft)
 			})
 
 			// Skills
@@ -1392,13 +1399,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
 					r.Delete("/", h.DeleteAgentRuntime)
-					// Cascade variant of DELETE: archive every active agent
-					// bound to this runtime, cancel their tasks, then delete
-					// the runtime — all in one transaction. Used by the
-					// DeleteRuntimeDialog when the strict DELETE refused with
-					// `runtime_has_active_agents` and the user confirmed the
-					// cascade plan.
-					r.Post("/archive-agents-and-delete", h.ArchiveAgentsAndDeleteRuntime)
+					// Confirmed variant of DELETE: unbind every agent bound to
+					// this runtime (they keep their configuration and chats and
+					// need a new runtime to run again), cancel their tasks,
+					// detach their task history, then delete the runtime — all
+					// in one transaction. Used by the DeleteRuntimeDialog when
+					// the strict DELETE refused with
+					// `runtime_has_active_agents` and the user confirmed.
+					r.Post("/unbind-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					// Legacy path for installed clients built against the
+					// archive-and-delete contract (MUL-5559 renamed the
+					// behaviour, not just the route). Same handler.
+					r.Post("/archive-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
 				})
 			})
 
