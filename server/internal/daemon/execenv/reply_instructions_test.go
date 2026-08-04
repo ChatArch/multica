@@ -197,7 +197,10 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 		t.Errorf("CLAUDE.md must not carry the trigger comment id (MUL-5377)\n---\n%s", s)
 	}
 	for _, want := range []string{
-		"Mode router",
+		// MUL-5442 stage 1: the mode-router paragraph compressed to a
+		// "Turn mode." lead — pin the routing fact (per-turn message names
+		// the mode), not the old heading.
+		"**Turn mode.**",
 		"`Turn mode: Reply.`",
 		"`Turn mode: Ownership.`",
 		"Use the `--parent` value the per-turn user message gives you for this turn",

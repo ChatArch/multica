@@ -505,14 +505,11 @@ func writeWorkflowAutopilot(b *strings.Builder, ctx TaskContextForEnv) {
 // ctx.IsSquadLeader is agent configuration, not per-run state, so branching
 // on it does not break byte-stability across runs of one session.
 func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
-	b.WriteString("**Mode router — read this before acting.** This file is identical on every run, so it cannot tell you what triggered THIS turn. The user message for this turn names its mode on a line of its own:\n\n")
-	b.WriteString("- `Turn mode: Reply.` → **Reply mode**. That message also carries the triggering comment's id, the exact `--parent` value for your reply, and the comment's content when the platform supplied it.\n")
-	b.WriteString("- `Turn mode: Ownership.` → **Ownership mode** (an assignment or status change started this run).\n\n")
-	b.WriteString("Steps 1–6 below are the same in both modes. The mode blocks after them differ, and they differ on issue status in particular — **apply exactly one mode block, the one the user message named. Never apply both.** If neither line is present, treat the turn as Reply mode and do not change the issue status.\n\n")
+	b.WriteString("**Turn mode.** The per-turn user message names this run's mode on a line of its own: `Turn mode: Reply.` (respond to the comment that message carries — it brings the triggering comment's id and your `--parent` value) or `Turn mode: Ownership.` (an assignment or status change started this run). Steps 1–6 are shared; then **apply exactly one mode block, the one the user message named** — they differ on issue status. No mode line → Reply mode, do not change the issue status.\n\n")
 
 	b.WriteString("**Steps 1–6 — both modes**\n\n")
 	fmt.Fprintf(b, "1. Run `multica issue get %s --output json` to understand the issue context\n", ctx.IssueID)
-	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` and CLI failures are normal. What to look for: `## Issue Metadata`.\n", ctx.IssueID)
+	fmt.Fprintf(b, "2. Run `multica issue metadata list %s --output json` to see what prior agents pinned — best-effort, empty `{}` is normal. What to look for: `## Issue Metadata`.\n", ctx.IssueID)
 	fmt.Fprintf(b, "3. Catch up on the comment history — this is mandatory, not optional — in two bounded reads, never one bulk pull: scan every thread cheaply with `multica issue comment list %s --roots-only --summary --output json`, then expand only the threads that matter with `multica issue comment list %s --thread <thread-id> --tail 30 --output json`. Earlier comments often carry context the issue body lacks. Skipping this step is the most common cause of agents acting on stale or incomplete instructions — so always run the scan, even when the trigger looks self-contained. In Reply mode the per-turn user message names the thread to expand first; the scan is how you decide whether any OTHER thread is also relevant.\n", ctx.IssueID, ctx.IssueID)
 	b.WriteString("4. Complete the task within your Agent Identity boundaries (`## Instruction Precedence` lists the actions Agent Identity can forbid). If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered.\n")
 	if ctx.IsSquadLeader {
@@ -532,8 +529,8 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 	fmt.Fprintf(b, "- If blocked, run `multica issue status %s blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.\n\n", ctx.IssueID)
 
 	b.WriteString("**Reply mode only — respond to the comment in the user message**\n\n")
-	b.WriteString("- Your primary job is to respond to THAT specific comment, even if you have handled similar requests before in this session. Do NOT confuse it with previous comments; take its id from the user message, never from this file or from an earlier turn.\n")
-	b.WriteString("- **Decide whether a reply is warranted.** If you produced actual work this turn (investigated, fixed, answered a real question), post the result via step 5 — that is a normal reply, not a noise comment. If the triggering comment was a pure acknowledgment / thanks / sign-off from another agent AND you produced no work this turn, do NOT post a reply — and do NOT post a comment saying 'No reply needed' or similar. Simply exit with no output. Silence is a valid and preferred way to end agent-to-agent conversations.\n")
+	b.WriteString("- Respond to THAT specific comment; take its id from the user message, never from this file or from an earlier turn.\n")
+	b.WriteString("- **Decide whether a reply is warranted.** If you produced actual work this turn, post the result via step 5. If the triggering comment was a pure acknowledgment / thanks / sign-off from another agent AND you produced no work, do NOT reply — not even a 'No reply needed' comment; exit with no output. Silence is a valid and preferred way to end agent-to-agent conversations.\n")
 	if ctx.IsSquadLeader {
 		fmt.Fprintf(b, "- **Squad leader rule:** If your evaluation outcome is `no_action`, call `multica squad activity %s no_action --reason \"...\"` and then EXIT IMMEDIATELY. DO NOT post any comment whose only purpose is to announce that you are taking no action, exiting silently, or acknowledging another agent. A comment like \"No action needed\" or \"Exiting silently\" is noise — the `squad activity` call already records your decision in the timeline.\n", ctx.IssueID)
 	}
