@@ -7,7 +7,6 @@ import enOnboarding from "../../locales/en/onboarding.json";
 import {
   STEP_COLUMN,
   STEP_GUTTER,
-  STEP_MEASURE,
   StepFooter,
   StepHeading,
   StepShell,
@@ -57,12 +56,6 @@ describe("onboarding step shell", () => {
     const column = container.querySelector("main > div")!;
     expect(column.className).toContain("min-h-full");
     expect(column.className).toContain("flex-col");
-  });
-
-  it("keeps the in-column control cap left-aligned and padding-free", () => {
-    expect(STEP_MEASURE).toMatch(/max-w-\[[\d.]+rem\]/);
-    expect(STEP_MEASURE).not.toContain("mx-auto");
-    expect(STEP_MEASURE).not.toMatch(/\bp[xlr]?-/);
   });
 
   // The panes persist across steps, so a screen reader user gets no

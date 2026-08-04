@@ -15,15 +15,9 @@ import { StepSidebar } from "./step-sidebar";
  * and an in-frame cap — which is how the platform fork ended up ~150px off the
  * left edge of every other step. There is now one measure. A step that needs
  * to break out of it says so locally rather than picking a different global.
- *
- * STEP_MEASURE stays exported because the workspace form uses it to keep an
- * input from stretching the full column width.
  */
 export const STEP_COLUMN = "mx-auto flex min-h-full w-full max-w-[28rem] flex-col";
 export const STEP_GUTTER = "px-6 py-8 sm:px-10 lg:px-14 lg:py-10";
-
-/** Cap for a control that should not run the full column width. */
-export const STEP_MEASURE = "max-w-[24rem]";
 
 /**
  * Title + supporting line for a step.

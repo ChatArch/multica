@@ -25,7 +25,6 @@ import { useLogout } from "../../auth";
 import {
   StepFooter,
   StepHeading,
-  STEP_MEASURE,
   StepShell,
 } from "../components/step-shell";
 import { RadioMark } from "../components/option-card";
@@ -237,7 +236,7 @@ export function StepWorkspace({
   // version had already drifted — the labels were caption-sized and muted
   // while every other form in the product labels at body weight.
   const createFields = (
-    <FieldGroup className={STEP_MEASURE}>
+    <FieldGroup>
       <Field>
         <FieldLabel htmlFor="ws-name">
           {t(($) => $.step_workspace.name_label)}

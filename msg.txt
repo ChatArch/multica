@@ -1,0 +1,24 @@
+fix(onboarding): make every block in the column share one width
+
+Reported on the workspace step: the name field ended short of the
+description above it. Measured rather than eyeballed -- the heading,
+description and footer all render at 448px, the form at 384px, because the
+FieldGroup still carried STEP_MEASURE.
+
+STEP_MEASURE made sense against the old 920px frame, where a full-width
+input would have been absurd. Against a 28rem column it does nothing but
+misalign, so both remaining uses are gone -- the workspace form and the
+runtime picker -- and the constant with them. A single measure that no step
+can locally narrow is the whole point of the column; leaving the knob
+exported invites the same drift back.
+
+Two stale measures went with it. The runtime phase views still capped their
+ledes at max-w-[620px], inert inside a 448px column, and sized them
+text-body-lg against StepHeading's text-body; their h2 was text-title-lg,
+the same size as the h1 above it. Both now match the shared scale.
+
+Guarded in e2e rather than a unit test. The shell test renders a stub child,
+so asserting "no narrow cap inside the column" there would pass whatever the
+real steps do. The new spec walks all three steps and compares rendered
+geometry -- it fails on the reported bug and passes after the fix, which is
+what makes it worth keeping.

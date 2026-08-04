@@ -20,7 +20,6 @@ import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
 import {
   StepFooter,
-  STEP_MEASURE,
   StepShell,
 } from "../components/step-shell";
 import { useRuntimePicker } from "../components/use-runtime-picker";
@@ -330,10 +329,10 @@ function ScanningView() {
   const { t } = useT("onboarding");
   return (
     <div>
-      <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
+      <h2 className="text-title-sm font-medium tracking-tight text-foreground">
         {t(($) => $.step_runtime.scanning_headline)}
       </h2>
-      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-2 text-body text-muted-foreground">
         {t(($) => $.step_runtime.scanning_lede_prefix)}
         <span className="font-medium text-foreground">{"Claude Code"}</span>
         {", "}
@@ -384,10 +383,10 @@ function FoundView({
 
   return (
     <div>
-      <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
+      <h2 className="text-title-sm font-medium tracking-tight text-foreground">
         {t(($) => $.step_runtime.found_headline)}
       </h2>
-      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-2 text-body text-muted-foreground">
         {t(($) => $.step_runtime.found_lede)}
       </p>
 
@@ -413,7 +412,7 @@ function FoundView({
         />
       </div>
 
-      <div className={cn("mt-6 flex flex-col gap-4", STEP_MEASURE)}>
+      <div className="mt-6 flex flex-col gap-4">
         <RuntimePicker
           runtimes={runtimes as unknown as Parameters<typeof RuntimePicker>[0]["runtimes"]}
           members={[]}
@@ -454,7 +453,7 @@ function EmptyView({
   return (
     <div>
       <div className="flex items-start justify-between gap-4">
-        <h2 className="mt-10 text-title-lg font-medium tracking-tight text-foreground">
+        <h2 className="text-title-sm font-medium tracking-tight text-foreground">
           {t(($) => $.step_runtime.empty_headline)}
         </h2>
         <RefreshButton
@@ -463,7 +462,7 @@ function EmptyView({
           className="mt-2 shrink-0"
         />
       </div>
-      <p className="mt-4 max-w-[620px] text-body-lg leading-[1.55] text-muted-foreground">
+      <p className="mt-2 text-body text-muted-foreground">
         {t(($) => $.step_runtime.empty_lede_prefix)}
         <span className="font-medium text-foreground">{"Claude Code"}</span>
         {", "}
