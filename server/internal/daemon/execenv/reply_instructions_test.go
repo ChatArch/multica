@@ -205,7 +205,10 @@ func TestInjectRuntimeConfigKeepsTriggerCommentOutOfBrief(t *testing.T) {
 		"Steps 1–6 are shared",
 		"apply exactly one mode block",
 		"differ on issue status",
-		"No mode line",
+		// The full fallback MAPPING, not its halves: "No mode line" and
+		// "Reply mode" pinned separately could both pass while the text
+		// says "No mode line → Ownership mode" (final-review catch).
+		"No mode line → Reply mode",
 		"do not change the issue status",
 		"`Turn mode: Reply.`",
 		"`Turn mode: Ownership.`",
