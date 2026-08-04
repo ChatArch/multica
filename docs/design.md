@@ -1,445 +1,449 @@
 # Multica Design System
 
-本文档定义 Multica 的视觉语言和交互规范。所有 UI 开发以此为准。
+This document defines Multica's visual language and interaction conventions. All UI work follows it.
 
-页面级信息架构、布局组合与一致性治理见 [`ui-consistency-audit.md`](./ui-consistency-audit.md)。
-
----
-
-## 1. 设计哲学
-
-三条核心原则：
-
-1. **克制即高级。** 默认做减法。每个元素必须有存在的理由——多余的分割线、装饰性图标、"以防万一"的提示文字，都是噪音。留白本身就是设计。
-2. **层次靠灰度，颜色是信号。** 界面的主体是中性色。颜色只在需要传递语义时出现（状态、品牌、错误）。如果两个区域在视觉上竞争注意力，解法是让一个退后，而不是两个都加色。
-3. **一致性大于个性。** 同类交互必须有相同的视觉反馈。一个 hover 效果在 sidebar、dropdown、table row 里应该"感觉一样"。这种一致性通过 token 而非硬编码实现。
+> 中文版本：[`design.zh.md`](./design.zh.md)。
 
 ---
 
-## 2. 颜色体系
+## 1. Design philosophy
 
-基于 OKLCh 色彩空间，通过 CSS 变量定义。所有颜色使用 shadcn token，**禁止硬编码 Tailwind 色值**（如 `text-gray-500`、`bg-blue-600`）。
+Three core principles:
 
-### 2.1 Surface 层级
-
-Surface 系统描述的是容器之间的关系，不是把每一段内容都包进卡片。基础 token 定义在 `packages/ui/styles/tokens.css`，并同时覆盖 light / dark mode。
-
-| 层级 | Token / Class | 用途 | 不应用于 |
-|------|---------------|------|----------|
-| App Shell | `app-shell` / `bg-app-shell` | 窗口最外层、sidebar 与 page canvas 之间的留白 | 页面正文、表单组 |
-| Page Canvas | `page-canvas` / `bg-page-canvas` | 页面主体；list、board、chat 等持续滚动的内容区 | 独立设置组、弹窗 |
-| Surface / Card | `surface`、`surface-border`、`--surface-shadow` | 有独立边界的表单组、设置组、摘要卡 | 每一行列表、每一列 board、整页正文 |
-| Floating Surface | `surface-raised`、`--floating-shadow` | dialog、dropdown、popover、sheet、浮动 chat | 常驻页面布局 |
-
-规则：
-
-- Page Canvas 是默认内容面。需要分组时先用间距和分割线，只有独立操作或独立信息块才使用 Surface。
-- 浅色模式中，`app-shell` 与 sidebar 使用 `#f3f3f4`，`page-canvas` 使用 `#fbfbfb`，Card 使用 `#ffffff`；不能只靠 border 区分设置组和页面背景。三者形成接近 Linear 的克制层级，由外向内逐步变亮。
-- Card 使用 `bg-surface border-surface-border shadow-[var(--surface-shadow)]`；浮层使用 `bg-surface-raised ring-surface-border shadow-[var(--floating-shadow)]`。
-- `surface-hover` 只表示指针经过；`surface-selected` 表示持续选中，并保持中性灰，不额外叠加 brand 色。选中项 hover 时必须保留 `surface-selected`，不能退回 hover 状态。
-- focus 一律使用 `focus-visible` ring。不要用阴影、尺寸变化或品牌大面积填充代替键盘焦点。
-- 不为 light / dark mode 手写一组平行 class。基础 surface token 已按主题解析，并通过 `color-scheme` 同步原生控件。
-
-### 2.2 中性色阶梯
-
-界面 90% 的面积由中性色构成。灰度等级即信息层级：
-
-| 角色 | Light Token | Dark Token | 用途 |
-|------|-------------|------------|------|
-| 背景 | `page-canvas` / `background` | `page-canvas` / `background` | 页面主体 |
-| 卡片/浮层 | `surface` / `surface-raised` | `surface` / `surface-raised` | 有边界的内容组与临时覆盖层 |
-| 次级表面 | `muted` / `secondary` | `muted` / `secondary` | hover 背景、标签底色 |
-| 边框 | `border` | `border` | 分隔线、输入框边框 |
-| 输入框边框 | `input` | `input` | 比 border 略重 |
-| 主要文字 | `foreground` | `foreground` | 标题、正文 |
-| 次要文字 | `muted-foreground` | `muted-foreground` | 描述、元数据、placeholder |
-| 最强调文字 | `primary` | `primary` | 按钮文字（反色）、关键标签 |
-
-**规则：** 同一屏幕内，文字颜色最多使用 3 个层级（`foreground` / `muted-foreground` / 某个语义色）。超过 3 级说明层次设计有问题。
-
-### 2.3 语义色
-
-颜色只用于传递含义，不做装饰：
-
-| Token | 含义 | 使用场景 |
-|-------|------|----------|
-| `brand` | 品牌标识 | Logo、品牌按钮、极少量强调 |
-| `destructive` | 危险/错误 | 删除按钮、表单校验错误、危险操作 |
-| `success` | 成功 | 状态标签（完成、已解决） |
-| `warning` | 警告 | 注意状态、到期提醒 |
-| `info` | 信息 | 提示、链接、次要信息标记 |
-| `priority` | 优先级 | 高优先级标签 |
-
-**规则：**
-- 语义色主要用于小面积元素（badge、icon、border）。大面积着色用该色的 10%-20% 透明度变体（如 `bg-destructive/10`）。
-- 每屏同时出现的语义色不宜超过 2-3 种。如果一个界面同时有红黄绿蓝紫，说明信息密度过高，需要重新组织。
-
-### 2.4 暗色模式
-
-暗色模式不是简单的反转。它是独立设计的一套配色：
-
-- 背景使用深灰（`oklch(0.18 ...)`），不是纯黑——纯黑在 LCD 屏上刺眼。
-- 边框使用 `oklch(1 0 0 / 10%)`（白色 10% 透明度），比 light 模式更微妙。
-- 语义色在 dark 模式下适当提亮（如 `success` 从 `0.55` 提到 `0.65`），保证对比度。
-- 所有 UI 变更必须同时在两个模式下验证。
+1. **Restraint reads as quality.** Subtract by default. Every element must earn its place — a redundant divider, a decorative icon, a "just in case" hint is noise. Whitespace is itself a design decision.
+2. **Hierarchy comes from grey; colour is a signal.** The interface is predominantly neutral. Colour appears only when it carries meaning (status, brand, error). If two regions compete for attention, the fix is to push one back, not to colour both.
+3. **Consistency beats personality.** The same class of interaction must produce the same visual feedback. A hover effect should "feel identical" in the sidebar, in a dropdown, and on a table row. That consistency comes from tokens, never from hardcoded values.
 
 ---
 
-## 3. 字体规范
+## 2. Colour system
 
-### 3.1 字体家族
+Built on the OKLCh colour space and exposed as CSS variables. All colours use shadcn tokens; **hardcoded Tailwind colour values are forbidden** (`text-gray-500`, `bg-blue-600`, and the like).
 
-| 角色 | 字体 | 用途 |
-|------|------|------|
-| 正文/UI | Inter (`--font-sans`) | 所有界面文字的默认字体；CJK 字符自动 fallback 到系统字体（PingFang SC / Microsoft YaHei / Noto Sans CJK SC） |
-| 代码/数据 | Geist Mono (`--font-mono`) | 代码块、ID、时间戳、等宽数据 |
-| 标题 | `--font-heading`（= `--font-sans`） | 页面标题、区块标题 |
+### 2.1 Surface hierarchy
 
-字体栈在 `apps/web/app/layout.tsx` 和 `apps/desktop/src/renderer/src/globals.css` 两处声明，修改时需同步。
+The surface system describes the relationship *between containers* — it is not a licence to wrap every block of content in a card. Base tokens live in `packages/ui/styles/tokens.css` and cover light and dark mode together.
 
-### 3.2 字号纪律
+| Level | Token / class | Use for | Do not use for |
+|---|---|---|---|
+| App shell | `app-shell` / `bg-app-shell` | Outermost window chrome; the gutter between sidebar and page canvas | Page body, form groups |
+| Page canvas | `page-canvas` / `bg-page-canvas` | The page body; continuously scrolling regions such as lists, boards, chat | Standalone settings groups, dialogs |
+| Surface / card | `surface`, `surface-border`, `--surface-shadow` | Form groups, settings groups, and summary cards that need their own boundary | Every list row, every board column, whole-page body copy |
+| Floating surface | `surface-raised`, `--floating-shadow` | Dialog, dropdown, popover, sheet, floating chat | Persistent page layout |
 
-**整个项目只使用 3 个核心字号 + 1 个特殊字号：**
+Rules:
 
-| Tailwind Class | 大小 | 角色 | 使用场景 |
-|----------------|------|------|----------|
-| `text-base` (16px) | 正文 | 页面标题、主要内容 | 页面标题、编辑器正文、空状态说明 |
-| `text-sm` (14px) | 默认 | 界面的主力字号 | 菜单项、按钮、表单、列表项、正文 |
-| `text-xs` (12px) | 辅助 | 元数据、标签 | badge 文字、时间戳、状态栏、次要信息 |
-| `text-[0.8rem]` | 过渡 | 仅限 sm 按钮 | shadcn button size="sm" 专用 |
+- Page canvas is the default content plane. When you need grouping, reach for spacing and dividers first; use a surface only for a self-contained action or information block.
+- In light mode, `app-shell` and the sidebar use `#f3f3f4`, `page-canvas` uses `#fbfbfb`, and cards use `#ffffff`. Never rely on a border alone to separate a settings group from the page background. The three together form a restrained, Linear-like hierarchy that brightens from the outside in.
+- Cards use `bg-surface border-surface-border shadow-[var(--surface-shadow)]`; floating layers use `bg-surface-raised ring-surface-border shadow-[var(--floating-shadow)]`.
+- `surface-hover` means the pointer is passing over. `surface-selected` means a persistent selection and stays a neutral grey — do not layer brand colour on top. A selected item that is hovered must keep `surface-selected`; it must not fall back to the hover state.
+- Focus always uses a `focus-visible` ring. Never substitute a shadow, a size change, or a large brand fill for keyboard focus.
+- Do not hand-write a parallel set of classes for light and dark mode. The base surface tokens already resolve per theme and sync native controls through `color-scheme`.
 
-**禁止：**
-- 使用 `text-lg`、`text-xl`、`text-2xl` 等——任务管理工具追求信息密度，不需要大字号。
-- 使用任意像素值如 `text-[11px]`、`text-[13px]`——坚持 Tailwind 内置 scale。
-- 在同一个区块里混用超过 2 个字号。如果需要第 3 个字号来区分层次，先试试用 `font-medium` vs `font-normal` 或 `text-muted-foreground` 来解决。
+### 2.2 The neutral ramp
 
-### 3.3 字重
+Neutrals cover 90% of the interface. Grey level *is* information hierarchy:
 
-只使用两个：
+| Role | Light token | Dark token | Use for |
+|---|---|---|---|
+| Background | `page-canvas` / `background` | `page-canvas` / `background` | Page body |
+| Card / floating layer | `surface` / `surface-raised` | `surface` / `surface-raised` | Bounded content groups and transient overlays |
+| Secondary surface | `muted` / `secondary` | `muted` / `secondary` | Hover backgrounds, tag fills |
+| Border | `border` | `border` | Dividers, input borders |
+| Input border | `input` | `input` | Slightly heavier than `border` |
+| Primary text | `foreground` | `foreground` | Headings, body copy |
+| Secondary text | `muted-foreground` | `muted-foreground` | Descriptions, metadata, placeholders |
+| Strongest text | `primary` | `primary` | Button labels (inverted), key tags |
 
-| 字重 | 用途 |
-|------|------|
-| `font-normal` (400) | 正文、描述、大部分文字 |
-| `font-medium` (500) | 标签、按钮、导航项、标题、选中状态 |
+**Rule:** within one screen, use at most three text-colour levels (`foreground` / `muted-foreground` / one semantic colour). More than three means the hierarchy itself is wrong.
 
-**禁止** `font-bold` / `font-semibold`——任务管理工具追求信息密度和"轻"感，加粗会破坏层次节奏。如果需要更强的强调，用更大的字号或 `foreground` 色值，而不是加粗。
+### 2.3 Semantic colours
+
+Colour conveys meaning; it never decorates:
+
+| Token | Meaning | Where it appears |
+|---|---|---|
+| `brand` | Brand identity | Logo, brand buttons, a very small amount of emphasis |
+| `destructive` | Danger / error | Delete buttons, form validation errors, destructive actions |
+| `success` | Success | Status tags (done, resolved) |
+| `warning` | Warning | Attention states, due-date reminders |
+| `info` | Information | Hints, links, secondary markers |
+| `priority` | Priority | High-priority tags |
+
+**Rules:**
+
+- Semantic colours belong on small elements (badge, icon, border). For a large fill, use a 10–20% alpha variant of the same colour (e.g. `bg-destructive/10`).
+- No more than two or three semantic colours on screen at once. If an interface shows red, yellow, green, blue, and purple simultaneously, the information density is too high and the content needs reorganising.
+
+### 2.4 Dark mode
+
+Dark mode is not an inversion. It is a separately designed palette:
+
+- Backgrounds use a deep grey (`oklch(0.18 ...)`), not pure black — pure black is harsh on LCD panels.
+- Borders use `oklch(1 0 0 / 10%)` (white at 10% alpha), subtler than in light mode.
+- Semantic colours are lifted in dark mode (e.g. `success` from `0.55` to `0.65`) to hold contrast.
+- Every UI change must be verified in both modes.
 
 ---
 
-## 4. 间距体系
+## 3. Typography
 
-基于 Tailwind 的 4px 基础网格。间距传递信息——它不只是"好看"，而是告诉用户"什么属于什么"。
+### 3.1 Font families
 
-### 4.1 间距语义
+| Role | Font | Use for |
+|---|---|---|
+| Body / UI | Inter (`--font-sans`) | Default for all interface text; CJK characters fall back automatically to the system font (PingFang SC / Microsoft YaHei / Noto Sans CJK SC) |
+| Code / data | Geist Mono (`--font-mono`) | Code blocks, IDs, timestamps, monospaced data |
+| Headings | `--font-heading` (= `--font-sans`) | Page and section headings |
 
-| 间距 | Tailwind | 含义 |
-|------|----------|------|
-| 4px | `gap-1` / `p-1` | **紧密关联** — icon 与文字、label 与值 |
-| 6px | `gap-1.5` / `p-1.5` | **组件内部** — 按钮内部 padding、列表项间距 |
-| 8px | `gap-2` / `p-2` | **同组不同项** — 表单字段间、列表项间 |
-| 12px | `gap-3` / `p-3` | **小节内** — 卡片内部 padding |
-| 16px | `gap-4` / `p-4` | **组间分隔** — 不同区块之间 |
-| 24px | `gap-6` / `p-6` | **大节分隔** — 页面主要区域间 |
+The font stack is declared in two places — `apps/web/app/layout.tsx` and `apps/desktop/src/renderer/src/globals.css`. Keep them in sync.
 
-**规则：如果需要分割线，说明间距不够。** 优先通过增大间距来分隔内容，而不是加 `<Separator />`。分割线应该是最后手段。
+### 3.2 Type-size discipline
 
-### 4.2 容器策略（按优先级排序）
+**The entire project uses three core sizes plus one special case:**
 
-当需要在视觉上分隔两个区域时：
+| Tailwind class | Size | Role | Where |
+|---|---|---|---|
+| `text-base` (16px) | Body | Page titles, primary content | Page titles, editor body, empty-state copy |
+| `text-sm` (14px) | Default | The workhorse size | Menu items, buttons, forms, list rows, body copy |
+| `text-xs` (12px) | Supporting | Metadata, tags | Badge text, timestamps, status bar, secondary information |
+| `text-[0.8rem]` | Transitional | `sm` buttons only | Reserved for shadcn `button size="sm"` |
 
-1. **仅间距** — 增大两个区域的间距（首选）
-2. **单条分割线** — 一根细线 `border-border`
-3. **背景色变化** — 一个区域用 `bg-surface-hover` 或 `bg-surface`
-4. **完整卡片** — border + radius + padding（最重手段）
+**Forbidden:**
 
-用最轻的工具完成分隔。
+- `text-lg`, `text-xl`, `text-2xl`, and friends — a task-management tool optimises for information density and does not need large type.
+- Arbitrary pixel values such as `text-[11px]` or `text-[13px]` — stay on Tailwind's built-in scale.
+- More than two sizes inside one block. If you need a third size to express hierarchy, try `font-medium` vs `font-normal`, or `text-muted-foreground`, first.
+
+### 3.3 Font weight
+
+Two weights only:
+
+| Weight | Use for |
+|---|---|
+| `font-normal` (400) | Body copy, descriptions, most text |
+| `font-medium` (500) | Labels, buttons, navigation items, headings, selected state |
+
+**`font-bold` and `font-semibold` are forbidden.** A density-oriented tool needs to feel light, and heavy weights break the rhythm of the hierarchy. When you need stronger emphasis, use a larger size or the `foreground` colour — not more weight.
 
 ---
 
-## 5. 交互状态
+## 4. Spacing
 
-这是设计一致性的核心。每种状态必须在所有组件中表现一致。
+Built on Tailwind's 4px base grid. Spacing carries information: it is not "what looks nice", it tells the user what belongs to what.
 
-### 5.1 状态层级概览
+### 4.1 Spacing semantics
+
+| Spacing | Tailwind | Meaning |
+|---|---|---|
+| 4px | `gap-1` / `p-1` | **Tightly bound** — icon and label, label and value |
+| 6px | `gap-1.5` / `p-1.5` | **Inside a component** — button padding, list-row spacing |
+| 8px | `gap-2` / `p-2` | **Sibling items in a group** — between form fields, between list rows |
+| 12px | `gap-3` / `p-3` | **Within a section** — card padding |
+| 16px | `gap-4` / `p-4` | **Between groups** — separating distinct blocks |
+| 24px | `gap-6` / `p-6` | **Between major sections** — top-level page regions |
+
+**Rule: if you need a divider, your spacing is too tight.** Prefer increasing spacing over adding a `<Separator />`. A divider is the last resort.
+
+### 4.2 Container strategy, in order of preference
+
+When two regions need visual separation:
+
+1. **Spacing alone** — increase the gap (preferred)
+2. **A single divider** — one hairline, `border-border`
+3. **A background shift** — give one region `bg-surface-hover` or `bg-surface`
+4. **A full card** — border + radius + padding (heaviest)
+
+Use the lightest tool that achieves the separation.
+
+---
+
+## 5. Interaction states
+
+This is the core of visual consistency. Every state must look the same across every component.
+
+### 5.1 State progression
 
 ```
-默认 (rest) → hover → active/pressed → selected/active → focused → disabled
+rest → hover → active/pressed → selected/active → focused → disabled
 ```
 
-### 5.2 Hover 状态
+### 5.2 Hover
 
-Hover 是"我注意到你了"，视觉变化应该轻微、即时：
+Hover says "I noticed you". The change should be slight and immediate:
 
-| 元素类型 | Hover 效果 | Token |
-|----------|-----------|-------|
-| 列表项/菜单项 | 背景变浅灰 | `hover:bg-muted` |
-| Ghost 按钮 | 背景变浅灰 + 文字变前景色 | `hover:bg-muted hover:text-foreground` |
-| 次要按钮 | 背景加深 20% | `hover:bg-secondary/80` |
-| 主按钮 | 背景加深 20% | `hover:bg-primary/80` |
-| 文字链接 | 下划线出现 | `hover:underline` |
-| Tab 标签 | 文字从次要变主要 | `hover:text-foreground`（从 `text-muted-foreground`） |
-| 图标按钮 | 背景变浅灰 | `hover:bg-muted` |
-| 危险按钮 | 背景透明度加深 | `hover:bg-destructive/20` |
+| Element | Hover effect | Token |
+|---|---|---|
+| List row / menu item | Background lightens to grey | `hover:bg-muted` |
+| Ghost button | Grey background + text to foreground | `hover:bg-muted hover:text-foreground` |
+| Secondary button | Background darkens 20% | `hover:bg-secondary/80` |
+| Primary button | Background darkens 20% | `hover:bg-primary/80` |
+| Text link | Underline appears | `hover:underline` |
+| Tab | Text goes from secondary to primary | `hover:text-foreground` (from `text-muted-foreground`) |
+| Icon button | Grey background | `hover:bg-muted` |
+| Destructive button | Background alpha deepens | `hover:bg-destructive/20` |
 
-**规则：**
-- hover 时不改变尺寸（无 `scale`）、不加阴影（无 `shadow`）。
-- hover 的背景色永远比 selected/active 更淡。这样用户能区分"悬停"和"已选中"。
-- 所有 hover 使用 `transition-colors`、`transition-shadow` 或列出具体属性；不要使用 `transition-all`。时长由 Tailwind 默认值（150ms）处理，不需要自定义。
+**Rules:**
 
-### 5.3 Active / Selected 状态
+- Hover never changes size (no `scale`) and never adds a shadow.
+- A hover background is always lighter than selected/active, so the user can tell "hovering" from "selected".
+- Use `transition-colors`, `transition-shadow`, or an explicit property list — never `transition-all`. Duration comes from Tailwind's default (150ms); do not customise it.
 
-Active 是"我已经被选中了"，视觉比 hover 更重：
+### 5.3 Active / selected
 
-| 元素类型 | Active 效果 | Token |
-|----------|------------|-------|
-| Sidebar 菜单项 | 背景 + 文字加重 + font-medium | `data-active:bg-sidebar-accent data-active:font-medium` |
-| Tab | 下方指示条 + 文字变前景色 + font-medium | `data-[state=active]:text-foreground` |
-| 列表选中行 | 背景加深 | `bg-muted` 或 `bg-accent` |
-| Toggle（开） | 背景反色 | `data-[state=on]:bg-primary data-[state=on]:text-primary-foreground` |
+Active says "I am the chosen one". It is visually heavier than hover:
 
-**关键区分：** Hover = `bg-muted`，Active = `bg-muted` + `font-medium` + `text-foreground`。Active 始终比 hover 多一个视觉维度（字重或颜色变化），而不仅仅是背景更深。
+| Element | Active effect | Token |
+|---|---|---|
+| Sidebar menu item | Background + heavier text + `font-medium` | `data-active:bg-sidebar-accent data-active:font-medium` |
+| Tab | Underline indicator + foreground text + `font-medium` | `data-[state=active]:text-foreground` |
+| Selected list row | Deeper background | `bg-muted` or `bg-accent` |
+| Toggle (on) | Inverted background | `data-[state=on]:bg-primary data-[state=on]:text-primary-foreground` |
 
-### 5.3.1 Active 不被 Hover 覆盖
+**The key distinction:** hover = `bg-muted`; active = `bg-muted` + `font-medium` + `text-foreground`. Active always adds a visual dimension beyond a darker background — weight or colour.
 
-这是最容易出 bug 的地方：用户 hover 到一个已选中的项目上，hover 样式覆盖了 active 样式，导致选中态"闪回"普通 hover 态，视觉上像取消了选中。
+### 5.3.1 Active must survive hover
 
-**原则：Active 状态在任何时候都必须保持可辨识——包括被 hover 时。**
+This is the most common source of bugs: the user hovers an already-selected item, the hover style overrides the active style, and the selection appears to "flash back" to a plain hover — visually reading as a deselection.
 
-实现方式：
+**Principle: an active state must stay identifiable at all times, including while hovered.**
 
-**方式一：Active 使用 hover 不涉及的维度**
+Three ways to achieve it:
 
-如果 hover 只改背景，那 active 用字重 + 文字颜色来区分。即使 hover 背景叠上去，字重和颜色不变，用户仍能识别"这个是选中的"：
+**Option 1 — express active on a dimension hover does not touch.**
+
+If hover only changes the background, express active through weight and text colour. Even when the hover background lands on top, weight and colour are unchanged and the user still reads "this one is selected":
 
 ```
-// ✅ hover 只管背景，active 靠字重和颜色
-hover:bg-muted                          // hover：浅灰背景
-data-active:font-medium data-active:text-foreground  // active：字重+颜色（hover 不会覆盖）
+// ✅ hover owns the background; active owns weight and colour
+hover:bg-muted                                       // hover: light grey background
+data-active:font-medium data-active:text-foreground  // active: weight + colour (hover cannot override)
 ```
 
-**方式二：Active + Hover 组合样式**
+**Option 2 — an explicit active+hover compound style.**
 
-当 active 也用了背景色时，需要显式定义 "active 且 hover" 的复合状态，确保 hover 不会把 active 的背景拉回低层级：
+When active also uses a background colour, define the "active and hovered" compound state explicitly so hover cannot drag the active background back down a level:
 
 ```tsx
-// ✅ 显式处理 active+hover 复合态
+// ✅ compound state handled explicitly
 cn(
-  "hover:bg-muted/50",                              // 普通 hover
+  "hover:bg-muted/50",                                // plain hover
   "data-active:bg-muted data-active:text-foreground", // active
-  "data-active:hover:bg-muted"                       // active+hover：保持 active 背景，不降级
+  "data-active:hover:bg-muted"                        // active+hover: hold the active background, no downgrade
 )
 ```
 
 ```tsx
-// ❌ 反例：hover 覆盖 active
+// ❌ anti-pattern: hover overrides active
 cn(
-  "hover:bg-muted/50",           // hover 背景比 active 更淡
-  "data-active:bg-muted",        // active 背景
-  // 没有处理复合态 → hover 到 active 项时背景从 muted 闪回 muted/50
+  "hover:bg-muted/50",           // hover background is lighter than active
+  "data-active:bg-muted",        // active background
+  // compound state unhandled → hovering an active row flashes from muted back to muted/50
 )
 ```
 
-**方式三：CSS 选择器优先级**
+**Option 3 — CSS selector specificity.**
 
-利用 `:not()` 让 hover 只作用于非 active 的元素：
+Use `:not()` so hover only applies to non-active elements:
 
 ```
-// ✅ hover 不作用于 active 项
+// ✅ hover does not apply to the active item
 [data-active]:bg-muted [data-active]:text-foreground
 not-data-active:hover:bg-muted/50
 ```
 
-**检查方法：** 写完任何带 hover + active 状态的组件后，必须手动验证——先点击选中一项，然后鼠标移到该项上再移开，确认视觉不会"闪烁"或"降级"。
+**How to check:** after writing any component with both hover and active states, verify by hand — select an item, move the pointer onto it and off again, and confirm nothing flickers or downgrades.
 
-### 5.4 Pressed 状态
+### 5.4 Pressed
 
-物理反馈感——按下按钮时有微小的位移：
+Physical feedback — a tiny displacement on press:
 
 ```
 active:not-aria-[haspopup]:translate-y-px
 ```
 
-这个 1px 的下移在 shadcn button 上已全局配置。对于触发弹出菜单的按钮不添加（因为弹出即松开，位移会闪烁）。
+This 1px shift is configured globally on the shadcn button. It is excluded for buttons that open a popup, because the popup appears on release and the shift would flicker.
 
-### 5.5 Focus 状态
+### 5.5 Focus
 
-Focus 为键盘导航服务。所有可交互元素统一使用：
+Focus serves keyboard navigation. Every interactive element uses:
 
 ```
 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50
 ```
 
-- 使用 `focus-visible`（非 `focus`），避免鼠标点击时出现 focus ring。
-- ring 颜色使用 `ring` token（中灰），不跟组件颜色走——保持全局一致。
+- Use `focus-visible`, not `focus`, so a mouse click does not produce a focus ring.
+- The ring uses the `ring` token (mid grey) and does not follow the component's own colour — it stays globally consistent.
 
-### 5.6 Disabled 状态
+### 5.6 Disabled
 
 ```
 disabled:pointer-events-none disabled:opacity-50
 ```
 
-简单统一。不需要为每个组件定制 disabled 样式。
+Simple and uniform. Do not customise disabled styling per component.
 
-### 5.7 Error / Invalid 状态
+### 5.7 Error / invalid
 
 ```
 aria-invalid:border-destructive aria-invalid:ring-destructive/20
 ```
 
-- 使用 `aria-invalid` 属性触发，与表单校验库自然对接。
-- 只改变边框和 ring，不改背景。错误信息用内联文字展示，不用 toast 或 alert banner。
+- Triggered by the `aria-invalid` attribute, which maps naturally onto form-validation libraries.
+- Only the border and ring change; the background does not. Error messages render as inline text, never as a toast or alert banner.
 
 ---
 
-## 6. 图标规范
+## 6. Icons
 
-### 6.1 图标库
+### 6.1 Icon library
 
-统一使用 **Lucide React**（`lucide-react`）。
+**Lucide React** (`lucide-react`) exclusively.
 
-禁止混用其他图标库（Heroicons、Phosphor 等），也禁止自制 SVG 图标（除非 Lucide 确实没有合适的）。
+Do not mix in other icon libraries (Heroicons, Phosphor, etc.), and do not hand-roll SVG icons unless Lucide genuinely lacks a suitable one.
 
-### 6.2 图标尺寸
+### 6.2 Icon sizing
 
-图标尺寸与组件尺寸绑定：
+Icon size is bound to component size:
 
-| 组件尺寸 | 图标尺寸 | 示例 |
-|----------|---------|------|
-| xs（h-6） | `size-3` (12px) | 紧凑按钮、badge 内图标 |
-| sm（h-7） | `size-3.5` (14px) | 小按钮、紧凑列表 |
-| default（h-8） | `size-4` (16px) | 标准按钮、菜单项、表格操作 |
-| lg（h-9） | `size-4` (16px) | 大按钮（图标不需要更大） |
+| Component size | Icon size | Example |
+|---|---|---|
+| xs (`h-6`) | `size-3` (12px) | Compact buttons, icons inside a badge |
+| sm (`h-7`) | `size-3.5` (14px) | Small buttons, compact lists |
+| default (`h-8`) | `size-4` (16px) | Standard buttons, menu items, table actions |
+| lg (`h-9`) | `size-4` (16px) | Large buttons (the icon does not need to grow) |
 
-**规则：**
-- 独立装饰性图标（如空状态插图）最大 `size-8` (32px)。
-- 所有图标默认继承父元素文字颜色。需要弱化时用 `text-muted-foreground`。
-- 图标与文字的间距：`gap-1`（xs）/ `gap-1.5`（sm/default）/ `gap-2`（宽松排列）。
+**Rules:**
 
-### 6.3 图标颜色
+- A standalone decorative icon (an empty-state illustration, say) is at most `size-8` (32px).
+- Icons inherit the parent's text colour by default. To de-emphasise, use `text-muted-foreground`.
+- Icon-to-text spacing: `gap-1` (xs) / `gap-1.5` (sm and default) / `gap-2` (loose arrangements).
 
-- **导航/操作图标：** `text-muted-foreground`，hover 时跟随文字变为 `text-foreground`
-- **状态图标：** 使用对应语义色（如 `text-success`、`text-destructive`）
-- **Active 状态图标：** `text-foreground`
+### 6.3 Icon colour
 
----
-
-## 7. 圆角规范
-
-基于 `--radius: 0.625rem`（10px）的动态 scale：
-
-| Token | 值 | 用途 |
-|-------|-----|------|
-| `rounded-sm` | 6px | Checkbox、小标签 |
-| `rounded-md` | 8px | 输入框、小按钮、dropdown item |
-| `rounded-lg` | 10px | 标准按钮、卡片、dialog |
-| `rounded-xl` | 14px | 大卡片、sheet |
-| `rounded-full` | 999px | 头像、pill badge |
-
-**禁止** 硬编码像素值如 `rounded-[6px]`（除非 shadcn 组件内部需要响应式计算如 `rounded-[min(var(--radius-md),12px)]`）。
+- **Navigation / action icons:** `text-muted-foreground`, following the text to `text-foreground` on hover
+- **Status icons:** the matching semantic colour (`text-success`, `text-destructive`, …)
+- **Active-state icons:** `text-foreground`
 
 ---
 
-## 8. 动效规范
+## 7. Border radius
 
-### 8.1 原则
+A dynamic scale derived from `--radius: 0.625rem` (10px):
 
-- **快速、克制。** 动效是为了帮助用户理解变化，不是展示技术。
-- **淡入淡出优先。** 元素出现/消失优先用 opacity 过渡，而不是滑动。
-- **无弹跳。** 不使用 spring / bounce 缓动。缓动曲线统一用 `ease-out`。
+| Token | Value | Use for |
+|---|---|---|
+| `rounded-sm` | 6px | Checkboxes, small tags |
+| `rounded-md` | 8px | Inputs, small buttons, dropdown items |
+| `rounded-lg` | 10px | Standard buttons, cards, dialogs |
+| `rounded-xl` | 14px | Large cards, sheets |
+| `rounded-full` | 999px | Avatars, pill badges |
 
-### 8.2 时长
-
-| 场景 | 时长 | 示例 |
-|------|------|------|
-| 颜色/透明度变化 | 150ms | hover 背景变化、文字颜色变化 |
-| 展开/收起 | 200ms | accordion、collapsible |
-| 弹层出入 | 150-200ms | dialog、dropdown、popover |
-| 页面切换 | 无动效 | 路由跳转无过渡动画 |
-
-### 8.3 使用的 transition
-
-| Tailwind Class | 用途 |
-|----------------|------|
-| `transition-colors` | 纯颜色变化（hover、active）— 首选 |
-| `transition-all` | 多属性同时变化 |
-| `transition-opacity` | 元素淡入淡出 |
-| `transition-transform` | 位移动画（pressed 效果） |
+**Hardcoded pixel values such as `rounded-[6px]` are forbidden** — the exception is shadcn internals that need a responsive calculation, e.g. `rounded-[min(var(--radius-md),12px)]`.
 
 ---
 
-## 9. 组件使用规范
+## 8. Motion
 
-### 9.1 shadcn 优先
+### 8.1 Principles
 
-所有 UI 组件优先使用已安装的 shadcn 组件（55 个可用）。新增 UI 需求时：
+- **Fast and restrained.** Motion exists to help the user understand a change, not to show off.
+- **Fade first.** Prefer an opacity transition over a slide when something appears or disappears.
+- **No bounce.** No spring or bounce easing. Easing is uniformly `ease-out`.
 
-1. 先查 shadcn 是否有对应组件 → `npx shadcn add <component>`
-2. 需要变体 → 用 CVA 在现有组件上扩展
-3. 确实没有 → 自建组件，但必须遵循本规范的 token / 交互状态
+### 8.2 Duration
 
-### 9.2 按钮层级
+| Case | Duration | Example |
+|---|---|---|
+| Colour / opacity change | 150ms | Hover background, text colour |
+| Expand / collapse | 200ms | Accordion, collapsible |
+| Overlay enter / exit | 150–200ms | Dialog, dropdown, popover |
+| Page change | none | Route transitions have no animation |
 
-从最强调到最弱：
+### 8.3 Transitions in use
 
-| 变体 | 视觉重量 | 使用场景 |
-|------|---------|----------|
-| `default`（primary） | ██████ | 页面主操作（每屏最多 1 个） |
-| `outline` | ████░░ | 次要操作 |
-| `secondary` | ███░░░ | 辅助操作、工具栏 |
-| `ghost` | █░░░░░ | 图标按钮、内联操作、紧凑工具栏 |
-| `destructive` | ████░░ | 删除、危险操作（红色调） |
-| `link` | █░░░░░ | 内联文字链接 |
-
-**规则：** 一个视图里的 primary 按钮最多 1 个。其他都用更弱的变体。如果有多个同等重要的操作，全部用 `outline` 或 `secondary`。
-
-### 9.3 Dropdown / Popover
-
-- 内容宽度使用 `w-auto`，**禁止** 固定宽度如 `w-52`、`w-56`（会导致文字换行）。
-- 菜单项统一 `text-sm`，图标 `size-4`。
-- 选中项通过 checkmark 图标或左侧指示条标记，不改变背景色。
-- 危险操作项使用 `text-destructive`，放在最底部，上方用分割线隔开。
-
-### 9.4 表单输入
-
-- 输入框统一使用 `border-input` 边框，focus 时 `border-ring` + ring。
-- Label 使用 `text-sm font-medium`。
-- 描述/帮助文字使用 `text-xs text-muted-foreground`。
-- 错误信息使用 `text-xs text-destructive`，放在输入框正下方。
+| Tailwind class | Use for |
+|---|---|
+| `transition-colors` | Pure colour change (hover, active) — preferred |
+| `transition-all` | Several properties changing together |
+| `transition-opacity` | Fading elements in and out |
+| `transition-transform` | Displacement (the pressed effect) |
 
 ---
 
-## 10. 反模式清单
+## 9. Component conventions
 
-以下做法**禁止**出现在代码中：
+### 9.1 shadcn first
 
-| 禁止 | 原因 | 替代 |
-|------|------|------|
-| 硬编码颜色 `text-red-500`、`bg-gray-100` | 破坏主题一致性 | 使用 token：`text-destructive`、`bg-muted` |
-| 任意像素 `text-[11px]`、`w-[137px]` | 脱离设计系统 | 使用 Tailwind 内置 scale |
-| `font-bold` / `font-semibold` | 过重，破坏轻感 | `font-medium` + `text-foreground` |
-| `text-lg` / `text-xl` / `text-2xl` | 信息密度型工具不需要大字 | `text-base` 已是最大 |
-| `shadow-sm` / `shadow-md` / `shadow-lg` | 拟物风格，与扁平设计冲突 | 使用 `border` 分隔层级 |
-| hover 时 `scale-105` | 突兀，与克制风格冲突 | `hover:bg-muted` |
-| 多色 gradient 背景 | 装饰性，分散注意力 | 纯色 token |
-| Skeleton loading | 与简洁风格不匹配 | Spinner（`Loader2Icon animate-spin`）或内联 loading 文字 |
-| Toast 做操作确认 | 转瞬即逝，用户容易错过 | 内联状态文字或 Sonner 仅用于错误/重要提示 |
-| 固定宽度 dropdown `w-52` | 文字换行不可控 | `w-auto` |
-| 纯黑背景 `#000` / `oklch(0 0 0)` | LCD 上刺眼 | Dark 模式用深灰 `background` token |
+Prefer the already-installed shadcn components (55 available). For a new UI need:
+
+1. Check whether shadcn has it → `npx shadcn add <component>`
+2. Need a variant → extend the existing component with CVA
+3. Genuinely absent → build your own, but follow the tokens and interaction states in this document
+
+### 9.2 Button hierarchy
+
+From strongest to weakest:
+
+| Variant | Visual weight | Use for |
+|---|---|---|
+| `default` (primary) | ██████ | The page's primary action (at most one per screen) |
+| `outline` | ████░░ | Secondary actions |
+| `secondary` | ███░░░ | Supporting actions, toolbars |
+| `ghost` | █░░░░░ | Icon buttons, inline actions, compact toolbars |
+| `destructive` | ████░░ | Delete and other destructive actions (red) |
+| `link` | █░░░░░ | Inline text links |
+
+**Rule:** at most one primary button per view. Everything else uses a weaker variant. If several actions are equally important, make them all `outline` or all `secondary`.
+
+### 9.3 Dropdown / popover
+
+- Content width uses `w-auto`. **Fixed widths such as `w-52` or `w-56` are forbidden** — they force text to wrap.
+- Menu items are uniformly `text-sm` with `size-4` icons.
+- Mark the selected item with a checkmark icon or a leading indicator, not a background change.
+- Destructive items use `text-destructive`, sit at the bottom, and are separated by a divider above.
+
+### 9.4 Form inputs
+
+- Inputs use a `border-input` border, switching to `border-ring` plus a ring on focus.
+- Labels use `text-sm font-medium`.
+- Description and help text use `text-xs text-muted-foreground`.
+- Error messages use `text-xs text-destructive`, directly below the input.
 
 ---
 
-## 11. 检查清单
+## 10. Anti-patterns
 
-在提交任何 UI 变更前，过一遍：
+The following are **forbidden** in the codebase:
 
-- [ ] 所有颜色是否使用 token？有没有硬编码？
-- [ ] 字号是否只在 `text-xs` / `text-sm` / `text-base` 范围内？
-- [ ] 字重是否只用了 `font-normal` 和 `font-medium`？
-- [ ] Hover 状态是否比 active 状态更淡？
-- [ ] Active 项被 hover 时，active 样式是否仍然可辨识（不被 hover 覆盖）？
-- [ ] 图标尺寸是否与组件尺寸匹配？
-- [ ] 间距是否使用 Tailwind 内置 scale（无任意值）？
-- [ ] Dark 模式下是否正常？
-- [ ] 有没有不必要的分割线（可以用间距替代）？
-- [ ] Dropdown / Popover 是否 `w-auto`？
-- [ ] 一个视图里 primary 按钮是否不超过 1 个？
+| Forbidden | Why | Instead |
+|---|---|---|
+| Hardcoded colours `text-red-500`, `bg-gray-100` | Breaks theme consistency | Use tokens: `text-destructive`, `bg-muted` |
+| Arbitrary values `text-[11px]`, `w-[137px]` | Escapes the design system | Use Tailwind's built-in scale |
+| `font-bold` / `font-semibold` | Too heavy; breaks the light feel | `font-medium` + `text-foreground` |
+| `text-lg` / `text-xl` / `text-2xl` | A density-oriented tool does not need large type | `text-base` is already the maximum |
+| `shadow-sm` / `shadow-md` / `shadow-lg` | Skeuomorphic; conflicts with a flat design | Use `border` to separate levels |
+| `scale-105` on hover | Jarring; conflicts with a restrained style | `hover:bg-muted` |
+| Multi-colour gradient backgrounds | Decorative; distracting | A solid token colour |
+| Skeleton loading | Does not match the minimal style | A spinner (`Loader2Icon animate-spin`) or inline loading text |
+| A toast to confirm an action | Transient; easy to miss | Inline status text; reserve Sonner for errors and important notices |
+| Fixed-width dropdown `w-52` | Text wrapping is uncontrollable | `w-auto` |
+| Pure black background `#000` / `oklch(0 0 0)` | Harsh on LCD | Use the deep-grey `background` token in dark mode |
+
+---
+
+## 11. Checklist
+
+Run through this before submitting any UI change:
+
+- [ ] Are all colours tokens? Anything hardcoded?
+- [ ] Are type sizes confined to `text-xs` / `text-sm` / `text-base`?
+- [ ] Are weights confined to `font-normal` and `font-medium`?
+- [ ] Is the hover state lighter than the active state?
+- [ ] When an active item is hovered, does the active style stay identifiable (not overridden by hover)?
+- [ ] Do icon sizes match their component sizes?
+- [ ] Is spacing on Tailwind's built-in scale (no arbitrary values)?
+- [ ] Does it work in dark mode?
+- [ ] Are there unnecessary dividers that spacing could replace?
+- [ ] Are dropdowns and popovers `w-auto`?
+- [ ] Is there at most one primary button in the view?
