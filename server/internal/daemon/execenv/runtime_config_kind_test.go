@@ -284,7 +284,9 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		"run unobservable work synchronously",
 		"standing by",
 		"are not run-owned: do not wait",
-		"do not run `gh pr checks --watch`",
+		// The full compound ban, not its first item — MUL-5223 made this a
+		// non-derivable boundary, so no member may be silently dropped.
+		"do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls",
 		"GitHub Actions after a successful push",
 		"NOT your delivery acceptance criteria",
 		"CI running: <PR link>",
@@ -301,6 +303,11 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("slim Background Task Safety missing hardened pin %q\n---\n%s", want, out)
 		}
+	}
+	// Exactly one exception (see the execenv provider-agnostic test for
+	// the incident this guards).
+	if got := strings.Count(out, "The one exception"); got != 1 {
+		t.Errorf("slim brief must state the CI exception exactly once, got %d\n---\n%s", got, out)
 	}
 	// `gh run watch` may only appear as a banned command, never as the
 	// section's example of how to wait properly.

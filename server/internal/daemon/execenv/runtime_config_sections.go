@@ -30,8 +30,10 @@ import (
 //  2. Per-section prose compression — Available Commands, Issue
 //     Body Formatting, Metadata, Mentions, Sub-issue Creation,
 //     Comment Formatting, Always Use CLI, Background Task Safety, Task Initiator,
-//     Repositories, Output are all tightened. Every test-asserted phrase
-//     stays.
+//     Repositories, Output are all tightened. Test-asserted phrases either
+//     survive verbatim or are renegotiated to new semantic anchors in the
+//     same PR (MUL-5442 established that discipline); no assertion is
+//     dropped without a replacement.
 //
 // Background Task Safety is emitted by `writeBackgroundTaskSafetySlim`
 // below.
@@ -42,13 +44,13 @@ func writeHeader(b *strings.Builder) {
 	b.WriteString("You are a coding agent in the Multica platform. Use the `multica` CLI to interact with the platform.\n\n")
 }
 
-// writeBackgroundTaskSafetySlim emits the Background Task Safety section.
-// Drops the verbose preamble but keeps the same hard behaviour pins the
-// tests assert:
-// "Do NOT end your turn while background tasks", "wait for a future
-// notification/reminder", "run the work synchronously instead", the
-// no-background-and-yield rule, the external-work boundary, and the
-// no-"standing by" sign-off rule.
+// writeBackgroundTaskSafetySlim emits the Background Task Safety section
+// in its judgment form (MUL-5442): three paragraphs — the platform fact
+// everything else derives from (turn exit is task-terminal, no wakeup
+// exists, never background-and-yield), the external-systems/CI boundary
+// with its single explicit-ask exception, and the persistent-service
+// handoff contract. The pinned anchors the tests assert are the fact,
+// each boundary, both exceptions, and the handoff triple.
 //
 // MUL-5223: the external-work boundary alone did not stop agents from
 // blocking on CI. Two holes are closed here. First, the boundary was
@@ -76,44 +78,29 @@ func writeHeader(b *strings.Builder) {
 // handoff contract (lifecycle independence, durable logs, cleanup handle);
 // how to detach is the Local Dev Environment skill's concern, not the brief's.
 //
-// Bullet order is deliberate: run-owned rules first, then the persistent
-// service handoff and its negative boundary, then the external-systems / CI
-// cluster. The former boundary sentence "The rules above apply only to work
-// owned by the current run" was dropped in the MUL-5274 review: with the
-// handoff exception inserted above it, "the rules above" would have swept in
-// work that is precisely no longer run-owned. The external-systems bullet
-// carries the boundary on its own ("are not agent-owned background tasks").
-// Within the CI cluster the exception bullet must stay below the ban bullet —
-// the ban forward-references "the explicit exception below".
+// Paragraph order: the CI exception lives INSIDE the boundary paragraph
+// (one "The one exception" occurrence, count-guarded in the tests), and the
+// persistent-service paragraph closes the section. A former scoping sentence
+// ("The rules above apply only to work owned by the current run") stays
+// dropped: the boundary paragraph carries its own scope ("are not
+// run-owned").
 //
-// MUL-5442 folds four bullets that restated one rule from different angles
-// (end-of-turn ban, untrustworthy tool promises, unobservable results, the
-// "standing by" sign-off) into the leading bullet. They were four views of
-// "the turn ending is the deadline", and separating them cost bytes without
-// adding a distinct behaviour. Every pinned phrase is carried over verbatim.
-// The sign-off ban now leads rather than closes the list; it still applies to
-// the whole section because the opening bullet scopes it to ending a turn at
-// all, not to any one later bullet.
-//
-// MUL-5442 stage 2 (owner-authorized judgment rewrite): the section now
-// carries three paragraphs — the platform fact everything derives from
-// (turn exit = task terminal, no wakeup), the external-systems/CI boundary
-// with its single exception, and the persistent-service handoff contract.
-// Enforcement details that frontier models derive from the fact were
-// deliberately dropped: the run-owned work enumeration, the tool-promise
-// enumeration, the wait/collect split rule, the persistent-service scope
-// bullet, the auto-merge and snapshot elaborations. The incident history
-// above (MUL-5223, MUL-5274, MUL-4091) remains the WHY for what stays:
-// the named --watch ban and merge-gate denial survive because MUL-5223
-// proved the principle alone did not stop CI-watching, and the handoff
-// paragraph is review-locked verbatim (URL/logs/stop triple, general
-// cleanup handle) — do not reword it without a fresh review decision.
+// MUL-5442 stage 2 (owner-authorized judgment rewrite): enforcement details
+// a frontier model derives from the platform fact were deliberately dropped
+// — the run-owned work enumeration, the tool-promise enumeration, the
+// wait/collect split rule, the persistent-service scope bullet, the
+// auto-merge and snapshot elaborations. Their pins were retired in the same
+// change. The incident history above (MUL-5223, MUL-5274, MUL-4091) remains
+// the WHY for what stays: the named --watch/watch/poll ban and merge-gate
+// denial survive because MUL-5223 proved the principle alone did not stop
+// CI-watching, and the handoff paragraph is review-locked verbatim
+// (URL/logs/stop triple, general cleanup handle) — do not reword it without
+// a fresh review decision.
 func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 	b.WriteString("## Background Task Safety\n\n")
 	b.WriteString("Multica marks the task terminal the moment your top-level turn exits — any run-owned work still active is orphaned, its result lost, and the final comment you meant to post never sends. There is no background-completion wakeup, whatever a tool response promises. Never background-and-yield: collect required results inside foreground tool calls that block to completion, run unobservable work synchronously, and never end a turn \"standing by\" for something to finish — that message becomes your final output.\n\n")
 	b.WriteString("External systems triggered by your completed actions — CI, GitHub Actions after a successful push — are not run-owned: do not wait for them, and do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls. A repo's merge gate (\"CI must be green before merge\") is NOT your delivery acceptance criteria. Deliver what you have — \"Local tests pass; CI running: <PR link>\" is a complete hand-off. The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask for the CI result, collect it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn.\n\n")
-	b.WriteString("A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded cleanup handle such as PID/profile), verify readiness, and reply with the URL, logs, and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n")
-	b.WriteString("- The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask you for the CI result, that result IS the deliverable — wait for it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn and report the outcome. Nothing else re-opens this door.\n\n")
+	b.WriteString("A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded cleanup handle such as PID/profile), verify readiness, and reply with the URL, logs, and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n\n")
 }
 
 // writeAgentIdentity emits the Agent Identity heading and (optionally) the

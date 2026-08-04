@@ -1007,7 +1007,9 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 				"run unobservable work synchronously",
 				"standing by",
 				"are not run-owned: do not wait",
-				"do not run `gh pr checks --watch`",
+				// The full compound ban, not its first item — MUL-5223 made this a
+				// non-derivable boundary, so no member may be silently dropped.
+				"do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls",
 				"GitHub Actions after a successful push",
 				"NOT your delivery acceptance criteria",
 				"CI running: <PR link>",
@@ -1024,6 +1026,12 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s missing background task safety text %q\n---\n%s", tc.file, want, s)
 				}
+			}
+			// Exactly one exception: substring pins cannot see a duplicated
+			// "The one exception" clause (a second, wider-scope copy slipped
+			// in during the MUL-5442 rewrite and every pin stayed green).
+			if got := strings.Count(s, "The one exception"); got != 1 {
+				t.Errorf("%s must state the CI exception exactly once, got %d\n---\n%s", tc.file, got, s)
 			}
 			// `gh run watch` may only appear as a banned command, never as
 			// the section's example of how to wait properly.
