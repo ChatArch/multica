@@ -1,17 +1,18 @@
 {
   "step_nav": {
+    "wordmark": "Multica",
     "label": "Onboarding steps",
     "about_you": {
       "label": "About you",
-      "description": "Your role, and what you want done"
+      "description": "Your role, and what you want done."
     },
     "workspace": {
       "label": "Workspace",
-      "description": "Name it and pick its URL"
+      "description": "Name it and pick its URL."
     },
     "runtime": {
       "label": "Meet Mika",
-      "description": "Your Chief of Staff, and where it runs"
+      "description": "Your Chief of Staff, and where it runs."
     }
   },
   "welcome": {

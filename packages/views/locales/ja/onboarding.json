@@ -1,17 +1,18 @@
 {
   "step_nav": {
+    "wordmark": "Multica",
     "label": "オンボーディングの手順",
     "about_you": {
       "label": "あなたについて",
-      "description": "役割と、実現したいこと"
+      "description": "役割と、実現したいこと。"
     },
     "workspace": {
       "label": "ワークスペース",
-      "description": "名前と URL を決める"
+      "description": "名前と URL を決める。"
     },
     "runtime": {
       "label": "Mika を知る",
-      "description": "参謀長と、その実行環境"
+      "description": "参謀長と、その実行環境。"
     }
   },
   "welcome": {

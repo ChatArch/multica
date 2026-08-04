@@ -1,17 +1,18 @@
 {
   "step_nav": {
+    "wordmark": "Multica",
     "label": "引导步骤",
     "about_you": {
       "label": "关于你",
-      "description": "你的角色，以及想完成什么"
+      "description": "你的角色，以及想完成什么。"
     },
     "workspace": {
       "label": "工作区",
-      "description": "命名并选择网址"
+      "description": "命名并选择网址。"
     },
     "runtime": {
       "label": "认识 Mika",
-      "description": "你的参谋长，以及它运行的位置"
+      "description": "你的参谋长，以及它运行的位置。"
     }
   },
   "welcome": {

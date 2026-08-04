@@ -1,17 +1,18 @@
 {
   "step_nav": {
+    "wordmark": "Multica",
     "label": "온보딩 단계",
     "about_you": {
       "label": "당신에 대해",
-      "description": "역할과 하고 싶은 일"
+      "description": "역할과 하고 싶은 일."
     },
     "workspace": {
       "label": "워크스페이스",
-      "description": "이름과 URL 정하기"
+      "description": "이름과 URL 정하기."
     },
     "runtime": {
       "label": "Mika 소개",
-      "description": "참모장과 실행 환경"
+      "description": "참모장과 실행 환경."
     }
   },
   "welcome": {

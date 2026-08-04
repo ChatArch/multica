@@ -1,12 +1,15 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { ArrowLeft, Check } from "lucide-react";
 import {
   ONBOARDING_STEP_ORDER,
   type OnboardingStep,
 } from "@multica/core/onboarding";
 import { cn } from "@multica/ui/lib/utils";
+import { Button } from "@multica/ui/components/ui/button";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
+import { DotSphere } from "@multica/ui/components/ui/dot-sphere";
 import {
   Stepper,
   StepperDescription,
@@ -23,20 +26,29 @@ import { useT } from "../../i18n";
  *
  * This replaces a horizontal row of dots that carried a "Step 2 of 3" counter
  * and nothing else. The counter told a member how much was left but never what
- * was coming, so each step arrived unannounced — the same reason the runtime
- * step read as a surprise. Naming all three steps up front makes onboarding
- * legible as a whole before the first field is filled in.
+ * was coming, so each step arrived unannounced.
  *
- * Two deliberate choices:
+ * Structurally it follows the ReUI onboarding-3 block: an inset panel with a
+ * brand lockup at the top, the step list centred in the remaining height, and
+ * a footer row — rather than a flat rail with everything crowded against the
+ * top edge.
  *
- *   - It is not a tablist. The ported stepper defaults to `role="tablist"`
+ * Three things worth knowing:
+ *
+ *   - **`dark` on the panel, not inverted utilities.** `.dark` is a plain
+ *     class selector in our token sheet, so scoping it here redefines the
+ *     custom properties for this subtree only. `text-muted-foreground` then
+ *     means the right thing on a dark surface. The first version of this
+ *     hand-mixed `text-background/60` shades instead, which is how the Log
+ *     out button ended up near-invisible.
+ *   - **It is not a tablist.** The ported stepper defaults to `role="tablist"`
  *     with each trigger owning `aria-controls` on a panel id — correct for a
  *     stepper that renders its own panels, wrong here, where the panel is a
  *     routed step and those ids would dangle. We use the presentational slots
  *     and mark position with `aria-current="step"` instead.
- *   - Only completed steps are clickable. Forward navigation has to run each
- *     step's validation and submit, so jumping ahead from the rail would skip
- *     it; going back is always safe.
+ *   - **Only completed steps are clickable.** Forward navigation has to run
+ *     each step's validation and submit, so jumping ahead from the rail would
+ *     skip it; going back is always safe.
  */
 export function StepSidebar({
   currentStep,
@@ -61,113 +73,169 @@ export function StepSidebar({
   const currentIndex = Math.max(0, ONBOARDING_STEP_ORDER.indexOf(currentStep));
 
   return (
-    <aside className="flex w-[15rem] shrink-0 flex-col bg-foreground text-background lg:w-[19rem]">
-      {/* Sits under the traffic lights, so the rail owns the window's top-left
-          corner rather than leaving a light band above it. */}
-      <div
-        aria-hidden
-        className="h-12 shrink-0"
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-      />
-
-      <div className="flex min-h-0 flex-1 flex-col px-6 pb-8 lg:px-8">
-        {onBack ? (
-          <button
-            type="button"
-            onClick={onBack}
-            disabled={backDisabled}
-            className="-ml-1 flex w-fit items-center gap-1.5 rounded-md px-1 py-1 text-body text-background/60 transition-colors hover:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background/40 disabled:opacity-40"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {t(($) => $.common.back)}
-          </button>
-        ) : null}
-
-        <Stepper
-          value={currentIndex + 1}
-          orientation="vertical"
-          role="group"
-          aria-label={t(($) => $.step_nav.label)}
-          className={cn("w-full", onBack ? "mt-10" : "mt-2")}
+    <aside className="w-[15rem] shrink-0 p-2 md:w-[19rem] md:p-3 lg:w-[22rem] lg:p-4">
+      <div className="dark relative isolate flex h-full w-full flex-col overflow-hidden rounded-2xl bg-background px-5 pb-5 text-foreground ring-1 ring-border">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-background"
         >
-          <StepperNav className="w-full gap-0">
-            {ONBOARDING_STEP_ORDER.map((stepId, index) => {
-              const isDone = index < currentIndex;
-              const isCurrent = index === currentIndex;
-              const isLast = index === ONBOARDING_STEP_ORDER.length - 1;
-              const canReturn = isDone && !!onStepChange && !backDisabled;
-              const key = stepId as Exclude<OnboardingStep, "welcome">;
+          <DotSphere
+            dotGap={19}
+            motion="wave"
+            sphereCount={5}
+            sphereRadius="20%"
+            dotRadiusMax={1.9}
+            speed={0.4}
+          />
+        </div>
 
-              const body = (
-                <>
-                  <StepperIndicator
-                    className={cn(
-                      "size-6 border-0 transition-colors",
-                      isDone || isCurrent
-                        ? "bg-background text-foreground"
-                        : "bg-background/10 text-background/50",
-                    )}
-                  >
-                    {isDone ? (
-                      <Check aria-hidden className="size-3.5" />
-                    ) : (
-                      index + 1
-                    )}
-                  </StepperIndicator>
-                  <div className="min-w-0 text-left">
-                    <StepperTitle
-                      className={cn(
-                        "transition-colors",
-                        isCurrent ? "text-background" : "text-background/60",
-                      )}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {/* Keeps the panel a window-drag handle and clears the macOS
+              traffic lights, which sit over this corner. */}
+          <div
+            aria-hidden
+            className="h-7 shrink-0"
+            style={{ WebkitAppRegion: "drag" } as CSSProperties}
+          />
+
+          <header className="flex min-h-9 shrink-0 items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2">
+              <MulticaIcon className="size-5 shrink-0 text-foreground" noSpin />
+              <span className="truncate text-label font-medium text-foreground">
+                {t(($) => $.step_nav.wordmark)}
+              </span>
+            </span>
+            {onBack ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={onBack}
+                disabled={backDisabled}
+                aria-label={t(($) => $.common.back)}
+                style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
+              >
+                <ArrowLeft />
+              </Button>
+            ) : null}
+          </header>
+
+          <div className="flex min-h-0 flex-1 items-center justify-center py-10">
+            <Stepper
+              value={currentIndex + 1}
+              orientation="vertical"
+              role="group"
+              aria-label={t(($) => $.step_nav.label)}
+              className="flex w-full flex-col items-start justify-center gap-0"
+            >
+              <StepperNav className="w-full">
+                {ONBOARDING_STEP_ORDER.map((stepId, index) => {
+                  const isDone = index < currentIndex;
+                  const isCurrent = index === currentIndex;
+                  const isLast = index === ONBOARDING_STEP_ORDER.length - 1;
+                  const canReturn = isDone && !!onStepChange && !backDisabled;
+                  const key = stepId as Exclude<OnboardingStep, "welcome">;
+
+                  const body = (
+                    <>
+                      <StepperIndicator
+                        className={cn(
+                          "mt-0.5 size-4 shrink-0 border-0 bg-transparent ring-1 transition-colors",
+                          isDone
+                            ? "bg-foreground text-background ring-foreground"
+                            : isCurrent
+                              ? "text-transparent ring-muted-foreground"
+                              : "text-transparent ring-border",
+                        )}
+                      >
+                        {isDone ? (
+                          <Check aria-hidden className="size-3" />
+                        ) : isCurrent ? (
+                          <span
+                            aria-hidden
+                            className="block size-1.5 rounded-full bg-foreground"
+                          />
+                        ) : (
+                          <span className="sr-only">{index + 1}</span>
+                        )}
+                      </StepperIndicator>
+                      <div className="min-w-0 flex-1 text-left">
+                        <StepperTitle
+                          className={cn(
+                            "transition-colors",
+                            isCurrent || isDone
+                              ? "text-foreground"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {t(($) => $.step_nav[key].label)}
+                        </StepperTitle>
+                        <StepperDescription className="mt-0.5 max-w-none text-muted-foreground">
+                          {t(($) => $.step_nav[key].description)}
+                        </StepperDescription>
+                      </div>
+                    </>
+                  );
+
+                  return (
+                    <StepperItem
+                      key={stepId}
+                      step={index + 1}
+                      completed={isDone}
+                      className="relative w-full items-start not-last:flex-1"
+                      {...(isCurrent
+                        ? { "aria-current": "step" as const }
+                        : {})}
                     >
-                      {t(($) => $.step_nav[key].label)}
-                    </StepperTitle>
-                    <StepperDescription className="mt-0.5 text-background/45">
-                      {t(($) => $.step_nav[key].description)}
-                    </StepperDescription>
-                  </div>
-                </>
-              );
-
-              return (
-                <StepperItem
-                  key={stepId}
-                  step={index + 1}
-                  completed={isDone}
-                  className="w-full items-start not-last:flex-none"
-                  {...(isCurrent ? { "aria-current": "step" as const } : {})}
-                >
-                  {canReturn ? (
-                    <button
-                      type="button"
-                      onClick={() => onStepChange(stepId)}
-                      className="flex w-full items-start gap-3 rounded-md py-1 text-left transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background/40"
-                    >
-                      {body}
-                    </button>
-                  ) : (
-                    <div className="flex w-full items-start gap-3 py-1">
-                      {body}
-                    </div>
-                  )}
-
-                  {/* Indented to line up under the indicator's centre. */}
-                  {!isLast ? (
-                    <StepperSeparator
-                      className={cn(
-                        "ml-[0.6875rem] group-data-[orientation=vertical]/stepper-nav:h-5",
-                        isDone ? "bg-background/40" : "bg-background/15",
+                      {canReturn ? (
+                        <button
+                          type="button"
+                          onClick={() => onStepChange(stepId)}
+                          className="flex w-full items-start gap-3 rounded-md pb-6 text-left transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {body}
+                        </button>
+                      ) : (
+                        <div
+                          className={cn(
+                            "flex w-full items-start gap-3 text-left",
+                            !isLast && "pb-6",
+                          )}
+                        >
+                          {body}
+                        </div>
                       )}
-                    />
-                  ) : null}
-                </StepperItem>
-              );
-            })}
-          </StepperNav>
-        </Stepper>
 
-        {footer ? <div className="mt-auto pt-8">{footer}</div> : null}
+                      {/* One continuous hairline behind the row rather than a
+                          stub between rows, so the rail reads as a single
+                          track. -order-1 puts it under the content. */}
+                      {!isLast ? (
+                        <StepperSeparator
+                          className={cn(
+                            "absolute left-2 top-6 -order-1 m-0 w-px -translate-x-1/2",
+                            // StepperSeparator hardcodes a 3rem height for
+                            // vertical navs, which overshot the row and drew
+                            // the line straight through the next indicator.
+                            // Same variant, so tailwind-merge drops theirs
+                            // rather than us needing !important.
+                            "group-data-[orientation=vertical]/stepper-nav:h-[calc(100%-1.75rem)]",
+                            isDone ? "bg-muted-foreground" : "bg-border",
+                          )}
+                        />
+                      ) : null}
+                    </StepperItem>
+                  );
+                })}
+              </StepperNav>
+            </Stepper>
+          </div>
+
+          {footer ? (
+            <footer className="flex min-h-8 shrink-0 items-end justify-between gap-4">
+              {footer}
+            </footer>
+          ) : null}
+        </div>
       </div>
     </aside>
   );
