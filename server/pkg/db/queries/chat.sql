@@ -295,6 +295,31 @@ SELECT id FROM chat_session
 WHERE id = $1
 FOR UPDATE;
 
+-- name: LockChatSessionForDraftWrite :one
+-- The autosave half of the agent_builder_draft protocol, and the writer's
+-- answer to LockChatSessionForDelete.
+--
+-- agent_builder_draft carries no chat_session FK (repo rule), so an INSERT into
+-- it takes no lock on the parent row and nothing stops a draft from landing
+-- after its conversation is gone: the save path read the session, the delete
+-- transaction then committed, and the upsert still succeeded — leaving a row
+-- the user explicitly discarded, invisible to the UI and unreachable by every
+-- prune except the workspace teardown. The FK that would have rejected that
+-- INSERT is the one we are not allowed to have, so the lock replaces it.
+--
+-- Returns the whole row, not just the id: the caller must re-check creator and
+-- status INSIDE the transaction, because a save blocked here resumes holding
+-- values it read before blocking (the same reason the runtime-bind path re-reads
+-- the agent under its lock).
+--
+-- Same row and same lock mode as LockChatSessionForDelete and
+-- LockChatSessionForRuntimeBind, taken as the transaction's first statement, so
+-- no ordering against the repo-wide chat_session -> agent_task_queue sequence is
+-- introduced and none of the three can deadlock against each other.
+SELECT * FROM chat_session
+WHERE id = $1
+FOR UPDATE;
+
 -- name: DeleteChatSession :exec
 -- Hard delete. chat_message rows cascade via FK ON DELETE CASCADE; the
 -- chat_session_id on agent_task_queue is set NULL by FK so completed/failed
