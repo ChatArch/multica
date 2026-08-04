@@ -5604,38 +5604,22 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	withSection := wantSection{
 		present: []string{
 			"## Issue Metadata",
-			"high-signal scratchpad",
 			"**Read on entry.**",
-			// MUL-5442: the What-NOT-to-pin heading merged into Write on
-			// exit; the negative rules below still pin the full ban list.
 			"**Write on exit.**",
-			"**Recommended keys**",
-			// Recommended-key list — both lea's killer-use-case keys
-			// (pr_number, pipeline_status) and the broader set from
-			// review must be named so the workspace converges on shared
-			// vocabulary.
-			"pr_url",
-			"pr_number",
-			"pipeline_status",
-			"deploy_url",
-			"external_issue_url",
-			"waiting_on",
-			"blocked_reason",
-			"decision",
-			// Safety boundaries — these are the negative rules that
-			// keep metadata from rotting into a second description /
-			// log dump. Pinned as separate semantic anchors (not one
-			// sentence) so the phrasing can be rewritten without CI churn,
-			// while dropping any single ban — or the bookkeeping examples
-			// that define that category's boundary — still fails (MUL-5442
-			// review).
-			"secrets/tokens/API keys",
-			"logs/comment summaries",
-			"runtime bookkeeping such as",
-			"attempts, run timestamps, or agent IDs",
-			"single-run details",
-			"belong in the result comment",
-			"snake_case ASCII",
+			"Hints, not truth",
+			// MUL-5442: the brief keeps only what the interface cannot
+			// express — the read stance, the re-read bar, and the two
+			// write-time boundaries (secrets, length). The full ban list
+			// and the key-naming conventions live in the
+			// multica-working-on-issues skill, pinned by
+			// TestWorkingOnIssuesSkillCoversIssueLoopContracts so this
+			// pointer cannot dangle. The recommended-keys block was
+			// removed outright: metadata is deliberately free-form custom
+			// state (owner decision on MUL-5442), not a vocabulary the
+			// platform curates in every brief.
+			"never secrets or long content",
+			"multica issue metadata delete",
+			"the `multica-working-on-issues` skill",
 		},
 	}
 	withoutSection := wantSection{

@@ -243,6 +243,14 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"`--stage <N>`",
 		"when a whole stage finishes",
 		"multica issue status <child-id> todo",
+		// MUL-5442: the brief's Issue Metadata section defers the full
+		// write discipline here. These anchors are the relocated bans —
+		// each one used to be pinned in the brief and must not leave the
+		// skill while the brief still points at it.
+		"Never store secrets, tokens, or API keys",
+		"Not metadata: logs,",
+		"attempt counts, agent ids",
+		"belong in the result comment",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {

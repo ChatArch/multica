@@ -144,8 +144,9 @@ High-signal keys (reuse these names so queries stay consistent):
 - `blocked_reason`
 - `decision`
 
-Not metadata: logs, summaries, files touched, timestamps, attempt counts,
-investigation notes. Those belong in the result comment.
+Never store secrets, tokens, or API keys in metadata. Not metadata: logs,
+summaries, files touched, timestamps, attempt counts, agent ids, investigation
+notes — those belong in the result comment.
 
 ```bash
 multica issue metadata set <issue-id> --key pr_url --value <url>
