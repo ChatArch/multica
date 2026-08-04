@@ -5471,14 +5471,12 @@ func TestInjectRuntimeConfigAssignmentTriggerScansRootsFirst(t *testing.T) {
 			t.Errorf("assignment Workflow regressed mandatory scan-first catch-up, missing %q\n---\n%s", want, s)
 		}
 	}
-	// Older context must remain reachable through pagination. The cursor label
-	// and flags are documented in `## Available Commands` rather than restated
-	// inside the step (MUL-5372), so assert the label itself, not the literal
-	// `Next thread cursor: ...` stderr line the old step-3 copy quoted.
+	// Older context must remain reachable through pagination. The cursor
+	// labels and flags now live in the CLI's own --help (MUL-5442, pinned by
+	// TestIssueCommentListHelpCarriesReadContract in cmd/multica); the brief
+	// keeps a pointer in the flag reference.
 	for _, want := range []string{
-		"Next thread cursor",
-		"--before",
-		"--before-id",
+		"paging cursors, and full flag semantics: `--help`",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("assignment Workflow missing older-history pagination guidance %q\n---\n%s", want, s)
@@ -5533,11 +5531,11 @@ func TestInjectRuntimeConfigCatchUpScansRootsFirst(t *testing.T) {
 		"multica issue comment list issue-1 --roots-only --summary --output json",
 		// ...followed by an explicit, bounded drill-down.
 		"multica issue comment list issue-1 --thread <thread-id> --tail 30 --output json",
-		// The saturation semantics that made --recent 10 misleading are stated
-		// once, in the flag reference rather than in the step.
+		// The headline saturation warning stays in the flag reference; the
+		// deep semantics (per-thread cap, root-thread saturation) moved to the
+		// CLI's own --help (MUL-5442) and are pinned there
+		// (TestIssueCommentListHelpCarriesReadContract in cmd/multica).
 		"caps THREADS, not comments",
-		"no per-thread cap",
-		"fewer than N root threads",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("brief missing bounded catch-up guidance %q\n---\n%s", want, s)
