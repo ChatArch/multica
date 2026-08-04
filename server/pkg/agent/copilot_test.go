@@ -596,6 +596,66 @@ func TestCopilotShutdownUsageFallback(t *testing.T) {
 	}
 }
 
+func TestCopilotShutdownBeatsMessageOnFreshRun(t *testing.T) {
+	t.Parallel()
+	// A CLI that still populates assistant.message.outputTokens AND emits the
+	// session totals: the totals win, because outputTokens describes only part
+	// of the same tokens and taking it would drop input and cache entirely.
+	lines := []string{
+		fixtureSessionStart,
+		fixtureTurnStart,
+		fixtureAssistantMessage, // 5 outputTokens, no input/cache
+		fixtureShutdown,
+		fixtureResult,
+	}
+
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+	u, ok := usage["claude-sonnet-4.5"]
+	if !ok {
+		t.Fatalf("expected the session totals to win over message outputTokens, got %#v", usage)
+	}
+	if u.InputTokens != 4000 || u.OutputTokens != 900 {
+		t.Fatalf("expected 4000/900 input/output from session.shutdown, got %d/%d", u.InputTokens, u.OutputTokens)
+	}
+	if u.CacheReadTokens != 24000 || u.CacheWriteTokens != 2000 {
+		t.Fatalf("expected cache 24000/2000, got %d/%d", u.CacheReadTokens, u.CacheWriteTokens)
+	}
+}
+
+func TestCopilotTokenlessUsageEventDoesNotShadow(t *testing.T) {
+	t.Parallel()
+	// Every token field on assistant.usage is optional upstream. A usage event
+	// that names only a model must not mark that source populated and shadow
+	// the sources that do carry numbers.
+	tokenless := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","duration":900},"id":"u-0","timestamp":"2026-08-04T08:00:01.000Z","ephemeral":true}`
+
+	t.Run("falls through to session totals", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{fixtureSessionStart, fixtureTurnStart, tokenless, fixtureShutdown, fixtureResult}
+
+		_, _, _, usage := simulateCopilotEventLoop(t, lines)
+
+		if u := usage["claude-sonnet-4.5"]; u.OutputTokens != 900 {
+			t.Fatalf("expected session totals to survive a tokenless usage event, got %#v", usage)
+		}
+	})
+
+	t.Run("falls through to message tokens on resume", func(t *testing.T) {
+		t.Parallel()
+		// Resumed, so the session totals are off the table and the legacy
+		// message tokens are the only thing left.
+		lines := []string{fixtureSessionStart, fixtureTurnStart, tokenless, fixtureAssistantMessage, fixtureShutdown, fixtureResult}
+
+		_, st := runCopilotEventLoop(t, lines, "copilot", true)
+
+		usage := st.resolveUsage()
+		if u := usage["claude-sonnet-4.5"]; u.OutputTokens != 5 {
+			t.Fatalf("expected the 5 message outputTokens to survive, got %#v", usage)
+		}
+	})
+}
+
 func TestCopilotShutdownUsageSkippedOnResume(t *testing.T) {
 	t.Parallel()
 	// session.shutdown totals span the WHOLE session, and the CLI restores its

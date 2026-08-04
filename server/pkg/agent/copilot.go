@@ -45,9 +45,9 @@ type copilotEventState struct {
 	// Token usage arrives on up to three different events, so each source is
 	// accumulated separately and resolved once at the end by resolveUsage.
 	//
-	//	assistant.usage    per model call, full breakdown — authoritative
+	//	session.shutdown   per-model session totals, full breakdown
+	//	assistant.usage    per model call, full breakdown
 	//	assistant.message  outputTokens only — legacy, older CLIs
-	//	session.shutdown   per-model session totals — last resort
 	//
 	// They must never be summed together: all three describe the same tokens.
 	callUsage     map[string]TokenUsage
@@ -58,29 +58,49 @@ type copilotEventState struct {
 	resumed bool
 }
 
-// resolveUsage picks the single best usage source this run produced.
+// resolveUsage picks the single best usage source this run produced, most
+// complete first.
 //
-// assistant.usage is per model call, so it measures exactly this run and stays
-// correct across resumes. assistant.message only carries output tokens, and
-// only on CLIs old enough to still populate the field. session.shutdown is
-// session-wide and the CLI restores its accumulators from a checkpoint on
-// resume, so on a resumed run it reports every earlier turn's tokens too —
-// reporting it there would bill the same tokens once per follow-up, which is
-// worse than reporting nothing.
+// On a fresh session, session.shutdown is the CLI's own final accounting for
+// the whole session — which here IS this run — so it is the most complete
+// source available and cannot be short-changed by an individual model call
+// that failed to report. It is unusable on a resumed run: the CLI restores its
+// accumulators from a checkpoint, so it also carries every earlier turn's
+// tokens, and reporting that on a follow-up would bill the same tokens once per
+// turn. Under-reporting beats double-billing, so a resumed run falls through.
+//
+// assistant.usage is per model call, so it measures exactly this run either
+// way. assistant.message is last: it only ever carries output tokens, so
+// letting it win over a source with the full breakdown would silently drop the
+// input and cache tiers.
 func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
-	if len(st.callUsage) > 0 {
+	if !st.resumed && hasTokens(st.shutdownUsage) {
+		return st.shutdownUsage
+	}
+	if hasTokens(st.callUsage) {
 		return st.callUsage
 	}
-	if len(st.msgUsage) > 0 {
+	if hasTokens(st.msgUsage) {
 		return st.msgUsage
-	}
-	if !st.resumed && len(st.shutdownUsage) > 0 {
-		return st.shutdownUsage
 	}
 	return map[string]TokenUsage{}
 }
 
-// addUsage folds one usage record into dst under model.
+// hasTokens reports whether a source carries any real numbers. Presence alone
+// is not enough: every token field on assistant.usage is optional upstream, so
+// a usage event that names only a model would otherwise mark that source
+// "populated" and shadow one that actually has tokens.
+func hasTokens(usage map[string]TokenUsage) bool {
+	for _, u := range usage {
+		if u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// addUsage folds one usage record into dst under model, ignoring records that
+// carry no tokens at all so an empty one never creates an entry.
 //
 // Copilot reports cached tokens INSIDE inputTokens (its own event-log reducer
 // derives uncached input as inputTokens - cacheRead - cacheWrite), whereas
@@ -88,9 +108,12 @@ func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
 // rate. Subtract here so the cache tiers are not billed twice. reasoningTokens
 // are deliberately ignored: they are already part of outputTokens.
 func addUsage(dst map[string]TokenUsage, model string, input, output, cacheRead, cacheWrite int64) {
-	uncachedInput := input - cacheRead - cacheWrite
-	if uncachedInput < 0 {
-		uncachedInput = 0
+	cacheRead = nonNegativeTokens(cacheRead)
+	cacheWrite = nonNegativeTokens(cacheWrite)
+	output = nonNegativeTokens(output)
+	uncachedInput := nonNegativeTokens(input - cacheRead - cacheWrite)
+	if uncachedInput == 0 && output == 0 && cacheRead == 0 && cacheWrite == 0 {
+		return
 	}
 	u := dst[model]
 	u.InputTokens += uncachedInput
@@ -98,6 +121,13 @@ func addUsage(dst map[string]TokenUsage, model string, input, output, cacheRead,
 	u.CacheReadTokens += cacheRead
 	u.CacheWriteTokens += cacheWrite
 	dst[model] = u
+}
+
+func nonNegativeTokens(n int64) int64 {
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // finalOutput is the deliverable for Result.Output: the last complete assistant
