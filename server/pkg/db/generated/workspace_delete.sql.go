@@ -263,6 +263,12 @@ deleted_activity AS (
 deleted_inbox AS (
     DELETE FROM inbox_item WHERE workspace_id = $1
 ),
+deleted_inbox_events AS (
+    DELETE FROM inbox_event WHERE workspace_id = $1
+),
+deleted_inbox_groups AS (
+    DELETE FROM inbox_group WHERE workspace_id = $1
+),
 deleted_issue_dependencies AS (
     DELETE FROM issue_dependency
     WHERE issue_id IN (SELECT id FROM ws_issues)
@@ -400,6 +406,11 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// Inbox v2 carries no foreign keys (repo rule), so neither table is swept by
+// deleting the other: both are scoped directly by workspace_id here. Events go
+// before groups to match the containment direction, though within this single
+// statement every CTE sees the same snapshot, so the order is intent rather
+// than a dependency.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

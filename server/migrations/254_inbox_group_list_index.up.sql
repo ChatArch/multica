@@ -4,8 +4,12 @@
 -- Backs the only hot read: one person's inbox, active rows first, newest
 -- surfaced first. Column order follows the query — equality on
 -- (workspace_id, recipient_id), then archived_at to separate the active view
--- from the archived view, then the sort key. The trailing id makes the
--- (surfaced_at, id) pagination cursor a pure index scan, so a page never
--- repeats or skips a row when two groups share a surfaced_at.
+-- from the archived view, then the sort key.
+--
+-- Both sort columns are DESC to match ListInboxGroups' ORDER BY exactly
+-- (surfaced_at DESC, id DESC). The trailing id is what makes the
+-- (surfaced_at, id) keyset cursor resolvable inside the index when two groups
+-- share a surfaced_at; giving it the opposite direction to the query would
+-- leave the tie-break ordering to a sort step instead.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS inbox_group_recipient_surfaced_idx
-    ON inbox_group (workspace_id, recipient_id, archived_at, surfaced_at DESC, id);
+    ON inbox_group (workspace_id, recipient_id, archived_at, surfaced_at DESC, id DESC);

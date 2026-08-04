@@ -59,6 +59,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request":             workspaceDelete,
 	"github_pull_request_check_run":   workspaceDelete,
 	"github_pull_request_check_suite": workspaceDelete,
+	"inbox_event":                     workspaceDelete,
+	"inbox_group":                     workspaceDelete,
 	"inbox_item":                      workspaceDelete,
 	"issue":                           workspaceDelete,
 	"issue_dependency":                workspaceDelete,
