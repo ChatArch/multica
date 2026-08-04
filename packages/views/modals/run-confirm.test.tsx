@@ -256,23 +256,28 @@ describe("RunConfirmModal", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
-  it("leaves a focused button to its own activation instead of double-writing", () => {
-    // The browser already clicks a focused button on Enter; confirming here as
-    // well would fire two writes — and on "Don't start yet" they would disagree.
-    render(<RunConfirmModal onClose={vi.fn()} data={single} />);
-    fireEvent.keyDown(screen.getByText("Don't start yet"), { key: "Enter", metaKey: true });
-    fireEvent.keyDown(confirmButton(), { key: "Enter", metaKey: true });
-    expect(mockUpdate).not.toHaveBeenCalled();
-  });
-
-  it("still confirms when the note box is disabled by an old runtime", async () => {
-    // The chord is bound on the dialog, not the note box, so the keycap the
-    // confirm button advertises keeps working when the note cannot be typed.
+  it("confirms from a focused footer button, which the chord cannot activate", async () => {
+    // Chromium fires no click for ⌘/Ctrl+Enter on a focused button, so without
+    // the dialog handling it there the chord is simply dead. The dialog focuses
+    // its first tabbable child, so this is where an old runtime leaves the user.
     cache.runtimes = [{ id: "runtime-1", metadata: { cli_version: "0.2.21" } }];
     render(<RunConfirmModal onClose={vi.fn()} data={single} />);
-    fireEvent.keyDown(screen.getByTestId("dialog-content"), { key: "Enter", metaKey: true });
+    fireEvent.keyDown(screen.getByText("Don't start yet"), { key: "Enter", metaKey: true });
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
-    expect(mockUpdate.mock.calls[0]![0].handoff_note).toBeUndefined();
+    // The primary action, not the button the caret happened to sit on.
+    const payload = mockUpdate.mock.calls[0]![0];
+    expect(payload.suppress_run).toBeUndefined();
+    expect(payload.handoff_note).toBeUndefined();
+  });
+
+  it("yields to a focused button when send is remapped to plain Enter", () => {
+    // A bare Enter DOES activate a focused button, so confirming here as well
+    // would double-write — and on "Don't start yet" the two would disagree.
+    useShortcutStore.setState({ overrides: { send: createShortcutChord("Enter") } });
+    render(<RunConfirmModal onClose={vi.fn()} data={single} />);
+    fireEvent.keyDown(screen.getByText("Don't start yet"), { key: "Enter" });
+    fireEvent.keyDown(confirmButton(), { key: "Enter" });
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("leaves plain Enter alone so the note stays multi-line", () => {
