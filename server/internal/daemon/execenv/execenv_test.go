@@ -989,58 +989,37 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 			s := string(data)
 			for _, want := range []string{
 				"## Background Task Safety",
-				// The orphan rule is scoped to run-owned work — an unscoped
-				// "anything still running" would sweep in external systems
-				// (GitHub Actions) the section later says NOT to wait for.
+				// MUL-5442 judgment rewrite (owner-authorized pin renegotiation): the
+				// section now states the one platform fact, the external-systems/CI
+				// boundary with its single exception, and the review-locked
+				// persistent-service contract. Enforcement-detail pins that only
+				// restated derivations of the platform fact were retired with the
+				// prose ("Do NOT end your turn while background tasks", the
+				// tool-promise enumeration, "does not cover tests, builds, CI
+				// polling", "any sleep / retry loop that polls check status", ...).
+				// What stays pinned: the fact, each boundary, each exception, and
+				// the handoff triple — the things an agent cannot infer.
 				"any run-owned work still active is orphaned",
-				"Do NOT end your turn while background tasks",
-				"wait for a future notification/reminder",
-				"run the work synchronously instead",
-				// Hardened pins (MUL-4140): the mechanism that slipped
-				// through in MUL-4091 was a turn ending cleanly with a
-				// "standing by, I'll report when CI finishes" message and
-				// no follow-up wakeup. These pins forbid that shape.
+				"no background-completion wakeup",
+				"whatever a tool response promises",
 				"Never background-and-yield",
-				"foreground tool call that blocks",
-				// MUL-5274: persistent local services are allowed only as
-				// an explicit, verified handoff with a cleanup handle.
+				"foreground tool calls that block",
+				"run unobservable work synchronously",
+				"standing by",
+				"are not run-owned: do not wait",
+				"do not run `gh pr checks --watch`",
+				"GitHub Actions after a successful push",
+				"NOT your delivery acceptance criteria",
+				"CI running: <PR link>",
+				"The one exception",
+				"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
 				"persistent service handoff",
 				"running service itself is the requested deliverable",
-				// MUL-5442: pin the handoff concepts, not the operational
-				// phrasing — but the cleanup handle must stay general (a
-				// supervisor/profile-managed service has no single stable PID)
-				// and the user-facing reply must keep the full URL/logs/stop
-				// triple (durable logs alone are unobservable if the user is
-				// never told where they are).
 				"durable logs",
 				"cleanup handle such as PID/profile",
 				"verify readiness",
 				"URL, logs, and stop instructions",
 				"survival as best-effort, not guaranteed",
-				"does not cover tests, builds, CI polling",
-				"are not agent-owned background tasks",
-				"GitHub Actions after a successful push",
-				"Do not wait for them by default",
-				// MUL-5223: the conceptual boundary above was read as
-				// compatible with `gh pr checks --watch` (a blocking
-				// foreground call) whenever the repo required green CI to
-				// merge. These pins name the banned tool shapes, deny
-				// merge requirements as acceptance criteria, and supply
-				// the replacement hand-off phrasing.
-				"do NOT run `gh pr checks --watch`",
-				"any sleep / retry loop that polls check status",
-				"NOT your delivery acceptance criteria",
-				"CI running: <PR link>",
-				// The ban must stay scoped: an explicitly requested CI
-				// result is still reachable, and the section must name
-				// the one executable way to collect it. Without these
-				// pins the ban could be re-absolutised and the exception
-				// would become unfollowable.
-				"unless the explicit exception below applies",
-				"The one exception",
-				"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
-				"running in the background so you can keep working",
-				"standing by",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s missing background task safety text %q\n---\n%s", tc.file, want, s)

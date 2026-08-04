@@ -94,16 +94,25 @@ func writeHeader(b *strings.Builder) {
 // The sign-off ban now leads rather than closes the list; it still applies to
 // the whole section because the opening bullet scopes it to ending a turn at
 // all, not to any one later bullet.
+//
+// MUL-5442 stage 2 (owner-authorized judgment rewrite): the section now
+// carries three paragraphs — the platform fact everything derives from
+// (turn exit = task terminal, no wakeup), the external-systems/CI boundary
+// with its single exception, and the persistent-service handoff contract.
+// Enforcement details that frontier models derive from the fact were
+// deliberately dropped: the run-owned work enumeration, the tool-promise
+// enumeration, the wait/collect split rule, the persistent-service scope
+// bullet, the auto-merge and snapshot elaborations. The incident history
+// above (MUL-5223, MUL-5274, MUL-4091) remains the WHY for what stays:
+// the named --watch ban and merge-gate denial survive because MUL-5223
+// proved the principle alone did not stop CI-watching, and the handoff
+// paragraph is review-locked verbatim (URL/logs/stop triple, general
+// cleanup handle) — do not reword it without a fresh review decision.
 func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 	b.WriteString("## Background Task Safety\n\n")
-	b.WriteString("Multica marks the task terminal the moment your top-level turn exits — any run-owned work still active is orphaned, its result lost, and the final comment you meant to post never sends. There is no background-completion wakeup here.\n\n")
-	b.WriteString("- Do NOT end your turn while background tasks or other run-owned work is active — async subagents, background shells, and detached tool calls included. Never background-and-yield: no future notification or wakeup will arrive to resume you. A tool response that says to wait for a future notification/reminder, or that it is running in the background so you can keep working, does not change that — block before exiting. If you can't observe a result, run the work synchronously instead, and never end a turn with a \"standing by\" / \"I'll report back when X finishes\" message: it becomes your final output.\n")
-	b.WriteString("- When a required result from run-owned work must be collected, wait synchronously inside one foreground tool call that blocks to completion (e.g. a blocking test or build command); never split \"start the wait\" and \"collect the result\" across turns.\n")
-	b.WriteString("- A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded cleanup handle such as PID/profile), verify readiness, and reply with the URL, logs, and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n")
-	b.WriteString("- The persistent-service exception does not cover tests, builds, CI polling, monitors, or any other work whose completion the agent still owes; those remain run-owned, and the CI-specific rules below still apply.\n")
-	b.WriteString("- External systems triggered by a completed action — for example GitHub Actions after a successful push — are not agent-owned background tasks. Do not wait for them by default; report them as pending and finish the handoff.\n")
-	b.WriteString("- Concretely, after a push or a PR create, unless the explicit exception below applies: do NOT run `gh pr checks --watch`, `gh run watch`, or any sleep / retry loop that polls check status (`gh pr merge --auto` is fine — it returns immediately). Take at most ONE non-blocking status snapshot (e.g. `gh pr checks <pr>`) and deliver what you have: \"Local tests pass; CI running: <PR link>\". A PR whose CI is still in flight is a complete hand-off.\n")
-	b.WriteString("- A repo's merge requirements — \"CI must be green before merge\", required reviews, branch protection — are GitHub's merge gate, NOT your delivery acceptance criteria, and do not license a wait.\n")
+	b.WriteString("Multica marks the task terminal the moment your top-level turn exits — any run-owned work still active is orphaned, its result lost, and the final comment you meant to post never sends. There is no background-completion wakeup, whatever a tool response promises. Never background-and-yield: collect required results inside foreground tool calls that block to completion, run unobservable work synchronously, and never end a turn \"standing by\" for something to finish — that message becomes your final output.\n\n")
+	b.WriteString("External systems triggered by your completed actions — CI, GitHub Actions after a successful push — are not run-owned: do not wait for them, and do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls. A repo's merge gate (\"CI must be green before merge\") is NOT your delivery acceptance criteria. Deliver what you have — \"Local tests pass; CI running: <PR link>\" is a complete hand-off. The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask for the CI result, collect it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn.\n\n")
+	b.WriteString("A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded cleanup handle such as PID/profile), verify readiness, and reply with the URL, logs, and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n")
 	b.WriteString("- The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask you for the CI result, that result IS the deliverable — wait for it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn and report the outcome. Nothing else re-opens this door.\n\n")
 }
 
