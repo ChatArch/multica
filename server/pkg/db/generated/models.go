@@ -604,6 +604,41 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type InboxEvent struct {
+	ID             pgtype.UUID        `json:"id"`
+	GroupID        pgtype.UUID        `json:"group_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	EventSeq       int64              `json:"event_seq"`
+	Type           string             `json:"type"`
+	ActorType      pgtype.Text        `json:"actor_type"`
+	ActorID        pgtype.UUID        `json:"actor_id"`
+	TargetKind     pgtype.Text        `json:"target_kind"`
+	TargetID       pgtype.UUID        `json:"target_id"`
+	Payload        []byte             `json:"payload"`
+	PayloadVersion int16              `json:"payload_version"`
+	DeliveryKey    string             `json:"delivery_key"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type InboxGroup struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RecipientID    pgtype.UUID        `json:"recipient_id"`
+	SourceKind     string             `json:"source_kind"`
+	SourceID       pgtype.UUID        `json:"source_id"`
+	LatestSeq      int64              `json:"latest_seq"`
+	LatestEventID  pgtype.UUID        `json:"latest_event_id"`
+	LatestEventAt  pgtype.Timestamptz `json:"latest_event_at"`
+	ReadThroughSeq int64              `json:"read_through_seq"`
+	ManualUnread   bool               `json:"manual_unread"`
+	StateVersion   int64              `json:"state_version"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
+	SnoozedUntil   pgtype.Timestamptz `json:"snoozed_until"`
+	SurfacedAt     pgtype.Timestamptz `json:"surfaced_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
