@@ -172,7 +172,7 @@ multica issue property unset <issue-id> --name Environment
   If a needed property does not exist, propose it in a comment instead.
 - Property vs metadata: if the value is workflow state a human should see and
   filter by, and a definition exists, prefer the property. Metadata stays the
-  free-form scratchpad for run state (`pr_url`, `waiting_on`, ...).
+  free-form bag for durable custom issue state.
 
 ## Status changes have server side effects
 

@@ -234,7 +234,10 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
 		"--status backlog",
-		"pr_url",
+		// The only sanctioned pr_url reference is the negative compatibility
+		// warning about pre-existing data — not a write recommendation
+		// (MUL-5442 owner ruling: no curated key vocabulary).
+		"`pr_url` metadata (which can be",
 		"references/working-on-issues-source-map.md",
 		// MUL-5442: the brief's Sub-issue Creation section is now a one-line
 		// map pointing here. These anchors are the demoted playbook — if they
@@ -271,6 +274,8 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		// that loads exactly when an agent is about to write metadata.
 		"High-signal keys",
 		"reuse these names so queries stay consistent",
+		"scratchpad for run state",
+		"(`pr_url`, `waiting_on`",
 		"Start from the trigger, not from memory",
 		"multica issue get <issue-id> --output json",
 		"multica issue metadata list <issue-id> --output json",
