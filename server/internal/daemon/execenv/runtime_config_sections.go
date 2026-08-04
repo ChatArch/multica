@@ -368,11 +368,10 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 // helper does not re-check.
 func writeIssueMetadata(b *strings.Builder) {
 	b.WriteString("## Issue Metadata\n\n")
-	b.WriteString("`metadata` is a small KV bag per issue — a high-signal scratchpad for facts future runs on this same issue will read more than once (PR URL, deploy URL, current blocker). Most runs pin **zero** new keys; that is the expected case.\n\n")
-	b.WriteString("- **Read on entry.** Metadata is hints, not truth: latest comment / code wins on conflict. Empty `{}` is normal.\n")
-	b.WriteString("- **Write on exit.** Pin only if BOTH: (a) materially important to this issue, AND (b) a future run is likely to re-read it. Otherwise leave the bag alone. Stale keys: overwrite with the new value or `multica issue metadata delete`.\n")
-	b.WriteString("- **What NOT to pin.** No secrets, tokens, or API keys. No logs or comment summaries. No runtime bookkeeping (attempts, run timestamps, agent ids). No single-run details — those belong in the result comment.\n")
-	b.WriteString("- **Recommended keys** (use snake_case ASCII; reuse these names so queries stay consistent): `pr_url`, `pr_number`, `pipeline_status`, `deploy_url`, `external_issue_url`, `waiting_on`, `blocked_reason`, `decision`.\n\n")
+	b.WriteString("`metadata` is a small per-issue KV bag — a high-signal scratchpad for facts future runs will re-read (PR URL, deploy URL, current blocker). Most runs pin **zero** new keys; that is the expected case.\n\n")
+	b.WriteString("- **Read on entry.** Hints, not truth: latest comment / code wins on conflict. Empty `{}` is normal.\n")
+	b.WriteString("- **Write on exit.** Pin only what is materially important to this issue AND likely to be re-read by a future run; overwrite or `multica issue metadata delete` stale keys. Never pin secrets, tokens, or API keys, logs or comment summaries, or runtime bookkeeping — single-run details belong in the result comment.\n")
+	b.WriteString("- **Recommended keys** (snake_case ASCII, reuse these names): `pr_url`, `pr_number`, `pipeline_status`, `deploy_url`, `external_issue_url`, `waiting_on`, `blocked_reason`, `decision`.\n\n")
 }
 
 // writeInstructionPrecedence emits the "Agent Identity wins over the issue

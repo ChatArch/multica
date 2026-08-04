@@ -5606,8 +5606,9 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			"## Issue Metadata",
 			"high-signal scratchpad",
 			"**Read on entry.**",
+			// MUL-5442: the What-NOT-to-pin heading merged into Write on
+			// exit; the negative rules below still pin the full ban list.
 			"**Write on exit.**",
-			"**What NOT to pin.**",
 			"**Recommended keys**",
 			// Recommended-key list — both lea's killer-use-case keys
 			// (pr_number, pipeline_status) and the broader set from
@@ -5623,10 +5624,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			"decision",
 			// Safety boundaries — these are the negative rules that
 			// keep metadata from rotting into a second description /
-			// log dump.
-			"No secrets, tokens, or API keys",
-			"No logs",
-			"runtime bookkeeping",
+			// log dump. Pinned as one sentence since MUL-5442 merged the
+			// ban list into the Write-on-exit bullet.
+			"Never pin secrets, tokens, or API keys, logs or comment summaries, or runtime bookkeeping",
+			"single-run details belong in the result comment",
 			"snake_case ASCII",
 		},
 	}
