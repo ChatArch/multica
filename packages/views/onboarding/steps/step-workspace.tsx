@@ -6,22 +6,20 @@ import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
-import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { cn } from "@multica/ui/lib/utils";
+import type { OnboardingStep } from "@multica/core/onboarding";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
 import type { Workspace } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
 import { matchLocale } from "@multica/core/i18n";
 import { useConfigStore } from "@multica/core/config";
 import { workspaceUrlHost } from "@multica/core/workspace/workspace-url";
-import { DragStrip } from "@multica/views/platform";
 import { useLogout } from "../../auth";
 import {
   STEP_BLOCK_PADDING,
   STEP_FRAME,
   STEP_MEASURE,
-  STEP_GUTTER,
-  StepShellHeader,
+  StepShell,
 } from "../components/step-shell";
 import { RadioMark } from "../components/option-card";
 import { WorkspaceAvatar } from "../../workspace/workspace-avatar";
@@ -72,6 +70,7 @@ export function StepWorkspace({
   onCreated,
   onBack,
   headerTrailing,
+  onStepChange,
 }: {
   existing?: Workspace | null;
   onCreated: (workspace: Workspace) => void | Promise<void>;
@@ -79,11 +78,12 @@ export function StepWorkspace({
   /** Log out escape hatch, injected by the flow so this step does not depend
    *  on the auth layer. */
   headerTrailing?: ReactNode;
+  /** Return to a completed step from the rail; injected by the flow,
+   *  which owns step order. */
+  onStepChange?: (step: OnboardingStep) => void;
 }) {
   const { t, i18n } = useT("onboarding");
   const locale = matchLocale([i18n.resolvedLanguage ?? i18n.language]);
-  const mainRef = useRef<HTMLElement>(null);
-  const fadeStyle = useScrollFade(mainRef);
   const workspaceCreationDisabled = useConfigStore((s) => s.workspaceCreationDisabled);
   const urlHost = workspaceUrlHost(useConfigStore((s) => s.daemonAppUrl));
   // Single source of truth for "can the user reach the create path on this
@@ -301,94 +301,86 @@ export function StepWorkspace({
   );
 
   return (
-    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
-      <DragStrip />
-      <StepShellHeader
-        currentStep="workspace"
-        onBack={onBack}
-        backDisabled={isCreating}
-        trailing={headerTrailing}
-      />
+    <StepShell
+      currentStep="workspace"
+      onBack={onBack}
+      backDisabled={isCreating}
+      onStepChange={onStepChange}
+      sidebarFooter={headerTrailing}
+    >
+      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
+        <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          {reusing
+            ? workspaceCreationAllowed
+              ? t(($) => $.step_workspace.eyebrow_resume)
+              : t(($) => $.step_workspace.creation_disabled_eyebrow_resume)
+            : workspaceCreationAllowed
+              ? t(($) => $.step_workspace.eyebrow_first)
+              : t(($) => $.step_workspace.creation_disabled_eyebrow)}
+        </div>
+        <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
+          {reusing
+            ? workspaceCreationAllowed
+              ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
+              : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
+            : workspaceCreationAllowed
+              ? t(($) => $.step_workspace.headline_first)
+              : t(($) => $.step_workspace.creation_disabled_headline)}
+        </h1>
+        <p className={cn("mt-4 text-body-lg leading-[1.55] text-foreground", STEP_MEASURE)}>
+          {reusing
+            ? workspaceCreationAllowed
+              ? t(($) => $.step_workspace.lede_resume)
+              : t(($) => $.step_workspace.creation_disabled_lede_resume)
+            : workspaceCreationAllowed
+              ? t(($) => $.step_workspace.lede_first)
+              : t(($) => $.step_workspace.creation_disabled_lede)}
+        </p>
 
-      <main
-        ref={mainRef}
-        style={fadeStyle}
-        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
-      >
-        <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-          <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-            {reusing
-              ? workspaceCreationAllowed
-                ? t(($) => $.step_workspace.eyebrow_resume)
-                : t(($) => $.step_workspace.creation_disabled_eyebrow_resume)
-              : workspaceCreationAllowed
-                ? t(($) => $.step_workspace.eyebrow_first)
-                : t(($) => $.step_workspace.creation_disabled_eyebrow)}
-          </div>
-          <h1 className="text-balance font-serif text-display font-medium leading-[1.1] tracking-tight text-foreground">
-            {reusing
-              ? workspaceCreationAllowed
-                ? t(($) => $.step_workspace.headline_resume, { name: reusing.name })
-                : t(($) => $.step_workspace.creation_disabled_headline_resume, { name: reusing.name })
-              : workspaceCreationAllowed
-                ? t(($) => $.step_workspace.headline_first)
-                : t(($) => $.step_workspace.creation_disabled_headline)}
-          </h1>
-          <p className={cn("mt-4 text-body-lg leading-[1.55] text-foreground", STEP_MEASURE)}>
-            {reusing
-              ? workspaceCreationAllowed
-                ? t(($) => $.step_workspace.lede_resume)
-                : t(($) => $.step_workspace.creation_disabled_lede_resume)
-              : workspaceCreationAllowed
-                ? t(($) => $.step_workspace.lede_first)
-                : t(($) => $.step_workspace.creation_disabled_lede)}
-          </p>
-
-          <div className="mt-10">
-            {reusing ? (
-              <div className="flex flex-col gap-3">
-                <ExistingWorkspaceCard
-                  workspace={reusing}
-                  selected={mode === "existing"}
-                  onSelect={pickExisting}
-                />
-                {/* Hide the create-new card entirely when the self-host
-                    gate (DISABLE_WORKSPACE_CREATION) is on (#3433) — the
-                    backend would 403 the POST and the user would be stuck
-                    with a useless form. */}
-                {!workspaceCreationDisabled && (
-                  <CreateNewWorkspaceCard
-                    selected={mode === "create"}
-                    onSelect={pickCreate}
-                  >
-                    {createFields}
-                  </CreateNewWorkspaceCard>
-                )}
-              </div>
-            ) : workspaceCreationDisabled ? (
-              <CreationDisabledNotice onLogout={logout} />
-            ) : (
-              createFields
-            )}
-          </div>
-
-          {!(workspaceCreationDisabled && !reusing) && (
-            <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-              <span
-                aria-live="polite"
-                className="mr-auto text-caption text-muted-foreground"
-              >
-                {hint}
-              </span>
-              <Button size="lg" disabled={continueDisabled} onClick={onContinue}>
-                {continueLabel}
-                <ArrowRight className="h-4 w-4" />
-              </Button>
+        <div className="mt-10">
+          {reusing ? (
+            <div className="flex flex-col gap-3">
+              <ExistingWorkspaceCard
+                workspace={reusing}
+                selected={mode === "existing"}
+                onSelect={pickExisting}
+              />
+              {/* Hide the create-new card entirely when the self-host
+                  gate (DISABLE_WORKSPACE_CREATION) is on (#3433) — the
+                  backend would 403 the POST and the user would be stuck
+                  with a useless form. */}
+              {!workspaceCreationDisabled && (
+                <CreateNewWorkspaceCard
+                  selected={mode === "create"}
+                  onSelect={pickCreate}
+                >
+                  {createFields}
+                </CreateNewWorkspaceCard>
+              )}
             </div>
+          ) : workspaceCreationDisabled ? (
+            <CreationDisabledNotice onLogout={logout} />
+          ) : (
+            createFields
           )}
         </div>
-      </main>
-    </div>
+
+        {!(workspaceCreationDisabled && !reusing) && (
+          <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+            <span
+              aria-live="polite"
+              className="mr-auto text-caption text-muted-foreground"
+            >
+              {hint}
+            </span>
+            <Button size="lg" disabled={continueDisabled} onClick={onContinue}>
+              {continueLabel}
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </div>
+    </StepShell>
   );
 }
 

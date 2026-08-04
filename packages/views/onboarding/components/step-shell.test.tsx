@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enOnboarding from "../../locales/en/onboarding.json";
@@ -9,49 +10,40 @@ import {
   STEP_FRAME,
   STEP_GUTTER,
   STEP_MEASURE,
-  StepShellHeader,
+  StepShell,
 } from "./step-shell";
 
 const TEST_RESOURCES = { en: { common: enCommon, onboarding: enOnboarding } };
 
-function renderHeader(props: Parameters<typeof StepShellHeader>[0]) {
+function renderShell(props: Partial<Parameters<typeof StepShell>[0]> = {}) {
   return render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <StepShellHeader {...props} />
+      <StepShell currentStep="workspace" {...props}>
+        <div>step content</div>
+      </StepShell>
     </I18nProvider>,
   );
 }
 
 describe("onboarding step shell", () => {
-  // The regression this guards: the header used to carry the horizontal
-  // padding itself, so it sat flush to the window edge while the content
-  // column was centred. A 480px rail hid the difference; once the rail was
-  // removed the two were 267px apart on a 1283px window, and the step
-  // indicator floated off at the far right of the screen.
-  it("pads the header from the gutter and measures its contents on the frame", () => {
-    const { container } = renderHeader({ currentStep: "runtime" });
+  // The regression this guards: the horizontal padding used to live on the
+  // element that also carried the measure. Inside a max-w box the two fight —
+  // `md` and `lg` resolved to different content widths for the same box, and
+  // the reading column jumped from 508px to 620px at a breakpoint.
+  it("puts the gutter on the scrolling pane and the measure on the content", () => {
+    const { container } = renderShell();
 
-    const header = container.querySelector("header")!;
+    const main = container.querySelector("main")!;
     for (const cls of STEP_GUTTER.split(" ")) {
-      expect(header.className).toContain(cls);
+      expect(main.className).toContain(cls);
     }
-    expect(header.className).not.toMatch(/\bmax-w-/);
-
-    const inner = header.firstElementChild!;
-    for (const cls of STEP_FRAME.split(" ")) {
-      expect(inner.className).toContain(cls);
-    }
+    expect(main.className).not.toMatch(/\bmax-w-/);
   });
 
-  // Both measures centre, so a step that needs the wider one for its content
-  // still sits on the header's centreline instead of shifting the page.
-  it("centres both measures so content stays on the header's centreline", () => {
+  it("centres both measures so content stays on one centreline", () => {
     for (const measure of [STEP_FRAME, STEP_COLUMN]) {
       expect(measure).toContain("mx-auto");
       expect(measure).toMatch(/max-w-\[\d+px\]/);
-      // Padding belongs to the gutter. Inside a max-w box it would resolve to
-      // a different reading width per breakpoint — the content jumped from
-      // 508px to 620px at `lg` for exactly that reason.
       expect(measure).not.toMatch(/\bp[xlr]?-/);
     }
     expect(STEP_BLOCK_PADDING).toMatch(/^py-/);
@@ -67,20 +59,70 @@ describe("onboarding step shell", () => {
   });
 
   it("renders Back only when the step can go back", () => {
-    const { unmount } = renderHeader({ currentStep: "workspace" });
+    const { unmount } = renderShell();
     expect(screen.queryByRole("button", { name: /back/i })).toBeNull();
     unmount();
 
-    renderHeader({ currentStep: "workspace", onBack: () => {} });
+    renderShell({ onBack: () => {} });
     expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
   });
 
   it("disables Back while the step reports work in flight", () => {
-    renderHeader({
+    renderShell({ onBack: () => {}, backDisabled: true });
+    expect(screen.getByRole("button", { name: /back/i })).toBeDisabled();
+  });
+});
+
+describe("onboarding progress rail", () => {
+  // The rail replaced a row of dots plus a "Step 2 of 3" counter, which said
+  // how much was left but never what was coming — so the runtime step always
+  // arrived unannounced. Naming every step is the whole point of the change.
+  it("names all three steps up front", () => {
+    renderShell({ currentStep: "about_you" });
+
+    expect(screen.getByText("About you")).toBeInTheDocument();
+    expect(screen.getByText("Workspace")).toBeInTheDocument();
+    expect(screen.getByText("Meet Mika")).toBeInTheDocument();
+  });
+
+  it("marks the current step for assistive tech", () => {
+    const { container } = renderShell({ currentStep: "workspace" });
+
+    const current = container.querySelector('[aria-current="step"]')!;
+    expect(current).toBeInTheDocument();
+    expect(current.textContent).toContain("Workspace");
+  });
+
+  // Forward navigation has to run the current step's validation and submit, so
+  // only the steps already behind the member are reachable from the rail.
+  it("links completed steps and leaves the current and later ones inert", async () => {
+    const onStepChange = vi.fn();
+    renderShell({ currentStep: "workspace", onStepChange });
+
+    const back = screen.getByRole("button", { name: /about you/i });
+    await userEvent.click(back);
+    expect(onStepChange).toHaveBeenCalledWith("about_you");
+
+    expect(screen.queryByRole("button", { name: /meet mika/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^workspace/i })).toBeNull();
+  });
+
+  it("is display-only when the flow supplies no step handler", () => {
+    renderShell({ currentStep: "runtime" });
+
+    expect(screen.queryByRole("button", { name: /about you/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^workspace/i })).toBeNull();
+  });
+
+  // Back is disabled precisely while a step has a request in flight; letting
+  // the rail jump away would abandon it mid-create.
+  it("stops rail navigation while the step reports work in flight", () => {
+    renderShell({
       currentStep: "workspace",
-      onBack: () => {},
+      onStepChange: vi.fn(),
       backDisabled: true,
     });
-    expect(screen.getByRole("button", { name: /back/i })).toBeDisabled();
+
+    expect(screen.queryByRole("button", { name: /about you/i })).toBeNull();
   });
 });

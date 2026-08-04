@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef , type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   ArrowRight,
   Brain,
@@ -20,15 +20,13 @@ import {
   User,
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
-import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import type { QuestionnaireAnswers, Role, UseCase } from "@multica/core/onboarding";
 import { cn } from "@multica/ui/lib/utils";
-import { DragStrip } from "@multica/views/platform";
+import type { OnboardingStep } from "@multica/core/onboarding";
 import {
   STEP_BLOCK_PADDING,
   STEP_FRAME,
-  STEP_GUTTER,
-  StepShellHeader,
+  StepShell,
 } from "../components/step-shell";
 import {
   IconOptionCard,
@@ -65,6 +63,7 @@ export function StepAboutYou({
   onSkip,
   onBack,
   headerTrailing,
+  onStepChange,
 }: {
   answers: QuestionnaireAnswers;
   onChange: (patch: Partial<QuestionnaireAnswers>) => void;
@@ -74,10 +73,11 @@ export function StepAboutYou({
   /** Log out escape hatch, injected by the flow so this step does not depend
    *  on the auth layer. */
   headerTrailing?: ReactNode;
+  /** Return to a completed step from the rail; injected by the flow,
+   *  which owns step order. */
+  onStepChange?: (step: OnboardingStep) => void;
 }) {
   const { t } = useT("onboarding");
-  const mainRef = useRef<HTMLElement>(null);
-  const fadeStyle = useScrollFade(mainRef);
 
   const roleOptions: QuestionOption[] = [
     { slug: "engineer", icon: <Code2 className="h-4 w-4" />, label: t(($) => $.questions.role.engineer) },
@@ -187,68 +187,64 @@ export function StepAboutYou({
     : t(($) => $.step_question.hint_pick);
 
   return (
-    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
-      <DragStrip />
-      <StepShellHeader currentStep="about_you" onBack={onBack} trailing={headerTrailing} />
+    <StepShell
+      currentStep="about_you"
+      onBack={onBack}
+      onStepChange={onStepChange}
+      sidebarFooter={headerTrailing}
+    >
+      <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
+        <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          {t(($) => $.questions.eyebrow_about_you)}
+        </div>
+        <h1 className="text-balance font-serif text-display font-medium leading-[1.15] tracking-tight text-foreground">
+          {t(($) => $.questions.about_you.question)}
+        </h1>
 
-      <main
-        ref={mainRef}
-        style={fadeStyle}
-        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
-      >
-        <div className={cn(STEP_FRAME, STEP_BLOCK_PADDING)}>
-          <div className="mb-2 text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
-            {t(($) => $.questions.eyebrow_about_you)}
-          </div>
-          <h1 className="text-balance font-serif text-display font-medium leading-[1.15] tracking-tight text-foreground">
-            {t(($) => $.questions.about_you.question)}
-          </h1>
+        <QuestionGroup
+          number={1}
+          question={t(($) => $.questions.role.question)}
+          options={roleOptions}
+          selectedSlugs={roleSelected}
+          otherValue={answers.role_other ?? ""}
+          onOtherChange={(v) => onChange({ role_other: v })}
+          otherPlaceholder={t(($) => $.questions.role.other_placeholder)}
+          onAnswer={pickRole}
+          onConfirm={confirmAdvance}
+        />
 
-          <QuestionGroup
-            number={1}
-            question={t(($) => $.questions.role.question)}
-            options={roleOptions}
-            selectedSlugs={roleSelected}
-            otherValue={answers.role_other ?? ""}
-            onOtherChange={(v) => onChange({ role_other: v })}
-            otherPlaceholder={t(($) => $.questions.role.other_placeholder)}
-            onAnswer={pickRole}
-            onConfirm={confirmAdvance}
-          />
+        <QuestionGroup
+          number={2}
+          question={t(($) => $.questions.use_case.question)}
+          options={useCaseOptions}
+          selectedSlugs={useCaseSlugs}
+          otherValue={answers.use_case_other ?? ""}
+          onOtherChange={(v) => onChange({ use_case_other: v })}
+          otherPlaceholder={t(($) => $.questions.use_case.other_placeholder)}
+          onAnswer={toggleUseCase}
+          onConfirm={confirmAdvance}
+          multiSelect
+        />
 
-          <QuestionGroup
-            number={2}
-            question={t(($) => $.questions.use_case.question)}
-            options={useCaseOptions}
-            selectedSlugs={useCaseSlugs}
-            otherValue={answers.use_case_other ?? ""}
-            onOtherChange={(v) => onChange({ use_case_other: v })}
-            otherPlaceholder={t(($) => $.questions.use_case.other_placeholder)}
-            onAnswer={toggleUseCase}
-            onConfirm={confirmAdvance}
-            multiSelect
-          />
-
-          <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-            <span
-              aria-live="polite"
-              className="mr-auto text-caption text-muted-foreground"
-            >
-              {footerHint}
-            </span>
-            <div className="flex items-center gap-2">
-              <Button size="lg" variant="secondary" onClick={handleSkip}>
-                {t(($) => $.common.skip)}
-              </Button>
-              <Button size="lg" disabled={!canContinue} onClick={confirmAdvance}>
-                {t(($) => $.common.continue)}
-                <ArrowRight className="h-4 w-4" />
-              </Button>
-            </div>
+        <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+          <span
+            aria-live="polite"
+            className="mr-auto text-caption text-muted-foreground"
+          >
+            {footerHint}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button size="lg" variant="secondary" onClick={handleSkip}>
+              {t(($) => $.common.skip)}
+            </Button>
+            <Button size="lg" disabled={!canContinue} onClick={confirmAdvance}>
+              {t(($) => $.common.continue)}
+              <ArrowRight className="h-4 w-4" />
+            </Button>
           </div>
         </div>
-      </main>
-    </div>
+      </div>
+    </StepShell>
   );
 }
 

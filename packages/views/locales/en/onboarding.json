@@ -1,6 +1,18 @@
 {
-  "step_header": {
-    "step_of": "Step {{current}} of {{total}}"
+  "step_nav": {
+    "label": "Onboarding steps",
+    "about_you": {
+      "label": "About you",
+      "description": "Your role, and what you want done"
+    },
+    "workspace": {
+      "label": "Workspace",
+      "description": "Name it and pick its URL"
+    },
+    "runtime": {
+      "label": "Meet Mika",
+      "description": "Your Chief of Staff, and where it runs"
+    }
   },
   "welcome": {
     "wordmark": "Welcome to Multica",

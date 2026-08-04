@@ -1,6 +1,18 @@
 {
-  "step_header": {
-    "step_of": "第 {{current}} 步 / 共 {{total}} 步"
+  "step_nav": {
+    "label": "引导步骤",
+    "about_you": {
+      "label": "关于你",
+      "description": "你的角色，以及想完成什么"
+    },
+    "workspace": {
+      "label": "工作区",
+      "description": "命名并选择网址"
+    },
+    "runtime": {
+      "label": "认识 Mika",
+      "description": "你的参谋长，以及它运行的位置"
+    }
   },
   "welcome": {
     "wordmark": "欢迎使用 Multica",

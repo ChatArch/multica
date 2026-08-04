@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState , type ReactNode } from "react";
+import { useCallback, useEffect, useState , type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -9,13 +9,12 @@ import {
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
-import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
+import type { OnboardingStep } from "@multica/core/onboarding";
 import { runtimeKeys } from "@multica/core/runtimes/queries";
 import {
   runtimeDisplayLabel,
 } from "@multica/core/runtimes";
 import type { AgentRuntime } from "@multica/core/types";
-import { DragStrip } from "@multica/views/platform";
 import { RuntimePicker } from "../../agents/components/runtime-picker";
 import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
@@ -23,8 +22,7 @@ import {
   STEP_BLOCK_PADDING,
   STEP_FRAME,
   STEP_MEASURE,
-  STEP_GUTTER,
-  StepShellHeader,
+  StepShell,
 } from "../components/step-shell";
 import { useRuntimePicker } from "../components/use-runtime-picker";
 import { useT } from "../../i18n";
@@ -50,6 +48,7 @@ export function StepRuntimeConnect({
   onNext,
   onBack,
   headerTrailing,
+  onStepChange,
   onRefresh,
   runtimesPending,
   currentUserId,
@@ -64,6 +63,9 @@ export function StepRuntimeConnect({
   /** Log out escape hatch, injected by the flow so this step does not depend
    *  on the auth layer. */
   headerTrailing?: ReactNode;
+  /** Return to a completed step from the rail; injected by the flow,
+   *  which owns step order. */
+  onStepChange?: (step: OnboardingStep) => void;
   /** Runtime picker labels rows by owner; injected for the same reason. */
   currentUserId?: string | null;
   /** Platform-level rescan hook. Desktop wires this to restart the
@@ -91,6 +93,7 @@ export function StepRuntimeConnect({
       onNext={onNext}
       onBack={onBack}
       headerTrailing={headerTrailing}
+      onStepChange={onStepChange}
       currentUserId={currentUserId}
       onRefresh={onRefresh}
       runtimesPending={runtimesPending}
@@ -122,6 +125,7 @@ function FancyView({
   onNext,
   onBack,
   headerTrailing,
+  onStepChange,
   onRefresh,
   runtimesPending,
   currentUserId,
@@ -134,6 +138,9 @@ function FancyView({
   onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
   onBack?: () => void;
   headerTrailing?: ReactNode;
+  /** Return to a completed step from the rail; injected by the flow,
+   *  which owns step order. */
+  onStepChange?: (step: OnboardingStep) => void;
   onRefresh?: () => void | Promise<void>;
   runtimesPending?: boolean;
   /** Runtime picker labels rows by owner; injected so this step does not read
@@ -142,8 +149,6 @@ function FancyView({
 }) {
   const { t } = useT("onboarding");
   const qc = useQueryClient();
-  const mainRef = useRef<HTMLElement>(null);
-  const fadeStyle = useScrollFade(mainRef);
 
   // Decide when an empty runtime list stops being "still scanning" and becomes
   // the genuine "no runtime" exits. Two timers run while the list is empty:
@@ -244,101 +249,87 @@ function FancyView({
           : t(($) => $.step_runtime.hint_skip_or_refresh);
 
   return (
-    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
-      <DragStrip />
-
-      {/* Header — Back + horizontal step indicator */}
-      <StepShellHeader currentStep="runtime" onBack={onBack} trailing={headerTrailing} />
-
-      {/* Scrollable middle — content changes by phase but always wraps
-          at STEP_FRAME — the same measure as the header — so nine
-          runtimes fit without truncating their names or scrolling.
-
-          Skip + Continue sit inline directly below the phase view
-          (not in a sticky bottom footer) so the action bar stays
-          close to the form content and the page doesn't leave a
-          large dead zone when the runtime list is short. */}
-      <main
-        ref={mainRef}
-        style={fadeStyle}
-        className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
+    <StepShell
+      currentStep="runtime"
+      onBack={onBack}
+      onStepChange={onStepChange}
+      sidebarFooter={headerTrailing}
+    >
+      {/* key=phase forces a remount on phase transition so the
+          `animate-onboarding-enter` animation replays — otherwise CSS
+          only runs on initial mount and scanning→found would be a
+          hard cut. */}
+      <div
+        key={phase}
+        className={cn("animate-onboarding-enter", STEP_FRAME, STEP_BLOCK_PADDING)}
       >
-        {/* key=phase forces a remount on phase transition so the
-            `animate-onboarding-enter` animation replays — otherwise CSS
-            only runs on initial mount and scanning→found would be a
-            hard cut. */}
-        <div
-          key={phase}
-          className={cn("animate-onboarding-enter", STEP_FRAME, STEP_BLOCK_PADDING)}
-        >
-          <MikaIntro />
+        <MikaIntro />
 
-          {phase === "scanning" && <ScanningView />}
-          {phase === "found" && (
-            <FoundView
-              runtimes={runtimes}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onlineCount={onlineCount}
-              onRefresh={handleRefresh}
-              refreshing={refreshing}
-              model={model}
-              onModelChange={setModel}
-              currentUserId={currentUserId ?? null}
-            />
-          )}
-          {phase === "empty" && (
-            <EmptyView
-              onSkip={handleSkip}
-              onRefresh={handleRefresh}
-              refreshing={refreshing}
-            />
-          )}
+        {phase === "scanning" && <ScanningView />}
+        {phase === "found" && (
+          <FoundView
+            runtimes={runtimes}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onlineCount={onlineCount}
+            onRefresh={handleRefresh}
+            refreshing={refreshing}
+            model={model}
+            onModelChange={setModel}
+            currentUserId={currentUserId ?? null}
+          />
+        )}
+        {phase === "empty" && (
+          <EmptyView
+            onSkip={handleSkip}
+            onRefresh={handleRefresh}
+            refreshing={refreshing}
+          />
+        )}
 
-          {/* Footer action bar. The controls are phase-scoped so no dead or
-              duplicated affordance ever shows:
-                - Skip: shown while scanning / found. The empty phase owns its
-                  own prominent Skip card, so the footer Skip is dropped there
-                  to avoid two "Skip for now" buttons on one screen.
-                - Continue: only actionable once a runtime is picked, so
-                  it renders only in the found phase instead of sitting
-                  permanently disabled through scanning / empty. */}
-          <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-            <span
-              aria-live="polite"
-              className="mr-auto text-caption text-muted-foreground"
-            >
-              {footerHint}
-            </span>
-            {phase !== "empty" && (
-              <div className="flex items-center gap-2">
+        {/* Footer action bar. The controls are phase-scoped so no dead or
+            duplicated affordance ever shows:
+              - Skip: shown while scanning / found. The empty phase owns its
+                own prominent Skip card, so the footer Skip is dropped there
+                to avoid two "Skip for now" buttons on one screen.
+              - Continue: only actionable once a runtime is picked, so
+                it renders only in the found phase instead of sitting
+                permanently disabled through scanning / empty. */}
+        <div className="mt-8 flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+          <span
+            aria-live="polite"
+            className="mr-auto text-caption text-muted-foreground"
+          >
+            {footerHint}
+          </span>
+          {phase !== "empty" && (
+            <div className="flex items-center gap-2">
+              <Button
+                size="lg"
+                variant="secondary"
+                disabled={submitting}
+                onClick={handleSkip}
+              >
+                {t(($) => $.step_runtime.skip)}
+              </Button>
+              {phase === "found" && (
                 <Button
                   size="lg"
-                  variant="secondary"
-                  disabled={submitting}
-                  onClick={handleSkip}
+                  disabled={!canContinue || submitting}
+                  onClick={handleContinue}
                 >
-                  {t(($) => $.step_runtime.skip)}
+                  {submitting && (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  )}
+                  {t(($) => $.step_runtime.continue)}
+                  <ArrowRight className="h-4 w-4" />
                 </Button>
-                {phase === "found" && (
-                  <Button
-                    size="lg"
-                    disabled={!canContinue || submitting}
-                    onClick={handleContinue}
-                  >
-                    {submitting && (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
-                    {t(($) => $.step_runtime.continue)}
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
-      </main>
-    </div>
+      </div>
+    </StepShell>
   );
 }
 
