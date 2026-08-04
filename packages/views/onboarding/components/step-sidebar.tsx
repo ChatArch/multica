@@ -89,15 +89,7 @@ export function StepSidebar({
           />
         </div>
 
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          {/* Keeps the panel a window-drag handle and clears the macOS
-              traffic lights, which sit over this corner. */}
-          <div
-            aria-hidden
-            className="h-7 shrink-0"
-            style={{ WebkitAppRegion: "drag" } as CSSProperties}
-          />
-
+        <div className="relative flex min-h-0 flex-1 flex-col pt-5">
           <header className="flex min-h-9 shrink-0 items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-2">
               <MulticaIcon className="size-5 shrink-0 text-foreground" noSpin />

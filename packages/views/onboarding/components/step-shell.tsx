@@ -3,6 +3,7 @@
 import { useRef, type ReactNode } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
+import { DragStrip } from "@multica/views/platform";
 import type { OnboardingStep } from "@multica/core/onboarding";
 import { StepSidebar } from "./step-sidebar";
 
@@ -120,25 +121,29 @@ export function StepShell({
   const fadeStyle = useScrollFade(mainRef);
 
   return (
-    <div className="animate-onboarding-enter flex h-full min-h-0 bg-background">
-      <StepSidebar
-        currentStep={currentStep}
-        onBack={onBack}
-        backDisabled={backDisabled}
-        onStepChange={onStepChange}
-        footer={sidebarFooter}
-      />
+    <div className="animate-onboarding-enter flex h-full min-h-0 flex-col bg-background">
+      {/* One strip across the whole window, as the first flex child — the
+          shape the desktop shell rule asks for, and the fix for an overlap:
+          the rail is a dark inset panel that started at the window's top-left
+          corner, which is exactly where macOS draws the traffic lights, so
+          they sat on top of it. Reserving the strip above both panes drops the
+          panel clear of them and keeps the whole band draggable. Two ad-hoc
+          per-pane strips used to do this job and neither was first. */}
+      <DragStrip />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div
-          aria-hidden
-          className="h-12 shrink-0"
-          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      <div className="flex min-h-0 flex-1">
+        <StepSidebar
+          currentStep={currentStep}
+          onBack={onBack}
+          backDisabled={backDisabled}
+          onStepChange={onStepChange}
+          footer={sidebarFooter}
         />
+
         <main
           ref={mainRef}
           style={fadeStyle}
-          className={cn("min-h-0 flex-1 overflow-y-auto", STEP_GUTTER)}
+          className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", STEP_GUTTER)}
         >
           <div className={STEP_COLUMN}>{children}</div>
         </main>
