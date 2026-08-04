@@ -585,7 +585,14 @@
       "save_failed_toast": "保存路由配置失败"
     },
     "pi_runtime_config": {
-      "intro": "配置 Pi 使用的模型端点。非敏感字段随智能体保存；API key 单独存放在受审计的环境变量接口中。",
+      "intro": "这是当前 Agent 的高级覆盖项。保持为空即可使用 Pi 运行时的默认模型连接。",
+      "inherited_title": "正在使用运行时默认配置",
+      "inherited_hint": "已自动继承 {{provider}} / {{model}}。填写下方字段后，将仅为当前 Agent 创建覆盖配置。",
+      "inherited_key_hint": "当前 Agent 正在使用运行时保存的 Key。只有需要单独使用自己的 Key 时，才查看并编辑。",
+      "agent_key_required": "这个端点与运行时默认配置不同。保存前请查看并填写当前 Agent 专用的 API Key。",
+      "override_title": "Agent 覆盖配置",
+      "override_hint": "当前 Agent 使用 {{provider}} / {{model}}，而不是运行时默认配置。",
+      "use_runtime_default": "改用运行时默认配置",
       "provider_label": "Provider ID",
       "api_label": "API 格式",
       "base_url_label": "Base URL",

@@ -26,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/managedruntime"
+	"github.com/multica-ai/multica/server/internal/piagent"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -4960,7 +4961,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil && provider == "openclaw" {
 		openclawMode, openclawGateway = decodeOpenclawRuntimeConfig(task.Agent.RuntimeConfig, d.logger)
 	}
-	var piConfig execenv.PiRuntimeConfig
+	var piConfig piagent.Config
 	var piConfigValid bool
 	if task.Agent != nil && provider == "pi" {
 		piConfig, piConfigValid = decodePiRuntimeConfig(task.Agent.RuntimeConfig, d.logger)
@@ -4971,8 +4972,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentEnvOverrides = task.Agent.CustomEnv
 		agentCustomArgs = task.Agent.CustomArgs
 	}
-	if piConfigValid && strings.TrimSpace(agentEnvOverrides[execenv.PiAPIKeyEnv]) == "" {
-		return TaskResult{}, fmt.Errorf("Pi runtime configuration requires %s in the agent environment", execenv.PiAPIKeyEnv)
+	if piConfigValid && strings.TrimSpace(agentEnvOverrides[piagent.APIKeyEnv]) == "" {
+		return TaskResult{}, fmt.Errorf("Pi runtime configuration requires %s in the agent environment", piagent.APIKeyEnv)
 	}
 	// Effective Codex CLI args the task will launch with, normalized through the
 	// same agent.NormalizeCodexLaunchArgs pipeline buildCodexArgs uses (shell

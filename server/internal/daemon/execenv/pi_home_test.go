@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/piagent"
 )
 
 func TestPreparePiHomePreservesStateAndDerivesModels(t *testing.T) {
@@ -25,7 +27,7 @@ func TestPreparePiHomePreservesStateAndDerivesModels(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	home, err := PreparePiHome(root, source, PiRuntimeConfig{
+	home, err := PreparePiHome(root, source, piagent.Config{
 		Provider: "openai",
 		API:      "openai-responses",
 		BaseURL:  "https://api.example.com/v1",
@@ -53,7 +55,7 @@ func TestPreparePiHomePreservesStateAndDerivesModels(t *testing.T) {
 	}
 	providers := models["providers"].(map[string]any)
 	openai := providers["openai"].(map[string]any)
-	if openai["apiKey"] != "$"+PiAPIKeyEnv {
+	if openai["apiKey"] != "$"+piagent.APIKeyEnv {
 		t.Fatalf("apiKey must reference env, got %#v", openai["apiKey"])
 	}
 	if _, ok := providers["existing"]; !ok {
@@ -72,7 +74,7 @@ func TestPreparePiHomeRejectsMalformedSourceModels(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "models.json"), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := PreparePiHome(t.TempDir(), source, PiRuntimeConfig{
+	_, err := PreparePiHome(t.TempDir(), source, piagent.Config{
 		Provider: "openai", API: "openai-responses", BaseURL: "https://example.com", Model: "x",
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err == nil {

@@ -486,7 +486,14 @@
       "save_failed_toast": "라우팅 설정 저장 실패"
     },
     "pi_runtime_config": {
-      "intro": "Pi가 사용할 모델 엔드포인트를 설정합니다. 비밀이 아닌 필드는 에이전트와 함께 저장되고 API key는 감사되는 환경 변수 엔드포인트에 별도로 저장됩니다.",
+      "intro": "이 에이전트의 고급 재정의 설정입니다. 비워 두면 Pi 런타임의 기본 모델 연결을 사용합니다.",
+      "inherited_title": "런타임 기본값 사용 중",
+      "inherited_hint": "{{provider}} / {{model}}을 자동으로 상속합니다. 아래 필드를 입력하면 이 에이전트 전용 재정의가 생성됩니다.",
+      "inherited_key_hint": "현재 런타임에 저장된 키를 사용합니다. 이 에이전트에 별도 키가 필요할 때만 표시하고 편집하세요.",
+      "agent_key_required": "이 엔드포인트는 런타임 기본값과 다릅니다. 저장하기 전에 에이전트 전용 API 키를 표시하고 입력하세요.",
+      "override_title": "에이전트 재정의",
+      "override_hint": "이 에이전트는 런타임 기본값 대신 {{provider}} / {{model}}을 사용합니다.",
+      "use_runtime_default": "런타임 기본값 사용",
       "provider_label": "Provider ID",
       "api_label": "API 형식",
       "base_url_label": "Base URL",

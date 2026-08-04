@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Save } from "lucide-react";
-import type { Agent } from "@multica/core/types";
+import type { Agent, AgentRuntime } from "@multica/core/types";
 import {
   OPENCLAW_GATEWAY_TOKEN_MASK,
   type OpenclawRoutingMode,
@@ -83,11 +83,18 @@ export function RuntimeConfigTab({
 }: {
   provider: string;
   agent: Agent;
+  runtime?: AgentRuntime | null;
   onSave: (updates: { runtime_config: Record<string, unknown> }) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   if (provider === "pi") return <PiRuntimeConfigTab {...props} />;
-  return <OpenclawRuntimeConfigTab {...props} />;
+  return (
+    <OpenclawRuntimeConfigTab
+      agent={props.agent}
+      onSave={props.onSave}
+      onDirtyChange={props.onDirtyChange}
+    />
+  );
 }
 
 function OpenclawRuntimeConfigTab({

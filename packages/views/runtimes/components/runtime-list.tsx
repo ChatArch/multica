@@ -28,7 +28,9 @@ import {
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import {
   deriveRuntimeHealth,
+  isPiRuntimeModelConfigured,
   runtimeProfileListOptions,
+  runtimeSupportsDefaultModelConnection,
   runtimeUsageOptions,
 } from "@multica/core/runtimes";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -378,6 +380,22 @@ function HealthCell({
   const offline = health === "offline" || health === "about_to_gc";
   const lastSeen = runtime.last_seen_at ? timeAgo(runtime.last_seen_at) : null;
   const active = workload.runningCount + workload.queuedCount;
+
+  if (
+    health === "online" &&
+    runtime.provider === "pi" &&
+    runtimeSupportsDefaultModelConnection(runtime) &&
+    !isPiRuntimeModelConfigured(runtime)
+  ) {
+    return (
+      <ListGridCell className="gap-1.5">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+        <span className="block min-w-0 truncate text-caption text-warning">
+          {t(($) => $.list.needs_model_setup)}
+        </span>
+      </ListGridCell>
+    );
+  }
 
   return (
     <ListGridCell className="gap-1.5">

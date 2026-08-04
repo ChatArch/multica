@@ -13,7 +13,11 @@ import {
   serializePiRuntimeConfig,
   validatePiRuntimeConfig,
 } from "@multica/core/agents";
-import type { Agent } from "@multica/core/types";
+import {
+  isPiRuntimeModelConfigured,
+  runtimeDefaultPiConfig,
+} from "@multica/core/runtimes";
+import type { Agent, AgentRuntime } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
@@ -49,12 +53,23 @@ function formToConfig(state: FormState): PiRuntimeConfig {
   };
 }
 
+function sameEndpoint(a: PiRuntimeConfig, b: PiRuntimeConfig): boolean {
+  return (
+    a.provider?.trim() === b.provider?.trim() &&
+    a.api === b.api &&
+    a.baseUrl?.trim().replace(/\/+$/, "") ===
+      b.baseUrl?.trim().replace(/\/+$/, "")
+  );
+}
+
 export function PiRuntimeConfigTab({
   agent,
+  runtime,
   onSave,
   onDirtyChange,
 }: {
   agent: Agent;
+  runtime?: AgentRuntime | null;
   onSave: (updates: { runtime_config: Record<string, unknown> }) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
@@ -63,7 +78,32 @@ export function PiRuntimeConfigTab({
     () => parsePiRuntimeConfig(agent.runtime_config),
     [agent.runtime_config],
   );
-  const originalForm = useMemo(() => configToForm(original), [original]);
+  const inheritedConfig = useMemo(
+    () => (runtime ? runtimeDefaultPiConfig(runtime) : {}),
+    [runtime],
+  );
+  const runtimeConnectionConfigured = Boolean(
+    runtime && isPiRuntimeModelConfigured(runtime),
+  );
+  const hasAgentOverride = Boolean(
+    original.provider &&
+      original.api &&
+      original.baseUrl &&
+      original.model &&
+      validatePiRuntimeConfig(original) === null,
+  );
+  const inheritsRuntimeDefault = Boolean(
+    runtimeConnectionConfigured &&
+      validatePiRuntimeConfig(original) === null &&
+      !original.provider &&
+      !original.baseUrl &&
+      !original.model,
+  );
+  const effectiveOriginal = inheritsRuntimeDefault ? inheritedConfig : original;
+  const originalForm = useMemo(
+    () => configToForm(effectiveOriginal),
+    [effectiveOriginal],
+  );
   const previousFormRef = useRef(originalForm);
   const [state, setState] = useState(originalForm);
   const [env, setEnv] = useState<Record<string, string> | null>(null);
@@ -91,10 +131,18 @@ export function PiRuntimeConfigTab({
   }, [agent.id]);
 
   const current = useMemo(() => formToConfig(state), [state]);
-  const configDirty = !piRuntimeConfigEquals(original, current);
+  const configDirty = !piRuntimeConfigEquals(effectiveOriginal, current);
   const keyDirty = env !== null && apiKey !== originalKey;
   const dirty = configDirty || keyDirty;
   const validationError = validatePiRuntimeConfig(current);
+  const runtimeKeyApplies =
+    runtimeConnectionConfigured && sameEndpoint(current, inheritedConfig);
+  const needsAgentKeyToSave = Boolean(
+    configDirty &&
+      current.provider &&
+      !runtimeKeyApplies &&
+      (env === null || !apiKey.trim()),
+  );
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -121,7 +169,7 @@ export function PiRuntimeConfigTab({
   };
 
   const handleSave = async () => {
-    if (validationError || saving || !dirty) return;
+    if (validationError || needsAgentKeyToSave || saving || !dirty) return;
     setSaving(true);
     try {
       if (keyDirty && env !== null) {
@@ -157,6 +205,45 @@ export function PiRuntimeConfigTab({
       <p className="text-caption text-muted-foreground">
         {t(($) => $.tab_body.pi_runtime_config.intro)}
       </p>
+
+      {inheritsRuntimeDefault && (
+        <div className="rounded-md border border-success/30 bg-success/5 p-3">
+          <p className="text-caption font-medium text-success">
+            {t(($) => $.tab_body.pi_runtime_config.inherited_title)}
+          </p>
+          <p className="mt-1 text-caption text-muted-foreground">
+            {t(($) => $.tab_body.pi_runtime_config.inherited_hint, {
+              provider: inheritedConfig.provider,
+              model: inheritedConfig.model,
+            })}
+          </p>
+        </div>
+      )}
+
+      {runtimeConnectionConfigured && hasAgentOverride && (
+        <div className="flex items-start justify-between gap-3 rounded-md border p-3">
+          <div className="min-w-0">
+            <p className="text-caption font-medium">
+              {t(($) => $.tab_body.pi_runtime_config.override_title)}
+            </p>
+            <p className="mt-1 truncate text-caption text-muted-foreground">
+              {t(($) => $.tab_body.pi_runtime_config.override_hint, {
+                provider: original.provider,
+                model: original.model,
+              })}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setState(configToForm({}))}
+          >
+            {t(($) => $.tab_body.pi_runtime_config.use_runtime_default)}
+          </Button>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
@@ -256,7 +343,9 @@ export function PiRuntimeConfigTab({
               {t(($) => $.tab_body.pi_runtime_config.api_key_label)}
             </Label>
             <p className="text-caption text-muted-foreground">
-              {t(($) => $.tab_body.pi_runtime_config.api_key_hint)}
+              {runtimeKeyApplies
+                ? t(($) => $.tab_body.pi_runtime_config.inherited_key_hint)
+                : t(($) => $.tab_body.pi_runtime_config.api_key_hint)}
             </p>
           </div>
           {env === null && (
@@ -303,6 +392,12 @@ export function PiRuntimeConfigTab({
         )}
       </div>
 
+      {needsAgentKeyToSave && (
+        <p className="text-caption text-destructive">
+          {t(($) => $.tab_body.pi_runtime_config.agent_key_required)}
+        </p>
+      )}
+
       <div className="flex items-center justify-end gap-3 pt-2">
         {dirty && (
           <span className="text-caption text-muted-foreground">
@@ -311,7 +406,12 @@ export function PiRuntimeConfigTab({
         )}
         <Button
           onClick={handleSave}
-          disabled={!dirty || Boolean(validationError) || saving}
+          disabled={
+            !dirty ||
+            Boolean(validationError) ||
+            needsAgentKeyToSave ||
+            saving
+          }
           size="sm"
         >
           {saving ? (

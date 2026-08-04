@@ -596,7 +596,14 @@
       "save_failed_toast": "Failed to save routing config"
     },
     "pi_runtime_config": {
-      "intro": "Configure the model endpoint used by Pi. Non-secret fields are stored with the agent; the API key is stored separately in the audited environment endpoint.",
+      "intro": "Advanced override for this agent. Leave it empty to use the Pi runtime's default model connection.",
+      "inherited_title": "Using the runtime default",
+      "inherited_hint": "{{provider}} / {{model}} is inherited automatically. Filling the fields below creates an override for this agent.",
+      "inherited_key_hint": "This agent currently uses the runtime's saved key. Reveal and edit only to give this agent its own key.",
+      "agent_key_required": "This endpoint differs from the runtime default. Reveal and enter an agent-specific API key before saving.",
+      "override_title": "Agent override",
+      "override_hint": "This agent uses {{provider}} / {{model}} instead of the runtime default.",
+      "use_runtime_default": "Use runtime default",
       "provider_label": "Provider ID",
       "api_label": "API format",
       "base_url_label": "Base URL",

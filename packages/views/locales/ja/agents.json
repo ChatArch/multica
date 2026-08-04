@@ -478,7 +478,14 @@
       "save_failed_toast": "ルーティング設定の保存に失敗しました"
     },
     "pi_runtime_config": {
-      "intro": "Pi が使用するモデルエンドポイントを設定します。非機密フィールドはエージェントに保存され、API key は監査対象の環境変数エンドポイントに別途保存されます。",
+      "intro": "このエージェント向けの詳細な上書き設定です。空欄のままにすると Pi ランタイムのデフォルトモデル接続を使用します。",
+      "inherited_title": "ランタイムのデフォルトを使用中",
+      "inherited_hint": "{{provider}} / {{model}} を自動的に継承しています。以下を入力すると、このエージェント専用の上書き設定になります。",
+      "inherited_key_hint": "現在はランタイムに保存されたキーを使用しています。このエージェント専用のキーが必要な場合のみ表示・編集してください。",
+      "agent_key_required": "このエンドポイントはランタイムのデフォルトと異なります。保存する前に、エージェント専用の API キーを表示して入力してください。",
+      "override_title": "エージェントの上書き設定",
+      "override_hint": "このエージェントはランタイムのデフォルトではなく {{provider}} / {{model}} を使用します。",
+      "use_runtime_default": "ランタイムのデフォルトを使用",
       "provider_label": "Provider ID",
       "api_label": "API 形式",
       "base_url_label": "Base URL",

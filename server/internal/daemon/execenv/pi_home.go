@@ -6,24 +6,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/multica-ai/multica/server/internal/piagent"
 )
-
-// Keep this outside the reserved MULTICA_ namespace: custom_env values with
-// that prefix are intentionally stripped before provider processes launch.
-const PiAPIKeyEnv = "PI_MULTICA_API_KEY"
-
-type PiRuntimeConfig struct {
-	Provider string
-	API      string
-	BaseURL  string
-	Model    string
-}
 
 // PreparePiHome creates a task-scoped Pi agent directory. Host auth, packages,
 // and future top-level state remain available through the same generic mirror
 // strategy used by Hermes, while models.json is derived locally so Multica's
 // provider selection cannot modify the user's global Pi configuration.
-func PreparePiHome(rootDir, sourceHome string, cfg PiRuntimeConfig, logger *slog.Logger) (string, error) {
+func PreparePiHome(rootDir, sourceHome string, cfg piagent.Config, logger *slog.Logger) (string, error) {
 	if sourceHome == "" {
 		sourceHome = os.Getenv("PI_CODING_AGENT_DIR")
 	}
@@ -101,7 +92,7 @@ func reconcilePiMirrors(piHome string, mirrored map[string]struct{}) error {
 	return nil
 }
 
-func writeDerivedPiModels(sourceHome, piHome string, cfg PiRuntimeConfig) error {
+func writeDerivedPiModels(sourceHome, piHome string, cfg piagent.Config) error {
 	root := map[string]any{}
 	sourcePath := filepath.Join(sourceHome, "models.json")
 	if data, err := os.ReadFile(sourcePath); err == nil {
@@ -120,7 +111,7 @@ func writeDerivedPiModels(sourceHome, piHome string, cfg PiRuntimeConfig) error 
 	providers[cfg.Provider] = map[string]any{
 		"baseUrl": cfg.BaseURL,
 		"api":     cfg.API,
-		"apiKey":  "$" + PiAPIKeyEnv,
+		"apiKey":  "$" + piagent.APIKeyEnv,
 		"models": []any{
 			map[string]any{"id": cfg.Model},
 		},

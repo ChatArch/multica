@@ -476,6 +476,7 @@ export function AgentOverviewPane({
                       key={agent.id}
                       provider={runtime?.provider ?? ""}
                       agent={agent}
+                      runtime={runtime}
                       onSave={(updates) => onUpdate(agent.id, updates)}
                       onDirtyChange={setActiveDirty}
                     />
