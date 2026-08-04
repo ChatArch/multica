@@ -1976,7 +1976,26 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID pgtype.UUID) (*db.A
 // CancelTaskWithResult cancels a single task and returns any chat-specific
 // cleanup result needed by user-facing callers.
 func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UUID, opts CancelTaskOptions) (*CancelTaskResult, error) {
-	task, err := s.Queries.CancelAgentTask(ctx, taskID)
+	// The status flip and the chat resume-pointer advance commit together. Split
+	// across two statements, the `cancelled` status becomes visible to every
+	// other connection while the pointer still names the PREVIOUS turn's
+	// session — and a follow-up the user had already queued can be claimed in
+	// that gap and resume the older session, which is the bug this change is
+	// supposed to remove (GH #6340). AdvanceCancelledChatSessionPointer reads
+	// the row this transaction just wrote, so it also sees a session pinned
+	// concurrently rather than a stale in-memory copy.
+	var task db.AgentTaskQueue
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		cancelled, err := qtx.CancelAgentTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		task = cancelled
+		if !cancelled.ChatSessionID.Valid {
+			return nil
+		}
+		return qtx.AdvanceCancelledChatSessionPointer(ctx, cancelled.ID)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := s.Queries.GetAgentTask(ctx, taskID)
 		if err != nil {
@@ -1990,7 +2009,6 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 
 	slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCancelled(ctx, task)
-	s.recordCancelledChatSessionPointer(ctx, task)
 	cancelledChatMessage := s.finalizeCancelledChatMessage(ctx, task, opts)
 
 	// Reconcile agent status
@@ -2004,49 +2022,6 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 		Task:                 task,
 		CancelledChatMessage: cancelledChatMessage,
 	}, nil
-}
-
-// recordCancelledChatSessionPointer moves the chat's resume pointer onto the
-// session the cancelled turn was running (GH #6340).
-//
-// Cancellation is the one terminal state that never reports back: the daemon
-// discards its result and only sends a cancel-ack, so neither CompleteTask nor
-// FailTask — the only writers of chat_session.session_id — ever runs. The turn's
-// session survives on the task row (the daemon pinned it mid-flight) and
-// GetLastChatTaskSession now finds it, but that fallback is only consulted when
-// the pointer is EMPTY. On a chat that already has history the stale pointer
-// wins, and for any provider that mints a new session id per resume that means
-// rewinding to the previous turn and dropping the cancelled exchange — which the
-// user can still see in the transcript.
-//
-// Writing here rather than in the deferred finalize path is deliberate: this
-// runs while the cancelled task is still the newest turn on the session, so it
-// cannot land after a later turn's terminal write and un-advance the pointer.
-// It also means the empty-transcript judgment (#5219) has not been made yet, so
-// this cannot distinguish "cancelled with a partial reply" from "cancelled
-// before the first token" — and should not try to. Both leave the same
-// transcript on the provider side, and pointing at it is still strictly closer
-// to the conversation than rewinding to the turn before.
-//
-// runtime_id moves with the session because the claim handler only honours a
-// pointer its own runtime produced; a row without one cannot say which runtime
-// the session belongs to, so it is left alone rather than pairing a new session
-// with a stale runtime.
-func (s *TaskService) recordCancelledChatSessionPointer(ctx context.Context, task db.AgentTaskQueue) {
-	if !task.ChatSessionID.Valid || !task.SessionID.Valid || task.SessionID.String == "" || !task.RuntimeID.Valid {
-		return
-	}
-	if err := s.Queries.UpdateChatSessionSession(ctx, db.UpdateChatSessionSessionParams{
-		ID:        task.ChatSessionID,
-		SessionID: task.SessionID,
-		WorkDir:   task.WorkDir,
-		RuntimeID: task.RuntimeID,
-	}); err != nil {
-		slog.Warn("failed to record cancelled chat session pointer",
-			"task_id", util.UUIDToString(task.ID),
-			"chat_session_id", util.UUIDToString(task.ChatSessionID),
-			"error", err)
-	}
 }
 
 // chatInputOwnerID resolves the id the task's user-message input batch is

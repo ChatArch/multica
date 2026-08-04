@@ -219,6 +219,49 @@ WHERE id = sqlc.arg('id')
   AND session_id = sqlc.arg('session_id')
   AND runtime_id = sqlc.arg('runtime_id');
 
+-- name: AdvanceCancelledChatSessionPointer :exec
+-- Moves a chat's resume pointer onto the session a CANCELLED task recorded
+-- (GH #6340).
+--
+-- Cancellation is the one terminal state that never reports back: the daemon
+-- discards its result and only sends a cancel-ack, so neither CompleteTask nor
+-- FailTask — the only other writers of chat_session.session_id — ever runs. The
+-- claim handler reads this pointer BEFORE falling back to
+-- GetLastChatTaskSession, so on a chat that already has history a pointer left
+-- on the previous turn shadows the cancelled turn's session no matter what the
+-- fallback would have found.
+--
+-- Two callers, one statement, because both are races the other cannot cover:
+-- the cancel path runs it inside the status-flip transaction (so no follow-up
+-- can observe `cancelled` while the pointer still names the older session), and
+-- the pin path runs it after a mid-flight pin lands on an already-cancelled row
+-- (Codex waits for its rollout, so the pin routinely arrives after the cancel —
+-- at which point the cancel path saw no session to publish).
+--
+-- Everything it decides on is read from the task row inside the statement, so
+-- neither caller can act on a stale in-memory copy. The NOT EXISTS guard is what
+-- makes the late pin safe: a NEWER task on this chat that already recorded a
+-- session owns the pointer, and a straggler must not drag the conversation
+-- backwards onto the turn the user interrupted.
+UPDATE chat_session cs
+SET session_id = t.session_id,
+    runtime_id = t.runtime_id,
+    work_dir   = COALESCE(t.work_dir, cs.work_dir),
+    updated_at = now()
+FROM agent_task_queue t
+WHERE t.id = sqlc.arg('task_id')
+  AND t.chat_session_id = cs.id
+  AND t.status = 'cancelled'
+  AND t.session_id IS NOT NULL
+  AND t.runtime_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue newer
+      WHERE newer.chat_session_id = t.chat_session_id
+        AND newer.id <> t.id
+        AND newer.session_id IS NOT NULL
+        AND newer.created_at > t.created_at
+  );
+
 -- name: LockChatSessionForDelete :one
 -- Acquires an exclusive (FOR UPDATE) row lock on chat_session(id). Used by
 -- the delete path so that a concurrent SendChatMessage cannot enqueue a new

@@ -94,6 +94,19 @@ func (h *Handler) PinTaskSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "pin session failed")
 		return
 	}
+	// The pin can arrive after the user has already cancelled the run — it is
+	// asynchronous, and for Codex it waits for the rollout to reach the store.
+	// The cancel transaction then found no session to publish, so the chat's
+	// resume pointer is still on the previous turn and would shadow the session
+	// this pin just recorded (the claim handler reads the pointer before the
+	// GetLastChatTaskSession fallback). Advancing here closes that half of
+	// GH #6340; the statement itself re-reads the row, ignores anything that is
+	// not a cancelled chat task, and refuses to move the pointer when a newer
+	// turn already owns a session — so a straggler pin cannot drag the
+	// conversation backwards. Best-effort: the pin itself already succeeded.
+	if err := h.Queries.AdvanceCancelledChatSessionPointer(r.Context(), parseUUID(taskID)); err != nil {
+		slog.Warn("advance cancelled chat session pointer failed", "task_id", taskID, "error", err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
