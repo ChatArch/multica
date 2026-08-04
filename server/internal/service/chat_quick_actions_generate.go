@@ -137,8 +137,8 @@ Field rules:
 - "primary": true on exactly one suggestion, the single most likely next step.
   false on all others.
 
-Language: the user message ends with a LANGUAGE RULE line. It is authoritative;
-follow it exactly.
+Language: the user message contains a LANGUAGE RULE line near the end. It is
+authoritative; follow it exactly.
 
 Output JSON only, exactly this shape:
 {"actions":[{"label":"...","prompt":"...","primary":true}]}
@@ -156,7 +156,7 @@ No prose, no markdown, no code fences.`
 //
 // Everything else is named and excluded explicitly, because each one has been
 // observed to pull the output the wrong way (MUL-5689): the agent may reply in
-// another language, these instructions are English, and ALREADY SUGGESTED
+// another language, the system prompt is English, and ALREADY SUGGESTED
 // replays the previous turn's labels — which is what made one bad pass stick,
 // each Chinese label seeding the next round.
 //
@@ -168,7 +168,7 @@ No prose, no markdown, no code fences.`
 // to infer), it reads an earlier Korean turn over the latest Japanese one, and
 // a kana sentence carrying enough English identifiers classifies as Latin, at
 // which point a "never emit CJK" clause forbids the user's own script.
-const chatQuickActionsLanguageRule = `LANGUAGE RULE: Write every "label" and "prompt" in the same language as the most recent [user] message above. Ignore the agent's reply, older messages, these instructions, and ALREADY SUGGESTED when choosing the language. If there is no [user] message, use the latest [agent] message.`
+const chatQuickActionsLanguageRule = `LANGUAGE RULE: Write every "label" and "prompt" in the same language as the most recent [user] message above. Ignore the agent's reply, older messages, the system instructions, and ALREADY SUGGESTED when choosing the language. If there is no [user] message, use the latest [agent] message.`
 
 // GenerateChatQuickActionsForTask runs one suggestion pass for a completed chat
 // turn and attaches the result to that turn's assistant row, broadcasting

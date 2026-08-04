@@ -210,7 +210,7 @@ func TestRenderChatQuickActionsContextClosesWithTheLanguageRule(t *testing.T) {
 	if !strings.Contains(out, "same language as the most recent [user] message") {
 		t.Fatalf("rule must anchor on the most recent user turn:\n%s", out)
 	}
-	for _, disowned := range []string{"agent's reply", "older messages", "these instructions", "ALREADY SUGGESTED"} {
+	for _, disowned := range []string{"agent's reply", "older messages", "the system instructions", "ALREADY SUGGESTED"} {
 		if !strings.Contains(chatQuickActionsLanguageRule, disowned) {
 			t.Fatalf("rule must explicitly exclude %q: %s", disowned, chatQuickActionsLanguageRule)
 		}
