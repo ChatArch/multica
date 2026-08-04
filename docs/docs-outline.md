@@ -534,7 +534,7 @@ multica issue assign <issue-id> --agent <agent-slug>
     | Provider | 厂商 | Session Resume | MCP | Skill 注入路径 | custom_args | 备注 |
   - 每个 provider 一小段（80-150 字）：核心定位 + 用户画像 + 官网链接 + Multica 兼容性
   - **Session resume 精确现状**:
-    - ✅ 真用：Antigravity / Claude / Codex / Copilot / Cursor / Hermes / Kimi / Kiro CLI / OpenCode / OpenClaw / Pi
+    - ✅ 真用：Antigravity / Claude / Codex / Copilot / Cursor / Hermes / Kimi / Reasonix / Kiro CLI / OpenCode / OpenClaw / Pi
     - ❌ 不支持：Gemini
 - **不写**: provider 官方使用文档（外链）、MCP 协议本身
 - **写前要验证**:

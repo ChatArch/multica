@@ -15,4 +15,5 @@ pi
 qwen
 qodercli
 qoderclicn
+reasonix
 traecli

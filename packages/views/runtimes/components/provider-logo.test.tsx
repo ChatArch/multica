@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { ProviderLogo } from "./provider-logo";
 
 describe("ProviderLogo", () => {
+  it("renders the dedicated Reasonix mark", () => {
+    const { container } = render(
+      <ProviderLogo provider="reasonix" className="runtime-logo" />,
+    );
+
+    const logo = container.querySelector('svg[aria-label="Reasonix"]');
+    expect(logo?.querySelector('path[fill="#0153E5"]')).not.toBeNull();
+    expect(logo?.classList.contains("runtime-logo")).toBe(true);
+  });
+
   it("renders the dedicated Qwen Code mark", () => {
     const { container } = render(<ProviderLogo provider="qwen" className="runtime-logo" />);
 

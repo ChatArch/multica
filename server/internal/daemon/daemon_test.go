@@ -155,6 +155,7 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		{key: "tmp", want: true},
 		{key: "TEMP", want: true},
 		{key: "CODEX_HOME", want: true},
+		{key: "REASONIX_STATE_HOME", want: true},
 		{key: "CURSOR_DATA_DIR", want: true},
 		{key: "cursor_data_dir", want: true},
 		{key: "CURSOR_MCP_AUTH_SOURCE", want: true},
@@ -167,6 +168,9 @@ func TestIsBlockedEnvKey(t *testing.T) {
 		// bound the per-task overlay overrides it after custom_env is layered.
 		{key: "HERMES_HOME", want: false},
 		{key: "hermes_home", want: false},
+		// Reasonix credentials/config remain tool-owned and may use a custom
+		// home; only the daemon-owned state overlay is blocked above.
+		{key: "REASONIX_HOME", want: false},
 	}
 
 	for _, tt := range tests {
@@ -176,6 +180,55 @@ func TestIsBlockedEnvKey(t *testing.T) {
 				t.Fatalf("isBlockedEnvKey(%q) = %v, want %v", tt.key, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPrepareReasonixTaskStateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	got, err := prepareReasonixTaskStateHome("work", "runtime-1", "agent_2")
+	if err != nil {
+		t.Fatalf("prepareReasonixTaskStateHome: %v", err)
+	}
+	want := filepath.Join(home, ".multica", "profiles", "work", "reasonix-state", "runtime-1", "agent_2")
+	if got != want {
+		t.Fatalf("state home = %q, want %q", got, want)
+	}
+	info, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat state home: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Fatalf("state home mode = %o, want 700", info.Mode().Perm())
+	}
+}
+
+func TestLayerCustomEnvKeepsReasonixCredentialsHomeButBlocksStateHome(t *testing.T) {
+	t.Parallel()
+	agentEnv := map[string]string{}
+	layerCustomEnvAndHermesHome(agentEnv, map[string]string{
+		"REASONIX_HOME":       "/operator/reasonix-home",
+		"REASONIX_STATE_HOME": "/unsafe/shared-state",
+	}, "", nil)
+	if got := agentEnv["REASONIX_HOME"]; got != "/operator/reasonix-home" {
+		t.Fatalf("REASONIX_HOME = %q, want operator-owned home", got)
+	}
+	if _, ok := agentEnv["REASONIX_STATE_HOME"]; ok {
+		t.Fatal("daemon-owned REASONIX_STATE_HOME accepted a custom override")
+	}
+}
+
+func TestValidateReasonixStateSegmentRejectsTraversal(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", "../agent", "runtime/agent", "agent id"} {
+		if _, err := validateReasonixStateSegment("agent", value); err == nil {
+			t.Errorf("validateReasonixStateSegment(%q) succeeded, want error", value)
+		}
+	}
+	if got, err := validateReasonixStateSegment("agent", "agent-1_uuid"); err != nil || got != "agent-1_uuid" {
+		t.Fatalf("safe segment = %q, %v", got, err)
 	}
 }
 
@@ -573,6 +626,8 @@ func TestProviderNeedsInlineSystemPrompt(t *testing.T) {
 		// runtime brief duplicates it at the start of every user turn.
 		{provider: "kiro", want: false},
 		{provider: "kimi", want: true},
+		// Reasonix loads AGENTS.md from the ACP session cwd.
+		{provider: "reasonix", want: false},
 		{provider: "traecli", want: true},
 		// Qwen Code loads the per-task QWEN.md file natively.
 		{provider: "qwen", want: false},
@@ -2432,7 +2487,7 @@ func TestShouldRetryWithFreshSession_CompatPathIsBackendScoped(t *testing.T) {
 		})
 	}
 
-	detectable := []string{"claude", "codebuddy", "qwen", "codex", "grok", "hermes", "kimi", "kiro", "qoder", "qoderclicn", "traecli", "pi", "openclaw"}
+	detectable := []string{"claude", "codebuddy", "qwen", "codex", "grok", "hermes", "kimi", "reasonix", "kiro", "qoder", "qoderclicn", "traecli", "pi", "openclaw"}
 	for _, provider := range detectable {
 		t.Run(provider+" does not retry", func(t *testing.T) {
 			t.Parallel()

@@ -760,6 +760,15 @@ type hermesClient struct {
 	sessionID    string
 	onMessage    func(Message)
 	onPromptDone func(hermesPromptResult)
+	// selectPermission lets an ACP dialect narrow the generic headless
+	// permission policy. Reasonix uses this to reject user questions and
+	// fresh-human approvals that also happen to carry allow_once options.
+	// Nil preserves the shared ACP policy for existing backends.
+	selectPermission func(json.RawMessage) (optionID string, grant bool, ok bool)
+	// onNotification observes vendor notifications that are not session/update.
+	// Existing backends leave it nil; the callback must do its own method and
+	// lifecycle filtering.
+	onNotification func(method string, params json.RawMessage)
 	// onActivity observes accepted ACP session updates. Hermes and Grok use it
 	// to retain a short post-response drain window; other ACP backends leave it
 	// nil and keep their existing lifecycle behavior.
@@ -915,7 +924,11 @@ func (c *hermesClient) handleAgentRequest(raw map[string]json.RawMessage) {
 	var resp map[string]any
 	switch method {
 	case "session/request_permission":
-		optionID, grant, ok := selectACPPermissionOption(raw["params"])
+		selector := c.selectPermission
+		if selector == nil {
+			selector = selectACPPermissionOption
+		}
+		optionID, grant, ok := selector(raw["params"])
 		if ok {
 			// Select an offered option — either a safe grant (approve) or,
 			// when no safe grant exists, an offered reject_once (deny THIS
@@ -1100,8 +1113,9 @@ func (e *acpRPCError) Error() string {
 // (Internal error), Kiro puts "No session found with id ..." in
 // `data` under -32603, and kimi-cli raises invalid_params (-32602)
 // with {"session_id": "Session not found"} in `data` for every
-// unknown-session path (src/kimi_cli/acp/server.py) — so neither the
-// code nor the text alone is discriminating and both are matched.
+// unknown-session path (src/kimi_cli/acp/server.py), while Reasonix says
+// "session/resume: unknown session <id>" under -32602 — so neither the
+// code nor one runtime's exact wording is discriminating and both are matched.
 func isACPSessionNotFound(err error) bool {
 	var rpcErr *acpRPCError
 	if !errors.As(err, &rpcErr) {
@@ -1112,7 +1126,8 @@ func isACPSessionNotFound(err error) bool {
 	}
 	text := strings.ToLower(rpcErr.Message + " " + rpcErr.Data)
 	return strings.Contains(text, "session not found") ||
-		strings.Contains(text, "no session found")
+		strings.Contains(text, "no session found") ||
+		strings.Contains(text, "unknown session")
 }
 
 // hermesResumeLostError is the fallback reason for a resumed session Hermes
@@ -1285,6 +1300,9 @@ func parseACPModelIDFromMeta(meta json.RawMessage) string {
 func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
 	var method string
 	_ = json.Unmarshal(raw["method"], &method)
+	if c.onNotification != nil {
+		c.onNotification(method, raw["params"])
+	}
 
 	if method != "session/update" && method != "session/notification" {
 		return
