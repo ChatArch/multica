@@ -485,7 +485,7 @@ func notifyDirect(
 	})
 	if err != nil {
 		slog.Error("direct notification creation failed",
-			"recipient_id", recipientID, "type", notifType, "error", err)
+			"issue_id", issueID, "recipient_id", recipientID, "type", notifType, "error", err)
 		return
 	}
 
@@ -709,7 +709,9 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 				)
 			}
 
-			// Direct: notify old assignee about unassignment
+			// Direct: notify only a previous member assignee about unassignment.
+			// This is intentionally narrower than isAssignmentRecipientType: agents
+			// do not receive unassigned notifications.
 			if prevAssigneeType != nil && prevAssigneeID != nil && *prevAssigneeType == "member" {
 				notifyDirect(ctx, queries, bus,
 					"member", *prevAssigneeID,

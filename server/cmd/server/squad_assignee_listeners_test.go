@@ -97,13 +97,22 @@ func TestSquadAssigneeListenersSkipUnsupportedRecipientWrites(t *testing.T) {
 		},
 	})
 
+	// slog's default logger is process-global. Scope the captured records to
+	// this test's unique issue so unrelated background errors cannot fail it.
+	var issueLogLines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "issue_id="+issueID) {
+			issueLogLines = append(issueLogLines, line)
+		}
+	}
+	issueLogs := strings.Join(issueLogLines, "\n")
 	for _, unexpected := range []string{
 		"failed to add issue subscriber",
 		"direct notification creation failed",
 		"SQLSTATE 23514",
 	} {
-		if strings.Contains(logs.String(), unexpected) {
-			t.Fatalf("squad assignment attempted an unsupported recipient write (%q):\n%s", unexpected, logs.String())
+		if strings.Contains(issueLogs, unexpected) {
+			t.Fatalf("squad assignment attempted an unsupported recipient write (%q):\n%s", unexpected, issueLogs)
 		}
 	}
 
