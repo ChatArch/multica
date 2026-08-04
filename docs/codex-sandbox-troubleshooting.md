@@ -24,7 +24,9 @@ profile for `sandbox_mode = "workspace-write"` silently ignores the
 policy hard-codes `CODEX_SANDBOX_NETWORK_DISABLED=1`, which blocks DNS/UDP
 syscalls. Go's `net.LookupHost` surfaces that as `no such host`.
 
-Linux (Landlock) is **not** affected — only macOS Seatbelt.
+Linux (Landlock) is **not** affected by this upstream bug — only macOS
+Seatbelt. Linux nevertheless runs `danger-full-access` for a separate,
+deliberate reason; see the decision matrix below.
 
 [codex-10390]: https://github.com/openai/codex/issues/10390
 
@@ -39,9 +41,30 @@ Decision matrix (see [`server/internal/daemon/execenv/codex_sandbox.go`](../serv
 
 | Host OS   | Codex version                                    | Managed block emits                                                       |
 | --------- | ------------------------------------------------ | ------------------------------------------------------------------------- |
-| non-darwin | any                                              | `sandbox_mode = "workspace-write"` + `sandbox_workspace_write.network_access = true` (dotted-key form) |
-| darwin    | ≥ `CodexDarwinNetworkAccessFixedVersion`         | same as above (upstream fix in effect)                                    |
+| windows   | any                                              | `sandbox_mode = "danger-full-access"` — compatibility fallback (MUL-4957)  |
+| linux / other non-darwin | any                               | `sandbox_mode = "danger-full-access"` (MUL-5578)                          |
+| darwin    | ≥ `CodexDarwinNetworkAccessFixedVersion`         | `sandbox_mode = "workspace-write"` + `sandbox_workspace_write.network_access = true` (dotted-key form) |
 | darwin    | older / unknown (current default)                | `sandbox_mode = "danger-full-access"` + warn-level log                     |
+
+Only the two darwin rows are about the Seatbelt bug. The other two are
+independent product decisions:
+
+- **Linux (MUL-5578 / #6218):** tasks run with the daemon user's real `HOME`
+  and full filesystem access. Enforcing `workspace-write` meant redirecting
+  `HOME`/XDG per task and hand-maintaining a credential-path allowlist, which
+  left every un-listed host CLI (`aws`, `kubectl`, `gcloud`, `glab`, `rclone`, …)
+  unconfigured inside tasks. It also bought less than it looked: `workspace-write`
+  restricts *writes* only, so credentials under the real `HOME` stayed readable
+  either way. The task filesystem boundary is therefore the boundary the daemon
+  itself runs inside — a VM, container, or dedicated Unix user.
+- **Windows (MUL-4957):** Codex ships a native Windows sandbox
+  (`windows.sandbox = "unelevated" | "elevated"`) but it is still experimental,
+  so the daemon does not enable it by default. Without it Codex cannot enforce
+  `workspace-write` on Windows — it downgrades to read-only and then rejects
+  non-safe mutation commands "by policy", so e.g. `multica issue create` fails.
+  A user who *has* opted into `windows.sandbox` keeps `workspace-write`, and an
+  undecidable config fails closed; that logic lives in
+  `codexSandboxPolicyForConfig` / `resolveWindowsSandboxState`.
 
 The managed block is always hoisted to the top of `config.toml` and uses
 TOML dotted-key syntax rather than a `[sandbox_workspace_write]` section
@@ -88,9 +111,10 @@ looking at the managed block in `$CODEX_HOME/config.toml`.
   `network_access` fix is available, prefer writing a `permissions.multica`
   profile that allows only `multica-api.copilothub.ai` and
   `multica-static.copilothub.ai`. Keeps filesystem sandbox intact.
-- **B. `danger-full-access`** (current macOS fallback): drops the whole
-  Seatbelt profile. Simplest reliable workaround until the upstream fix is
-  released.
+- **B. `danger-full-access`** (current default on every platform except a
+  fixed-version macOS): drops the whole Seatbelt profile. On macOS this is the
+  simplest reliable workaround until the upstream fix is released; on
+  Linux/Windows it is the deliberate baseline described above.
 - **C. Upgrade Codex CLI**: `brew upgrade codex` or `npm i -g @openai/codex`.
   Once a release containing [openai/codex#10390][codex-10390] is installed,
   bump `CodexDarwinNetworkAccessFixedVersion` in `codex_sandbox.go` and

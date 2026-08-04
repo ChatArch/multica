@@ -1,9 +1,10 @@
 # Multica UI 一致性问题与页面模式层治理
 
-> Status: Draft
-> Owner: TBD
-> Last updated: 2026-07-11
-> Related implementation: [PR #5263](https://github.com/multica-ai/multica/pull/5263)
+> Status: 试点已落地，页面模式层的推广仍在进行
+> Last updated: 2026-08-04
+> Related implementation: [PR #5263](https://github.com/multica-ai/multica/pull/5263)（Agent 详情页重构）、[PR #5258](https://github.com/multica-ai/multica/pull/5258)（统一 Collection page 模式）
+>
+> **§3.2 的状态列是 PR #5263 进行中的快照，未回填。** 该表里标注为「已实现」和「试点中」的条目都已随 #5263 合并；Collection page 部分随 #5258 合并。仍然有效的是 §3.1 的全局问题清单、§4 的页面模式定义、§5 的组件归属原则和 §9 的新页面 review checklist——那几节是这份文档现在的价值所在。
 
 ## TL;DR
 

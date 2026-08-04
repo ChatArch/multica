@@ -1,6 +1,6 @@
 # RNR migration — design, alternatives, and three-phase rollout
 
-**Status**: Phase 0 (research & docs) — complete. Phase 1 (base infrastructure) — not started.
+**Status**: Phase 0 (research & docs) — complete. Phase 1 (base infrastructure) — complete: `global.css` CSS variables, `tailwind.config.js` `darkMode: "class"` + `hsl(var(--))` mappings, `lib/theme.ts`, `lib/use-color-scheme.ts`, `components.json`, `ThemeProvider` + `PortalHost` in `app/_layout.tsx`, and the Settings → Appearance picker are all shipped. Phase 2 (canary component) — not started.
 
 **Audience**: anyone touching `apps/mobile/components/ui/` or adding new UI to the mobile app. Read this once; refer to `apps/mobile/CLAUDE.md` "UI components & theming" for the durable rules.
 
