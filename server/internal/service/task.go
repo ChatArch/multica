@@ -1986,6 +1986,16 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 	// concurrently rather than a stale in-memory copy.
 	var task db.AgentTaskQueue
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		// chat_session -> agent_task_queue is the global lock order (see
+		// LockChatSessionForTask in chat.sql), and adding the pointer write gave
+		// this transaction two rows to hold instead of one. Taking the session
+		// first is what keeps it from deadlocking against DeleteChatSession,
+		// which locks the session and then cascades into agent_task_queue.
+		// ErrNoRows means there is no session to lock — a non-chat task, or one
+		// whose session was already deleted — and nothing to advance later.
+		if _, err := qtx.LockChatSessionForTask(ctx, taskID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock chat session for cancel: %w", err)
+		}
 		cancelled, err := qtx.CancelAgentTask(ctx, taskID)
 		if err != nil {
 			return err

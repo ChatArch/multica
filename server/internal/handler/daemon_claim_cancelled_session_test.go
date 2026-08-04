@@ -2,12 +2,15 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
@@ -504,6 +507,293 @@ func TestPinTaskSession_LateCancelledPinYieldsToNewerTurn(t *testing.T) {
 	if pointer != "turn3-session" {
 		t.Fatalf("chat_session.session_id = %q, want turn3-session (a straggler pin must not rewind a newer turn)", pointer)
 	}
+}
+
+// TestPinTaskSession_PointerAdvanceIsAtomicWithPin is the pin-path mirror of
+// TestCancelTask_PointerAdvanceIsAtomicWithStatusFlip: landing the session on
+// the task row and advancing the chat pointer must be one commit, or a
+// follow-up claimed in between still resumes the previous turn.
+func TestPinTaskSession_PointerAdvanceIsAtomicWithPin(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
+
+	var chatSessionID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO chat_session (
+			workspace_id, agent_id, creator_id, title,
+			session_id, work_dir, runtime_id
+		)
+		VALUES ($1, $2, $3, 'pin atomicity', 'turn1-session', '/tmp/turn1-workdir', $4)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&chatSessionID); err != nil {
+		t.Fatalf("setup: create chat session: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID) })
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, chat_session_id,
+			status, priority, started_at, completed_at
+		)
+		VALUES ($1, $2, $3, 'cancelled', 0, now(), now())
+		RETURNING id
+	`, agentID, runtimeID, chatSessionID).Scan(&taskID); err != nil {
+		t.Fatalf("setup: create cancelled chat task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status, priority)
+		VALUES ($1, $2, $3, 'queued', 0)
+	`, agentID, runtimeID, chatSessionID); err != nil {
+		t.Fatalf("setup: create queued follow-up: %v", err)
+	}
+
+	conn, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire blocking conn: %v", err)
+	}
+	defer conn.Release()
+	blockTx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin blocking tx: %v", err)
+	}
+	if _, err := blockTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
+		t.Fatalf("lock chat session: %v", err)
+	}
+
+	pinDone := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
+			map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
+			testWorkspaceID, daemonID)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("taskId", taskID)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		testHandler.PinTaskSession(w, req)
+		pinDone <- w.Code
+	}()
+
+	// Blocked on the chat row: the task row must not be carrying the new
+	// session yet, or a follow-up could claim the gap and resume turn1.
+	time.Sleep(300 * time.Millisecond)
+	var pinnedSoFar *string
+	if err := testPool.QueryRow(ctx, `SELECT session_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&pinnedSoFar); err != nil {
+		t.Fatalf("read task session: %v", err)
+	}
+	if pinnedSoFar != nil {
+		t.Fatalf("task carried session %q while the pointer advance was still blocked", *pinnedSoFar)
+	}
+
+	if err := blockTx.Rollback(ctx); err != nil {
+		t.Fatalf("release chat session lock: %v", err)
+	}
+	if code := <-pinDone; code != http.StatusNoContent {
+		t.Fatalf("PinTaskSession: expected 204, got %d", code)
+	}
+
+	task := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+	if task.PriorSessionID != "turn2-session" {
+		t.Fatalf("PriorSessionID = %q, want turn2-session", task.PriorSessionID)
+	}
+}
+
+// TestCancelTask_TakesChatSessionLockBeforeTask pins the lock order the repo
+// documents (chat_session -> agent_task_queue, see LockChatSessionForTask).
+// DeleteChatSession locks the session and then cascades into agent_task_queue;
+// a cancel that took the task row first and only then reached for the session
+// deadlocks against it — PostgreSQL aborts one side with 40P01 and runInTx has
+// no deadlock retry.
+//
+// With the session held from another connection, a cancel must be waiting for
+// the SESSION, having taken no lock on the task row yet — which a FOR UPDATE
+// NOWAIT probe can prove.
+func TestCancelTask_TakesChatSessionLockBeforeTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+
+	var chatSessionID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO chat_session (
+			workspace_id, agent_id, creator_id, title,
+			session_id, work_dir, runtime_id
+		)
+		VALUES ($1, $2, $3, 'cancel lock order', 'turn1-session', '/tmp/turn1-workdir', $4)
+		RETURNING id
+	`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&chatSessionID); err != nil {
+		t.Fatalf("setup: create chat session: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID) })
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, chat_session_id,
+			status, priority, started_at, session_id, work_dir
+		)
+		VALUES ($1, $2, $3, 'running', 0, now(), 'turn2-session', '/tmp/turn2-workdir')
+		RETURNING id
+	`, agentID, runtimeID, chatSessionID).Scan(&taskID); err != nil {
+		t.Fatalf("setup: create running chat task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	// Stand in for DeleteChatSession's first statement.
+	deleter, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire deleter conn: %v", err)
+	}
+	defer deleter.Release()
+	deleterTx, err := deleter.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin deleter tx: %v", err)
+	}
+	if _, err := deleterTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, chatSessionID); err != nil {
+		t.Fatalf("lock chat session: %v", err)
+	}
+
+	cancelDone := make(chan error, 1)
+	go func() {
+		_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+			service.CancelTaskOptions{ClientSupportsDraftRestore: true})
+		cancelDone <- err
+	}()
+	time.Sleep(300 * time.Millisecond)
+
+	// The deleter's next step would be cancelling the session's tasks. If the
+	// cancel already holds that row, the two are in a cycle.
+	probe, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire probe conn: %v", err)
+	}
+	defer probe.Release()
+	probeTx, err := probe.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin probe tx: %v", err)
+	}
+	var probed string
+	if err := probeTx.QueryRow(ctx,
+		`SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE NOWAIT`, taskID,
+	).Scan(&probed); err != nil {
+		probeTx.Rollback(ctx)
+		deleterTx.Rollback(ctx)
+		<-cancelDone
+		t.Fatalf("cancel holds the task row while waiting for the chat session — inverted lock order deadlocks against DeleteChatSession: %v", err)
+	}
+	if err := probeTx.Rollback(ctx); err != nil {
+		t.Fatalf("release probe: %v", err)
+	}
+
+	if err := deleterTx.Rollback(ctx); err != nil {
+		t.Fatalf("release chat session lock: %v", err)
+	}
+	if err := <-cancelDone; err != nil {
+		t.Fatalf("cancel task: %v", err)
+	}
+	if got := taskStatus(t, taskID); got != "cancelled" {
+		t.Fatalf("task status = %q, want cancelled", got)
+	}
+}
+
+// TestCancelTask_ConcurrentWithChatSessionDelete runs the two paths against
+// each other for real: whoever wins, neither may come back with a deadlock.
+func TestCancelTask_ConcurrentWithChatSessionDelete(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+
+	for i := 0; i < 12; i++ {
+		var chatSessionID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO chat_session (
+				workspace_id, agent_id, creator_id, title,
+				session_id, work_dir, runtime_id
+			)
+			VALUES ($1, $2, $3, 'cancel vs delete', 'turn1-session', '/tmp/turn1-workdir', $4)
+			RETURNING id
+		`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&chatSessionID); err != nil {
+			t.Fatalf("setup: create chat session: %v", err)
+		}
+
+		var taskID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, runtime_id, chat_session_id,
+				status, priority, started_at, session_id, work_dir
+			)
+			VALUES ($1, $2, $3, 'running', 0, now(), 'turn2-session', '/tmp/turn2-workdir')
+			RETURNING id
+		`, agentID, runtimeID, chatSessionID).Scan(&taskID); err != nil {
+			t.Fatalf("setup: create running chat task: %v", err)
+		}
+
+		start := make(chan struct{})
+		cancelErr := make(chan error, 1)
+		deleteErr := make(chan error, 1)
+		go func() {
+			<-start
+			_, err := testHandler.TaskService.CancelTaskWithResult(context.Background(), parseUUID(taskID),
+				service.CancelTaskOptions{ClientSupportsDraftRestore: true})
+			cancelErr <- err
+		}()
+		go func() {
+			<-start
+			deleteErr <- deleteChatSessionLikeHandler(context.Background(), chatSessionID)
+		}()
+		close(start)
+
+		if err := <-cancelErr; err != nil && isDeadlock(err) {
+			t.Fatalf("iteration %d: cancel deadlocked against chat delete: %v", i, err)
+		}
+		if err := <-deleteErr; err != nil && isDeadlock(err) {
+			t.Fatalf("iteration %d: chat delete deadlocked against cancel: %v", i, err)
+		}
+
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+		testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, chatSessionID)
+	}
+}
+
+// deleteChatSessionLikeHandler replays DeleteChatSession's locking protocol
+// (lock the session, then cascade into agent_task_queue) so the concurrency
+// test exercises the real order without going through HTTP auth.
+func deleteChatSessionLikeHandler(ctx context.Context, chatSessionID string) error {
+	tx, err := testHandler.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := testHandler.Queries.WithTx(tx)
+
+	id := parseUUID(chatSessionID)
+	if _, err := qtx.LockChatSessionForDelete(ctx, id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if _, err := qtx.CancelAgentTasksByChatSession(ctx, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 // pinTaskSessionViaAPI drives the real daemon endpoint so the test covers the
