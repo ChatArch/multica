@@ -82,6 +82,43 @@ const uniqueViolation = "23505"
 // UNIQUE (delivery_key) is the real arbiter: the loser gets a unique violation,
 // rolls back whole, and re-reads the winner's rows.
 func (s *Store) Append(ctx context.Context, p AppendParams) (AppendResult, error) {
+	tx, err := s.Tx.Begin(ctx)
+	if err != nil {
+		return AppendResult{}, fmt.Errorf("inboxv2: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	res, err := s.AppendInTx(ctx, tx, p)
+	if err != nil {
+		return AppendResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AppendResult{}, fmt.Errorf("inboxv2: commit: %w", err)
+	}
+	return res, nil
+}
+
+// AppendInTx records one delivery inside a transaction the caller owns.
+//
+// This is the form the dual write uses: the legacy inbox_item insert and the v2
+// event must commit or roll back together, so the v2 half cannot open its own
+// transaction. A caller that has already written the legacy row simply passes
+// its tx here and commits once.
+//
+// The append itself is unchanged — probe by delivery key, lock (or create) the
+// group, allocate event_seq as latest_seq+1 under that lock, insert, advance —
+// but the surrounding transaction is now the caller's, which changes one thing
+// materially: a unique violation would abort the WHOLE transaction, taking the
+// caller's legacy insert with it. Since a duplicate delivery is expected and
+// benign, the insert runs inside a savepoint (pgx implements a nested Begin as
+// one). A conflict rolls back to the savepoint, leaves the outer transaction
+// healthy, and is reported as a deduplicated result.
+//
+// Note that the group row lock is now held until the caller commits rather than
+// until the append finishes. Groups are per (recipient, source), so two writers
+// only contend when the same person gets two notifications about the same issue
+// at the same instant.
+func (s *Store) AppendInTx(ctx context.Context, tx pgx.Tx, p AppendParams) (AppendResult, error) {
 	if err := ValidateTarget(p.Type, p.TargetKind, p.TargetID.Valid); err != nil {
 		return AppendResult{}, err
 	}
@@ -89,47 +126,47 @@ func (s *Store) Append(ctx context.Context, p AppendParams) (AppendResult, error
 		return AppendResult{}, errors.New("inboxv2: delivery key required")
 	}
 
-	res, err := s.appendOnce(ctx, p)
-	if err == nil {
-		return res, nil
-	}
-
-	// The concurrent-insert path: another transaction won the delivery key.
-	// Re-read and return its rows, so both callers see the same event and
-	// neither emits a duplicate notification.
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-		return s.loadExisting(ctx, p)
-	}
-	return AppendResult{}, err
-}
-
-func (s *Store) appendOnce(ctx context.Context, p AppendParams) (AppendResult, error) {
-	tx, err := s.Tx.Begin(ctx)
-	if err != nil {
-		return AppendResult{}, fmt.Errorf("inboxv2: begin: %w", err)
-	}
-	defer tx.Rollback(ctx)
 	q := s.Queries.WithTx(tx)
-
 	now := pgtype.Timestamptz{Time: p.Now, Valid: true}
 
+	// Fast path: this delivery was already recorded.
 	if existing, err := q.FindInboxEventByDeliveryKey(ctx, p.DeliveryKey); err == nil {
-		group, err := q.GetInboxGroupForRecipient(ctx, db.GetInboxGroupForRecipientParams{
-			ID:          existing.GroupID,
-			WorkspaceID: p.WorkspaceID,
-			RecipientID: p.RecipientID,
-		})
-		if err != nil {
-			return AppendResult{}, fmt.Errorf("inboxv2: load group for deduplicated event: %w", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return AppendResult{}, fmt.Errorf("inboxv2: commit: %w", err)
-		}
-		return AppendResult{Event: existing, Group: group, Deduplicated: true}, nil
+		return s.dedupResult(ctx, q, existing, p)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return AppendResult{}, fmt.Errorf("inboxv2: delivery key probe: %w", err)
 	}
+
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return AppendResult{}, fmt.Errorf("inboxv2: savepoint: %w", err)
+	}
+	res, err := s.appendWithin(ctx, sp, p, now)
+	if err != nil {
+		// Roll back only the v2 attempt. The caller's transaction — and the
+		// legacy row it already wrote — survive.
+		_ = sp.Rollback(ctx)
+
+		// The probe above can miss when a concurrent transaction commits
+		// between it and the insert. The unique constraint is the real
+		// arbiter; re-read the winner's rows and report a duplicate.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+			existing, ferr := q.FindInboxEventByDeliveryKey(ctx, p.DeliveryKey)
+			if ferr != nil {
+				return AppendResult{}, fmt.Errorf("inboxv2: reload after conflict: %w", ferr)
+			}
+			return s.dedupResult(ctx, q, existing, p)
+		}
+		return AppendResult{}, err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return AppendResult{}, fmt.Errorf("inboxv2: release savepoint: %w", err)
+	}
+	return res, nil
+}
+
+func (s *Store) appendWithin(ctx context.Context, sp pgx.Tx, p AppendParams, now pgtype.Timestamptz) (AppendResult, error) {
+	q := s.Queries.WithTx(sp)
 
 	group, err := q.AcquireInboxGroup(ctx, db.AcquireInboxGroupParams{
 		WorkspaceID: p.WorkspaceID,
@@ -179,28 +216,19 @@ func (s *Store) appendOnce(ctx context.Context, p AppendParams) (AppendResult, e
 	if err != nil {
 		return AppendResult{}, fmt.Errorf("inboxv2: advance group: %w", err)
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return AppendResult{}, fmt.Errorf("inboxv2: commit: %w", err)
-	}
 	return AppendResult{Event: event, Group: group}, nil
 }
 
-// loadExisting re-reads the rows a concurrent winner created.
-func (s *Store) loadExisting(ctx context.Context, p AppendParams) (AppendResult, error) {
-	event, err := s.Queries.FindInboxEventByDeliveryKey(ctx, p.DeliveryKey)
-	if err != nil {
-		return AppendResult{}, fmt.Errorf("inboxv2: reload after conflict: %w", err)
-	}
-	group, err := s.Queries.GetInboxGroupForRecipient(ctx, db.GetInboxGroupForRecipientParams{
-		ID:          event.GroupID,
+func (s *Store) dedupResult(ctx context.Context, q *db.Queries, existing db.InboxEvent, p AppendParams) (AppendResult, error) {
+	group, err := q.GetInboxGroupForRecipient(ctx, db.GetInboxGroupForRecipientParams{
+		ID:          existing.GroupID,
 		WorkspaceID: p.WorkspaceID,
 		RecipientID: p.RecipientID,
 	})
 	if err != nil {
-		return AppendResult{}, fmt.Errorf("inboxv2: reload group after conflict: %w", err)
+		return AppendResult{}, fmt.Errorf("inboxv2: load group for deduplicated event: %w", err)
 	}
-	return AppendResult{Event: event, Group: group, Deduplicated: true}, nil
+	return AppendResult{Event: existing, Group: group, Deduplicated: true}, nil
 }
 
 func textOrNull(s string) pgtype.Text {

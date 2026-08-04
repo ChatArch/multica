@@ -2,11 +2,11 @@ package inboxv2
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -51,11 +51,12 @@ type Delivery struct {
 
 // Recorder performs the v2 half of a dual write.
 //
-// Every method is best-effort by design: the legacy inbox_item write is still
-// the source of truth while the switch is being rolled out, so a v2 failure
-// must never turn a delivered notification into a dropped one. Failures are
-// logged with enough context to be found and replayed later by the backfill,
-// which is idempotent on delivery_key.
+// The write is transactional, not best-effort: RecordInTx joins the caller's
+// transaction so the legacy inbox_item row and the v2 group/event commit or
+// roll back together. An earlier draft of this type swallowed v2 failures and
+// left the backfill to repair them, which is the shape v2.1 §9 rules out — it
+// produces windows where the two tables disagree, and "the backfill will fix
+// it" is not a property anyone can verify at the time of the write.
 type Recorder struct {
 	store   *Store
 	enabled func() bool
@@ -76,25 +77,23 @@ func (r *Recorder) Enabled() bool {
 	return r != nil && r.store != nil && r.enabled != nil && r.enabled()
 }
 
-// Record writes one event + group upsert. It returns nothing: no caller may
-// branch on the outcome, because doing so would let the v2 path change legacy
-// behaviour while the switch is supposed to be invisible.
-func (r *Recorder) Record(ctx context.Context, workspaceID, recipientID string, d Delivery, now time.Time) {
+// RecordInTx writes the v2 group/event inside the caller's transaction.
+//
+// It returns an error, and the caller MUST roll back on one. That is the whole
+// contract: a producer that writes inbox_item and then ignores a v2 failure has
+// silently created the divergence the dual write exists to prevent.
+//
+// With the switch off it returns nil without touching the transaction, so a
+// producer's code path is identical either way and the switch alone decides
+// whether v2 is written.
+func (r *Recorder) RecordInTx(ctx context.Context, tx pgx.Tx, workspaceID, recipientID string, d Delivery, now time.Time) error {
 	if !r.Enabled() {
-		return
+		return nil
 	}
-	if err := r.record(ctx, workspaceID, recipientID, d, now); err != nil {
-		// Warn, not Error: the user still got their notification through the
-		// legacy row. This is rollout telemetry, not an incident.
-		slog.Warn("inbox v2 dual write failed",
-			"type", string(d.Type),
-			"workspace_id", workspaceID,
-			"recipient_id", recipientID,
-			"error", err)
-	}
+	return r.record(ctx, tx, workspaceID, recipientID, d, now)
 }
 
-func (r *Recorder) record(ctx context.Context, workspaceID, recipientID string, d Delivery, now time.Time) error {
+func (r *Recorder) record(ctx context.Context, tx pgx.Tx, workspaceID, recipientID string, d Delivery, now time.Time) error {
 	key, err := DeliveryKey(workspaceID, recipientID, d.Type, d.Identity)
 	if err != nil {
 		return err
@@ -135,7 +134,7 @@ func (r *Recorder) record(ctx context.Context, workspaceID, recipientID string, 
 		}
 	}
 
-	_, err = r.store.Append(ctx, AppendParams{
+	_, err = r.store.AppendInTx(ctx, tx, AppendParams{
 		WorkspaceID: wsID,
 		RecipientID: rcptID,
 		SourceKind:  sourceKind,
