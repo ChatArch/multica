@@ -634,8 +634,8 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 		// Track who already got notified to avoid duplicates
 		skip := map[string]bool{e.ActorID: true}
 
-		// Direct notification to assignee
-		if issue.AssigneeType != nil && issue.AssigneeID != nil {
+		// Direct notification to assignees that own an inbox.
+		if issue.AssigneeType != nil && issue.AssigneeID != nil && isAssignmentRecipientType(*issue.AssigneeType) {
 			skip[*issue.AssigneeID] = true
 			notifyDirect(ctx, queries, bus,
 				*issue.AssigneeType, *issue.AssigneeID,
@@ -697,8 +697,8 @@ func registerNotificationListeners(bus *events.Bus, queries *db.Queries) {
 			}
 			assigneeDetails, _ := json.Marshal(detailsMap)
 
-			// Direct: notify new assignee about assignment
-			if issue.AssigneeType != nil && issue.AssigneeID != nil {
+			// Direct: notify new assignee about assignment when it owns an inbox.
+			if issue.AssigneeType != nil && issue.AssigneeID != nil && isAssignmentRecipientType(*issue.AssigneeType) {
 				notifyDirect(ctx, queries, bus,
 					*issue.AssigneeType, *issue.AssigneeID,
 					e.WorkspaceID, e, issue.ID, issue.Status,
