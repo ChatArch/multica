@@ -2965,6 +2965,10 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 	}
 	codexGracefulShutdownTimeoutNanos.Store(int64(100 * time.Millisecond))
 	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+	// The helper budget owns the complete subtest, including a possible
+	// two-attempt retry chain, while ExecOptions.Timeout applies per attempt.
+	// Keep the helper deadline away from race-instrumented subprocess jitter.
+	const firstItemWaitTestBudget = 20 * time.Second
 
 	t.Run("successful progress emits a latency sample", func(t *testing.T) {
 		fakePath := writeFakeCodexAppServer(t, ""+
@@ -2989,8 +2993,8 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 			CodexVersion:  "codex-test",
 		}, ExecOptions{
 			Timeout:                   5 * time.Second,
-			SemanticInactivityTimeout: 250 * time.Millisecond,
-		}, 5*time.Second)
+			SemanticInactivityTimeout: 5 * time.Second,
+		}, firstItemWaitTestBudget)
 		if result.Status != "completed" {
 			t.Fatalf("expected completed, got %+v", result)
 		}
@@ -3005,8 +3009,8 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 			"thread_id":                   "thr-first-item-ok",
 			"turn_id":                     "turn-first-item-ok",
 			"outcome":                     "progress",
-			"timeout":                     "200ms",
-			"semantic_inactivity_timeout": "250ms",
+			"timeout":                     "4s",
+			"semantic_inactivity_timeout": "5s",
 			"codex_version":               "codex-test",
 			"daemon_version":              "daemon-test",
 			"cleanup_confirmed":           true,
@@ -3046,11 +3050,6 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 			`sleep 2`+"\n")
 
 		var logs bytes.Buffer
-		// The helper budget owns the whole two-attempt retry chain, while
-		// ExecOptions.Timeout applies to each attempt. Leave enough headroom for
-		// race instrumentation and the retry backoff instead of racing the result
-		// channel against the helper's deadline.
-		const retryChainBudget = 20 * time.Second
 		result, _ := executeFakeCodexCollectingMessagesWithConfig(t, fakePath, Config{
 			Logger:        slog.New(slog.NewJSONHandler(&logs, nil)),
 			TaskID:        "task-first-item-timeout",
@@ -3060,7 +3059,7 @@ func TestCodexExecuteFirstItemWaitLifecycle(t *testing.T) {
 		}, ExecOptions{
 			Timeout:                   5 * time.Second,
 			SemanticInactivityTimeout: 100 * time.Millisecond,
-		}, retryChainBudget)
+		}, firstItemWaitTestBudget)
 		if result.Status != "timeout" {
 			t.Fatalf("expected timeout after the bounded retry, got %+v", result)
 		}
