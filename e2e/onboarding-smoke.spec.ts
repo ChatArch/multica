@@ -118,7 +118,7 @@ test("onboarding — zh-Hans renders Chinese labels", async ({ page, context, ba
 
   // About-you screen — Chinese headline + both sub-questions.
   await expect(page.getByText("简单介绍一下你自己。")).toBeVisible({ timeout: 10000 });
-  await expect(page.getByText("你是什么角色？")).toBeVisible();
+  await expect(page.getByText("哪一项最符合你？")).toBeVisible();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${SHOTS_DIR}/05-about-you-zh.png` });
 });

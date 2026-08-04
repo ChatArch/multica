@@ -78,7 +78,7 @@
     "row_stop_aria": "停止当前运行",
     "stop_action": "停止",
     "row_subtitle": {
-      "working": "运行中",
+      "working": "处理中",
       "completed": "已完成",
       "new_reply": "新回复"
     },

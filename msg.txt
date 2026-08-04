@@ -1,0 +1,29 @@
+i18n(zh): retranslate onboarding and fix cross-file inconsistencies
+
+Reported as "生硬" on the onboarding Chinese. Reviewed all 217 onboarding
+strings against the Chinese voice guide in conventions.mdx, then swept the
+other 24 locale files for the same classes of problem.
+
+Three were mistranslations, not stiffness. The worst: an agent runtime was
+described as the AI coding tool "我们接管的" — take over — where the English
+says "we connect to". Also a "推荐" that exists in no source string, and
+"12 calls" (user interviews) rendered as "12 通电话".
+
+Punctuation, decided from the repo's own zh docs rather than guessed:
+「」 is forbidden by the guide and appeared 16 times; 破折号 spacing was
+split 26 spaced vs the rest unspaced, and the docs run 152 unspaced to 35,
+so unspaced wins. Four strings had a stray space inside Chinese text
+("正在跳转到 工作区").
+
+67 English strings had two or more Chinese translations. Most are
+legitimate — weekday pickers use single characters where labels spell them
+out, 飞书/Lark are deliberate regional variants, and "Name" is 姓名 for a
+person and 名称 for an object. 42 were arbitrary and are now unified.
+
+ja/ko got the same consistency pass on the clear-cut cases only, kept
+parallel with the zh choices. Their punctuation was deliberately left alone:
+「」 is standard Japanese quoting, so the zh rule does not transfer.
+
+Edits are applied to the raw file text rather than through a JSON
+round-trip, which reformatted compact one-line objects and turned ~20 real
+edits into a 97-line diff.
