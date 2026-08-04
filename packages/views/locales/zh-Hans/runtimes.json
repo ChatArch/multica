@@ -287,7 +287,10 @@
     "pending_health_warning": "等待守护进程同步",
     "pending_health_error": "注册错误",
     "pending_health_disabled": "已禁用",
-    "pending_cli_unknown": "等待中"
+    "pending_cli_unknown": "等待中",
+    "managed_health_installing": "正在安装...",
+    "managed_health_ready": "已就绪，正在等待守护进程",
+    "managed_health_failed": "安装失败"
   },
   "profiles": {
     "cta": "添加运行时",

@@ -11,6 +11,16 @@ export type DaemonState =
   // this, an auth failure silently sticks at "starting" forever — see #3512.
   | "auth_expired";
 
+export type ManagedRuntimeSetupPhase = "installing" | "ready" | "failed";
+
+export interface ManagedRuntimeSetupStatus {
+  provider: string;
+  phase: ManagedRuntimeSetupPhase;
+  startedAt: string;
+  version?: string;
+  source?: "user" | "managed";
+}
+
 export interface DaemonStatus {
   state: DaemonState;
   pid?: number;
@@ -33,6 +43,8 @@ export interface DaemonStatus {
    * never disables the toggles for a normally-managed native daemon. See #3916.
    */
   externallyManaged?: boolean;
+  /** Local-only setup state for a Desktop-managed agent runtime. */
+  managedRuntimeSetup?: ManagedRuntimeSetupStatus;
 }
 
 export interface DaemonPrefs {

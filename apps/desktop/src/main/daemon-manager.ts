@@ -20,6 +20,7 @@ import type {
   DaemonStatus,
   DaemonPrefs,
   LocalRuntimeProbe,
+  ManagedRuntimeSetupStatus,
 } from "../shared/daemon-types";
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
@@ -76,6 +77,7 @@ let cachedCliBinaryVersion: string | null | undefined = undefined;
 let pendingVersionRestart = false;
 let targetApiBaseUrl: string | null = null;
 let activeProfile: ActiveProfile | null = null;
+let managedRuntimeSetup: ManagedRuntimeSetupStatus | null = null;
 
 // Auth-probe state for the current start attempt. When a start fails to reach
 // "running", we probe the daemon's token once (after AUTH_PROBE_GRACE_MS) to
@@ -166,7 +168,18 @@ function urlsMatch(a: string, b: string): boolean {
 
 function sendStatus(status: DaemonStatus): void {
   const win = getMainWindow();
-  win?.webContents.send("daemon:status", status);
+  win?.webContents.send("daemon:status", withManagedRuntimeSetup(status));
+}
+
+function withManagedRuntimeSetup(status: DaemonStatus): DaemonStatus {
+  return managedRuntimeSetup
+    ? { ...status, managedRuntimeSetup }
+    : status;
+}
+
+function setManagedRuntimeSetup(status: ManagedRuntimeSetupStatus): void {
+  managedRuntimeSetup = status;
+  sendStatus({ state: currentState });
 }
 
 interface HealthPayload {
@@ -571,6 +584,9 @@ async function ensureManagedRuntime(
   const inFlight = managedRuntimeInstallPromises.get(provider);
   if (inFlight) return inFlight;
 
+  const startedAt = new Date().toISOString();
+  setManagedRuntimeSetup({ provider, phase: "installing", startedAt });
+
   const install = new Promise<void>((resolve, reject) => {
     execFile(
       bin,
@@ -587,6 +603,13 @@ async function ensureManagedRuntime(
         }
         try {
           const result = parseManagedRuntimeInstallResult(stdout, provider);
+          setManagedRuntimeSetup({
+            provider,
+            phase: "ready",
+            startedAt,
+            version: result.version,
+            source: result.source,
+          });
           console.log(
             `[daemon] ${provider} runtime ready at ${result.path} (${result.source}${result.installed ? ", installed" : ""})`,
           );
@@ -600,6 +623,9 @@ async function ensureManagedRuntime(
   managedRuntimeInstallPromises.set(provider, install);
   try {
     await install;
+  } catch (err) {
+    setManagedRuntimeSetup({ provider, phase: "failed", startedAt });
+    throw err;
   } finally {
     managedRuntimeInstallPromises.delete(provider);
   }
@@ -1229,7 +1255,9 @@ export function setupDaemonManager(
   ipcMain.handle("daemon:start", () => withGuard(() => startDaemon()));
   ipcMain.handle("daemon:stop", () => withGuard(() => stopDaemon()));
   ipcMain.handle("daemon:restart", () => withGuard(() => restartDaemon()));
-  ipcMain.handle("daemon:get-status", () => fetchHealth());
+  ipcMain.handle("daemon:get-status", async () =>
+    withManagedRuntimeSetup(await fetchHealth()),
+  );
   ipcMain.handle("daemon:probe-runtimes", () => probeLocalRuntimes());
   // The host's OS name, available regardless of daemon state. The Runtimes
   // page uses it as a fallback identity for "this machine" when no

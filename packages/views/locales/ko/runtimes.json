@@ -287,7 +287,10 @@
     "pending_health_warning": "Daemon 동기화 대기 중",
     "pending_health_error": "등록 오류",
     "pending_health_disabled": "비활성화됨",
-    "pending_cli_unknown": "대기 중"
+    "pending_cli_unknown": "대기 중",
+    "managed_health_installing": "설치 중...",
+    "managed_health_ready": "준비됨 · 데몬 대기 중",
+    "managed_health_failed": "설치 실패"
   },
   "profiles": {
     "cta": "런타임 추가",

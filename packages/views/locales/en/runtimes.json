@@ -299,7 +299,10 @@
     "pending_health_warning": "Waiting for daemon sync",
     "pending_health_error": "Registration error",
     "pending_health_disabled": "Disabled",
-    "pending_cli_unknown": "waiting"
+    "pending_cli_unknown": "waiting",
+    "managed_health_installing": "Installing...",
+    "managed_health_ready": "Ready · waiting for daemon",
+    "managed_health_failed": "Installation failed"
   },
   "profiles": {
     "cta": "Add runtime",

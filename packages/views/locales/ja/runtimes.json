@@ -287,7 +287,10 @@
     "pending_health_warning": "Daemon 同期待ち",
     "pending_health_error": "登録エラー",
     "pending_health_disabled": "無効",
-    "pending_cli_unknown": "待機中"
+    "pending_cli_unknown": "待機中",
+    "managed_health_installing": "インストール中...",
+    "managed_health_ready": "準備完了 · デーモンを待機中",
+    "managed_health_failed": "インストールに失敗しました"
   },
   "profiles": {
     "cta": "ランタイムを追加",
