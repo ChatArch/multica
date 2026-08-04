@@ -19,10 +19,12 @@ Multica is an AI-native task management platform for small teams, with agents as
 - `apps/web/`: Next.js App Router.
 - `apps/desktop/`: Electron desktop app.
 - `apps/mobile/`: Expo / React Native iOS app. Read `apps/mobile/CLAUDE.md` before touching it.
+- `apps/docs/`: Fumadocs documentation site.
 - `packages/core/`: headless business logic, API client, React Query hooks, Zustand stores.
 - `packages/ui/`: atomic UI components only.
 - `packages/views/`: shared business pages/components for web and desktop.
 - `packages/tsconfig/`: shared TypeScript config.
+- `packages/eslint-config/`: shared ESLint config.
 
 Shared packages export raw `.ts` / `.tsx` and are compiled by consuming apps. Dependency direction is `views -> core + ui`; `core` and `ui` must stay independent.
 
