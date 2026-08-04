@@ -52,7 +52,7 @@ func TestSquadAssigneeListenersSkipUnsupportedRecipientWrites(t *testing.T) {
 	queries := db.New(testPool)
 	bus := events.New()
 	registerSubscriberListeners(bus, testPool)
-	registerNotificationListeners(bus, queries)
+	registerNotificationListeners(bus, testPool, queries)
 
 	squadID := createAssignmentListenerTestSquad(t)
 	issueID := createTestIssue(t, testWorkspaceID, testUserID)

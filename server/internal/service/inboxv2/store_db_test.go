@@ -203,7 +203,7 @@ func TestDatabaseRejectsTargetContractViolations(t *testing.T) {
 		targetID   pgtype.UUID
 	}{
 		{"comment notification without a comment", TypeNewComment, pgtype.Text{}, pgtype.UUID{}},
-		{"mention without a comment", TypeMentioned, pgtype.Text{}, pgtype.UUID{}},
+		{"mention pointing at a run", TypeMentioned, pgtype.Text{String: "run", Valid: true}, newUUID()},
 		{"status change carrying a target", TypeStatusChanged, pgtype.Text{String: "comment", Valid: true}, newUUID()},
 		{"assignment carrying a target", TypeIssueAssigned, pgtype.Text{String: "comment", Valid: true}, newUUID()},
 		{"kind without id", TypeTaskFailed, pgtype.Text{String: "run", Valid: true}, pgtype.UUID{}},
@@ -851,6 +851,12 @@ func TestFrozenProducerTargetContract(t *testing.T) {
 		{"reaction on a comment", TypeReactionAdded, "comment", true, true},
 		{"reaction on the issue itself", TypeReactionAdded, "", false, true},
 		{"reaction pointing at a run", TypeReactionAdded, "run", true, false},
+
+		// mentioned covers both anchors too: a comment body, or the issue
+		// description (issue:created / issue:updated pass no comment).
+		{"mention in a comment", TypeMentioned, "comment", true, true},
+		{"mention in the issue description", TypeMentioned, "", false, true},
+		{"mention pointing at a run", TypeMentioned, "run", true, false},
 
 		// Agent/task outcomes with a verified producer: run target required.
 		{"task_failed with its run", TypeTaskFailed, "run", true, true},

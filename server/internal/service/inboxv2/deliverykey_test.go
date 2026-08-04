@@ -119,6 +119,33 @@ func TestStandaloneSourceIDIsDerivedFromDeliveryKey(t *testing.T) {
 	}
 }
 
+// A mention has two anchors, so its identity has two shapes. Both must be
+// stable across a retry, and they must not collide with each other.
+func TestMentionIdentityCoversBothAnchors(t *testing.T) {
+	fromComment, err := DeliveryKey(wsA, userA, TypeMentioned, IdentityInput{CommentID: cmtA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromDescription, err := DeliveryKey(wsA, userA, TypeMentioned, IdentityInput{
+		IssueID: cmtA, ChangeID: "2026-08-04T07:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromComment == fromDescription {
+		t.Fatal("a comment mention and a description mention must not share a key")
+	}
+	again, _ := DeliveryKey(wsA, userA, TypeMentioned, IdentityInput{
+		IssueID: cmtA, ChangeID: "2026-08-04T07:00:00Z",
+	})
+	if again != fromDescription {
+		t.Fatal("a retried description mention must recompute the same key")
+	}
+	if _, err := DeliveryKey(wsA, userA, TypeMentioned, IdentityInput{IssueID: cmtA}); err == nil {
+		t.Fatal("a description mention with no change id must be rejected")
+	}
+}
+
 func TestValidateTarget(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -128,6 +155,9 @@ func TestValidateTarget(t *testing.T) {
 		wantErr bool
 	}{
 		{"comment type with comment target", TypeNewComment, TargetComment, true, false},
+		{"mention in a comment", TypeMentioned, TargetComment, true, false},
+		{"mention in the issue description", TypeMentioned, "", false, false},
+		{"mention pointing at a run", TypeMentioned, TargetRun, true, true},
 		{"comment type without target", TypeNewComment, "", false, true},
 		{"comment type with wrong kind", TypeNewComment, TargetRun, true, true},
 		{"status change without target", TypeStatusChanged, "", false, false},

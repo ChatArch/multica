@@ -35,9 +35,21 @@ type EntityIdentity struct {
 // the caller and returns the ordered parts. A type absent from this map has no
 // producer-stable identity and must supply one explicitly.
 var identityFor = map[EventType]func(in IdentityInput) (EntityIdentity, error){
-	// Comment-bearing types are identified by the comment they point at.
+	// A new comment is identified by the comment itself.
 	TypeNewComment: byComment,
-	TypeMentioned:  byComment,
+
+	// A mention is identified by the comment it appears in, or — for a mention
+	// added to the issue description — by that edit of the description. Both
+	// anchors are stable across retries, which is all the key needs.
+	TypeMentioned: func(in IdentityInput) (EntityIdentity, error) {
+		if in.CommentID != "" {
+			return EntityIdentity{Parts: []string{in.CommentID}}, nil
+		}
+		if in.IssueID == "" || in.ChangeID == "" {
+			return EntityIdentity{}, fmt.Errorf("inboxv2: mentioned needs a comment, or an issue plus the change id")
+		}
+		return EntityIdentity{Parts: []string{in.IssueID, "description", in.ChangeID}}, nil
+	},
 	// A reaction is not identified by its comment alone: the same comment can
 	// collect many reactions, and each is a separate notification. Reactions on
 	// the issue itself have no comment, so the issue stands in for it — see the

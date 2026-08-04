@@ -778,7 +778,7 @@ func (s *AutopilotService) notifyAutopilotSubscribersOnCreate(
 		if sub.UserType != "member" {
 			continue
 		}
-		item, err := s.Queries.CreateInboxItem(ctx, db.CreateInboxItemParams{
+		item, err := inboxWriter(s.TxStarter, s.Queries).CreateInboxItem(ctx, db.CreateInboxItemParams{
 			WorkspaceID:   ap.WorkspaceID,
 			RecipientType: "member",
 			RecipientID:   sub.UserID,
@@ -790,7 +790,7 @@ func (s *AutopilotService) notifyAutopilotSubscribersOnCreate(
 			ActorType:     pgtype.Text{String: "agent", Valid: true},
 			ActorID:       leaderID,
 			Details:       details,
-		})
+		}, issueSubscribedDelivery(issue, util.UUIDToString(leaderID)))
 		if err != nil {
 			slog.Error("autopilot subscriber inbox write failed",
 				"autopilot_id", util.UUIDToString(ap.ID),

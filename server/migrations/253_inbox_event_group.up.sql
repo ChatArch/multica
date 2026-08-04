@@ -100,14 +100,15 @@ CREATE TABLE IF NOT EXISTS inbox_event (
     -- exact row this constraint exists to stop — a comment notification with no
     -- comment.
     --
-    -- reaction_added is deliberately NOT in this list. The same type string is
-    -- emitted for reactions on a comment and reactions on the issue itself
-    -- (cmd/server/notification_listeners.go, issue_reaction:added), and the
-    -- issue case genuinely has no comment. Splitting it into two types would
-    -- change a string every client already renders, so the contract is instead
-    -- "a comment if there is one" — enforced by the kind restriction below.
+    -- reaction_added and mentioned are deliberately NOT in this list. Both type
+    -- strings cover two anchors: a reaction lands on a comment or on the issue
+    -- itself (issue_reaction:added), and a mention comes from a comment body or
+    -- from the issue description (issue:created / issue:updated). The
+    -- issue-anchored case genuinely has no comment. Splitting either into two
+    -- types would change a string every client already renders, so the contract
+    -- is "a comment if there is one" — enforced by the kind restriction below.
     CONSTRAINT inbox_event_comment_target CHECK (
-        type NOT IN ('new_comment', 'mentioned')
+        type <> 'new_comment'
         OR target_kind IS NOT DISTINCT FROM 'comment'
     ),
 
@@ -131,7 +132,8 @@ CREATE TABLE IF NOT EXISTS inbox_event (
     -- this a reaction could point at a run and still satisfy every constraint
     -- above.
     CONSTRAINT inbox_event_optional_target_kind CHECK (
-        type <> 'reaction_added' OR target_kind IS NULL OR target_kind = 'comment'
+        type NOT IN ('reaction_added', 'mentioned')
+        OR target_kind IS NULL OR target_kind = 'comment'
     ),
     CONSTRAINT inbox_event_agent_optional_target_kind CHECK (
         type NOT IN ('task_completed', 'agent_blocked', 'agent_completed')

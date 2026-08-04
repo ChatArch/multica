@@ -94,13 +94,14 @@ var EventTypes = map[EventType]EventTypeSpec{
 
 	// Comment-bearing: the entire point is "open this comment".
 	TypeNewComment: {Rule: TargetRequired, Kind: TargetComment},
-	TypeMentioned:  {Rule: TargetRequired, Kind: TargetComment},
 
-	// reaction_added is optional rather than required because the same type
-	// string covers reactions on a comment AND reactions on the issue itself
-	// (cmd/server/notification_listeners.go, issue_reaction:added), and the
-	// issue case has no comment to point at. Requiring one would make every
-	// issue reaction fail the database CHECK at delivery time.
+	// mentioned and reaction_added are optional rather than required because
+	// each type string covers two anchors. A mention comes from a comment body
+	// or from the issue description (issue:created / issue:updated pass no
+	// comment); a reaction lands on a comment or on the issue itself
+	// (issue_reaction:added). The issue-anchored case has no comment to point
+	// at, so requiring one would make those deliveries fail the database CHECK.
+	TypeMentioned:     {Rule: TargetOptional, Kind: TargetComment},
 	TypeReactionAdded: {Rule: TargetOptional, Kind: TargetComment},
 
 	// Agent/task outcomes whose producers all have the originating task id in
