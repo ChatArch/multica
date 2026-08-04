@@ -107,7 +107,16 @@ describe("inbox list schema", () => {
     expect(parsed.data.length).toBe(legacyProjectionGolden.length);
 
     // The row that used to carry numbers. Every value must now be a string.
-    const paused = parsed.data.find((r) => r.type === "autopilot_paused");
+    //
+    // Compared as a widened string on purpose: "autopilot_paused" is emitted by
+    // the server (server/cmd/server/autopilot_failure_monitor.go) but is missing
+    // from the shared InboxItemType union, so narrowing here would be a type
+    // error. That gap is real — the label map falls back to showing the raw type
+    // — but fixing it means touching the union plus every locale's label, which
+    // does not belong in this refactor.
+    const paused = parsed.data.find(
+      (r) => (r.type as string) === "autopilot_paused",
+    );
     expect(paused).toBeDefined();
     for (const [key, value] of Object.entries(paused?.details ?? {})) {
       expect(typeof value, `details.${key}`).toBe("string");
