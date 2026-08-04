@@ -31,9 +31,9 @@ export const HELPER_STARTER_PROMPTS: Record<StarterCardId, StarterPrompt> = {
     },
     prompt: {
       en: "Introduce Multica to me in 1–2 paragraphs. Cover what it is, the core concepts (workspace / issue / agent / runtime), and how it differs from tools like Linear or Jira.",
-      zh: "用 1-2 段话简单介绍 Multica 给我。讲清楚它是什么、核心概念有哪些(workspace / issue / agent / runtime)、和 Linear / Jira 之类的工具核心区别在哪。",
-      ko: "Multica를 1-2문단으로 간단히 소개해 주세요. 무엇인지, 핵심 개념(workspace / issue / agent / runtime)이 무엇인지, Linear나 Jira 같은 도구와 핵심적으로 어떻게 다른지 설명해 주세요.",
-      ja: "Multica を1〜2段落で簡単に紹介してください。何であるか、中心となる概念(workspace / issue / agent / runtime)、そして Linear や Jira のようなツールと根本的にどう違うのかを説明してください。",
+      zh: "用 1-2 段话简单介绍 Multica 给我。讲清楚它是什么、核心概念有哪些(workspace / 任务 / agent / runtime)、和 Linear / Jira 之类的工具核心区别在哪。",
+      ko: "Multica를 1-2문단으로 간단히 소개해 주세요. 무엇인지, 핵심 개념(workspace / 태스크 / agent / runtime)이 무엇인지, Linear나 Jira 같은 도구와 핵심적으로 어떻게 다른지 설명해 주세요.",
+      ja: "Multica を1〜2段落で簡単に紹介してください。何であるか、中心となる概念(workspace / タスク / agent / runtime)、そして Linear や Jira のようなツールと根本的にどう違うのかを説明してください。",
     },
   },
   tour: {
@@ -90,7 +90,7 @@ When done, also reply with a one-sentence summary of which scenarios you picked 
 - 一个自包含 .html,CSS / JS 全部 inline。零依赖、不用打包、不引外部图片(视觉用纯 CSS 生成 —— 渐变、几何形状、内联 SVG)。
 - 5-8 张 slide:
   1. 标题页 —— "Multica 能为 [我的角色] 做什么"
-  2. 四个核心概念 —— workspace / issue / agent / runtime,一张
+  2. 四个核心概念 —— workspace / 任务 / agent / runtime,一张
   3-6. 3-4 个针对我使用场景的具体例子,形如"当你想做 X → Multica 是这样处理的"
   7. 收尾页 —— 一个具体的下一步动作
 
@@ -116,7 +116,7 @@ When done, also reply with a one-sentence summary of which scenarios you picked 
 - 하나의 self-contained .html 파일. CSS / JS는 모두 inline. 의존성, 빌드 도구, 외부 이미지는 쓰지 마세요(시각 요소는 CSS로 생성한 gradient, geometric shape, inline SVG를 사용).
 - 전체 5-8장:
   1. 제목 — "[내 역할]에게 Multica가 해줄 수 있는 일"
-  2. 네 가지 핵심 개념 — workspace / issue / agent / runtime, 한 장
+  2. 네 가지 핵심 개념 — workspace / 태스크 / agent / runtime, 한 장
   3-6. 제 사용 사례에 맞춘 구체적인 시나리오 3-4개. 각 시나리오는 "X를 하고 싶을 때 → Multica는 이렇게 처리합니다" 형식
   7. 마무리 — 구체적인 다음 액션 하나
 
@@ -142,7 +142,7 @@ When done, also reply with a one-sentence summary of which scenarios you picked 
 - 1つの self-contained な .html。CSS / JS はすべて inline。依存関係なし、ビルドツールなし、外部画像なし(視覚要素は CSS で生成 — グラデーション、幾何学的な図形、inline SVG を使用)。
 - 全体で5〜8枚のスライド:
   1. タイトル — 「[私の役割] に Multica ができること」
-  2. 4つの中心概念 — workspace / issue / agent / runtime を1枚で
+  2. 4つの中心概念 — workspace / タスク / agent / runtime を1枚で
   3〜6. 私のユースケースに合わせた具体的なシナリオを3〜4個。それぞれ「X をしたいとき → Multica はこう処理します」の形で
   7. 締め — 具体的な次の一歩のアクション
 
