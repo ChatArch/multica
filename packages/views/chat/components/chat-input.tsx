@@ -682,9 +682,11 @@ export function ChatInput({
             disabled={hasNothingToSend || submitting || !!disabled || !!noAgent}
             loading={submitting}
             busy={gate.uploading}
-            running={isRunning}
+            // Queue-capable runs reuse this one action slot: an empty composer
+            // offers Stop, while live content swaps it to Queue Send. Older
+            // servers cannot accept follow-ups, so they remain stop-only.
+            running={!!isRunning && (!allowSubmitWhileRunning || hasNothingToSend)}
             onStop={onStop}
-            allowSubmitWhileRunning={allowSubmitWhileRunning}
             tooltip={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
               : isRunning

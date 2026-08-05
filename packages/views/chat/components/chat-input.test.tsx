@@ -593,21 +593,28 @@ describe("ChatInput project context", () => {
     expect(onProjectChange).toHaveBeenCalledWith(null);
   });
 
-  it("keeps Stop and Queue Send available while the agent is running", async () => {
+  it("swaps Stop for Queue Send when the running composer has content", async () => {
     const onSend = vi.fn<ChatInputOnSend>(async () => true);
     const onStop = vi.fn();
     renderInput({ isRunning: true, allowSubmitWhileRunning: true, onSend, onStop });
+
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Queue message" })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId("editor"), {
       target: { value: "follow-up" },
     });
 
-    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
     const queueButton = screen.getByRole("button", { name: "Queue message" });
     expect(queueButton).not.toBeDisabled();
     fireEvent.click(queueButton);
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Queue message" })).not.toBeInTheDocument();
   });
 
   it("shows only Stop while an older server is running", () => {
