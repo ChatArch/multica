@@ -703,13 +703,14 @@ func TestBuildPromptContainsIssueID(t *testing.T) {
 func TestFreshSessionRetryPrompt(t *testing.T) {
 	t.Parallel()
 
-	base := BuildPrompt(Task{
+	task := Task{
 		IssueID:          "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
 		TriggerCommentID: "c0ffee00-0000-0000-0000-000000000000",
 		Agent:            &AgentData{Name: "Local Kiro"},
-	}, "kiro")
+	}
+	base := BuildPrompt(task, "kiro")
 
-	got := freshSessionRetryPrompt(base)
+	got := freshSessionRetryPrompt(task, base)
 
 	// The disclosure must come first and clearly signal a brand-new session
 	// with no prior provider context.
@@ -727,6 +728,46 @@ func TestFreshSessionRetryPrompt(t *testing.T) {
 	}
 	if strings.Index(got, "brand-new session") > strings.Index(got, base) {
 		t.Fatal("context-loss disclosure must precede the preserved prompt")
+	}
+	// Agent-facing only. Whether the USER hears about the gap is the continuity
+	// notice's call, and that one knows the surface — this prefix fires on both
+	// and must not decide for it (MUL-5722).
+	if strings.Contains(got, "tell the user") {
+		t.Fatalf("retry prefix must not script a user-facing announcement:\n%s", got)
+	}
+}
+
+// TestSessionContinuityNoticeMatchesSurface locks the MUL-5722 split: the same
+// event costs the two surfaces different things, so it cannot be reported with
+// one sentence. On an issue the discussion survives in comments the agent
+// re-reads every turn; announcing a loss there makes the user believe the
+// discussion is gone when none of it is. In a web chat the history lived only
+// in the provider session (buildChatPrompt never replays it), so the user
+// genuinely cannot see what went missing unless told.
+func TestSessionContinuityNoticeMatchesSurface(t *testing.T) {
+	t.Parallel()
+
+	issue := sessionContinuityNoticeFor(Task{IssueID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"})
+	if strings.Contains(issue, "tell the user") {
+		t.Errorf("issue notice must not order an announcement:\n%s", issue)
+	}
+
+	chat := sessionContinuityNoticeFor(Task{ChatSessionID: "chat-1"})
+	if !strings.Contains(chat, "tell the user up front") {
+		t.Errorf("chat notice must stay user-facing:\n%s", chat)
+	}
+
+	// The notice only renders when the resume actually failed; an ordinary run
+	// must not carry either variant.
+	if blocks := perTurnContextBlocks(Task{IssueID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}); strings.Contains(blocks, "Session Continuity Notice") {
+		t.Errorf("continuity notice leaked into a run that resumed fine:\n%s", blocks)
+	}
+	lost := perTurnContextBlocks(Task{
+		IssueID:                       "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		PriorSessionResumeUnavailable: true,
+	})
+	if !strings.Contains(lost, "Session Continuity Notice") {
+		t.Errorf("continuity notice missing when the resume was unavailable:\n%s", lost)
 	}
 }
 

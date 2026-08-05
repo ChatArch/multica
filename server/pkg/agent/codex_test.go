@@ -1944,8 +1944,9 @@ func TestCodexTurnInput(t *testing.T) {
 	}
 
 	// Resume expected but the backend fell back to a fresh thread → disclose,
-	// and the original prompt must still be delivered.
-	fallback := text(codexTurnInput(prompt, true, false))
+	// and the original prompt must still be delivered. Without a durable
+	// record (chat) the disclosure is user-facing.
+	fallback := text(codexTurnInput(prompt, true, false, false))
 	if !strings.Contains(fallback, "previous conversation context could not be restored") {
 		t.Errorf("expected continuity notice on resume fallback, got:\n%s", fallback)
 	}
@@ -1955,11 +1956,43 @@ func TestCodexTurnInput(t *testing.T) {
 
 	// Successful resume, or an ordinary fresh start with no resume expected →
 	// no notice, prompt delivered verbatim.
-	if got := text(codexTurnInput(prompt, true, true)); got != prompt {
+	if got := text(codexTurnInput(prompt, true, true, false)); got != prompt {
 		t.Errorf("successful resume must not add a notice, got:\n%s", got)
 	}
-	if got := text(codexTurnInput(prompt, false, false)); got != prompt {
+	if got := text(codexTurnInput(prompt, false, false, false)); got != prompt {
 		t.Errorf("fresh start must not add a notice, got:\n%s", got)
+	}
+}
+
+// TestCodexTurnInputNoticeMatchesWhatTheSurfaceLost is the MUL-5722 half of the
+// continuity notice. An issue's discussion survives in its comments, which the
+// agent re-reads every turn, so ordering it to announce "the previous context
+// was lost" tells the user the discussion is gone when none of it is. The
+// notice still has to fire — the agent must not silently assume continuity —
+// but on that surface it informs the agent instead of scripting an apology.
+func TestCodexTurnInputNoticeMatchesWhatTheSurfaceLost(t *testing.T) {
+	t.Parallel()
+
+	const prompt = "do the task"
+	notice := func(durableHistory bool) string {
+		input := codexTurnInput(prompt, true, false, durableHistory)
+		s, _ := input[0]["text"].(string)
+		return strings.TrimSuffix(s, prompt)
+	}
+
+	issue := notice(true)
+	if strings.Contains(issue, "tell the user") {
+		t.Errorf("issue notice must not order an announcement — the comments are intact:\n%s", issue)
+	}
+	for _, want := range []string{"comments are unaffected", "your own working memory"} {
+		if !strings.Contains(issue, want) {
+			t.Errorf("issue notice missing %q, so the agent is not told what it actually lost:\n%s", want, issue)
+		}
+	}
+
+	chat := notice(false)
+	if !strings.Contains(chat, "tell the user up front") {
+		t.Errorf("chat notice must stay user-facing — that history is genuinely gone:\n%s", chat)
 	}
 }
 

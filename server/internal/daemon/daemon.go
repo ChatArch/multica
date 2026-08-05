@@ -5388,15 +5388,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// survived to here, the backend must disclose to the user when the live
 		// resume still fails — even across the fresh-session retry below, which
 		// clears ResumeSessionID but not this (MUL-4424).
-		ResumeExpected:     task.PriorSessionID != "",
-		ExtraArgs:          extraArgs,
-		CustomArgs:         customArgs,
-		McpConfig:          mcpConfig,
-		ThinkingLevel:      thinkingLevel,
-		ServiceTier:        serviceTier,
-		OpenclawMode:       openclawMode,
-		ClaudeSettingsPath: env.ClaudeSettingsPath,
-		QwenpawWorkspace:   env.QwenpawWorkspace,
+		ResumeExpected:          task.PriorSessionID != "",
+		DurableHistoryAvailable: task.ChatSessionID == "",
+		ExtraArgs:               extraArgs,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		ThinkingLevel:           thinkingLevel,
+		ServiceTier:             serviceTier,
+		OpenclawMode:            openclawMode,
+		ClaudeSettingsPath:      env.ClaudeSettingsPath,
+		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -5502,7 +5503,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
-		freshPrompt := freshSessionRetryPrompt(BuildPrompt(task, provider))
+		freshPrompt := freshSessionRetryPrompt(task, BuildPrompt(task, provider))
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {

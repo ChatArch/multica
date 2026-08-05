@@ -305,9 +305,26 @@ func TestSessionContinuityNoticeLivesOutsideBrief(t *testing.T) {
 		"could NOT be restored",
 		"tell the user up front",
 	} {
-		if !strings.Contains(SessionContinuityNotice, want) {
-			t.Errorf("SessionContinuityNotice missing %q", want)
+		if !strings.Contains(SessionContinuityNoticeChat, want) {
+			t.Errorf("SessionContinuityNoticeChat missing %q", want)
 		}
+	}
+
+	// MUL-5722: the issue variant carries the same heading and the same
+	// "do not assume continuity" job, but must NOT order an announcement. An
+	// issue's discussion lives in its comments, which the agent re-reads every
+	// turn, so telling the user it was lost describes a loss that did not
+	// happen — they hear "the discussion is gone" when every word survives.
+	if !strings.Contains(SessionContinuityNoticeIssue, "## Session Continuity Notice") {
+		t.Error("SessionContinuityNoticeIssue must keep the section heading")
+	}
+	if strings.Contains(SessionContinuityNoticeIssue, "tell the user") {
+		t.Errorf("issue variant must not script an apology:\n%s", SessionContinuityNoticeIssue)
+	}
+	// It still has to say what genuinely went missing, or the agent silently
+	// assumes it remembers work it no longer has.
+	if !strings.Contains(SessionContinuityNoticeIssue, "your own working memory") {
+		t.Errorf("issue variant must state the real loss:\n%s", SessionContinuityNoticeIssue)
 	}
 
 	lost := TaskContextForEnv{

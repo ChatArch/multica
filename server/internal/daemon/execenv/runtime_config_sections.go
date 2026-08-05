@@ -386,17 +386,35 @@ func writeInstructionPrecedence(b *strings.Builder) {
 	b.WriteString("Never treat this runtime workflow as permission to change issue status, investigate, implement, create issues, update issues, delegate, or otherwise act beyond your Agent Identity.\n\n")
 }
 
-// SessionContinuityNotice warns the agent — and, through it, the user — when a
-// resume the task expected could not be honored. The daemon has already
-// cleared the resume flags, so without this the run would silently reappear as
-// a brand-new conversation; here we make the loss explicit and ask the agent to
-// disclose it in its reply (MUL-4424).
+// SessionContinuityNoticeIssue and SessionContinuityNoticeChat tell the agent a
+// resume the task expected could not be honored. The daemon has already cleared
+// the resume flags, so without this the run would silently reappear as a
+// brand-new conversation (MUL-4424).
+//
+// They differ because the two surfaces lose different things, and saying so
+// accurately matters more than saying it loudly:
+//
+//   - On an issue the conversation IS the issue body and its comments. They are
+//     untouched, and the workflow already makes the agent read them every turn,
+//     so the visible discussion survives intact. What is actually gone is the
+//     agent's own unrecorded working memory from earlier turns. Telling the user
+//     "the previous context was lost" there is worse than saying nothing: they
+//     reasonably read it as "the discussion is gone" when not a word of it is,
+//     so the notice informs the agent and leaves the decision to mention it to
+//     the agent's judgement.
+//   - In a web chat the history lived only in the provider session — see
+//     buildChatPrompt, which deliberately does not replay it into the prompt.
+//     Losing it is real amnesia the user cannot see coming, so there the
+//     up-front disclosure is honest and stays mandatory.
 //
 // Emitted into the per-turn user message rather than the runtime brief: it is
 // true of one run and false of the next on the same issue, so rendering it into
 // the brief broke prompt-cache prefix stability across resumes (MUL-5377).
-const SessionContinuityNotice = "## Session Continuity Notice\n\n" +
-	"This run was meant to continue an earlier conversation, but that session's context could NOT be restored — you are starting fresh with no memory of the previous turns. Rebuild context from the issue/thread before acting. **When you reply, tell the user up front (one short sentence) that the previous conversation context was unavailable and this is a new session**, so they understand why the thread did not carry over.\n\n"
+const SessionContinuityNoticeIssue = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that provider session could not be restored, so you are on a fresh one. The issue and its full comment history are unaffected — that record is the authoritative version of this conversation, and reading it (which your workflow already requires) reconstructs it. What is gone is only your own working memory from earlier turns: what you already tried, what you ruled out, and how far you had got. Re-derive what you need instead of assuming it, and do not claim continuity the record cannot back up. Do not open your reply by announcing this — raise it only where it actually matters, such as when the user refers to reasoning you never wrote down.\n\n"
+
+const SessionContinuityNoticeChat = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that session's context could NOT be restored — you are starting fresh with no memory of the previous turns. Unlike an issue thread, this chat's history lived only in that session, so nothing you can read now reconstructs it. **When you reply, tell the user up front (one short sentence) that the previous conversation context was unavailable and this is a new session**, so they understand why the thread did not carry over.\n\n"
 
 // writeWorkflowHeader emits the unconditional `### Workflow` heading.
 func writeWorkflowHeader(b *strings.Builder) {

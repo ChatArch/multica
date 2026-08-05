@@ -1166,7 +1166,12 @@ func TestPerTurnContextBlocksCarryMovedBriefSections(t *testing.T) {
 	prompt := BuildPrompt(task, "claude")
 	for _, want := range []string{
 		"## Session Continuity Notice",
-		"could NOT be restored",
+		// Issue wording: this task has an IssueID, and since MUL-5722 the two
+		// surfaces word the notice differently (the chat variant is the one
+		// that says "could NOT be restored" and asks the agent to announce it).
+		// What this test cares about is that the section reaches the per-turn
+		// message at all, not which variant it is.
+		"could not be restored",
 		"## Task Initiator",
 		"initiated by **Bohan** (bohan@example.com), a member of this workspace",
 		"credentials stay scoped to the runtime owner",

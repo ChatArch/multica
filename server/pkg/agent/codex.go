@@ -1403,7 +1403,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// this covers the ones only the live resume reveals (MUL-4424).
 		turnParams := map[string]any{
 			"threadId": threadID,
-			"input":    codexTurnInput(prompt, opts.ResumeExpected, resumed),
+			"input":    codexTurnInput(prompt, opts.ResumeExpected, resumed, opts.DurableHistoryAvailable),
 		}
 		// Per-turn reasoning override. Mirrors the per-thread injection in
 		// startOrResumeThread; keeping both in sync is enforced by the
@@ -1707,21 +1707,29 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 
 // codexResumeUnavailableNotice is prepended to the first turn's input when a
 // resume was expected but Codex ended up on a fresh thread. It mirrors the
-// daemon brief's Session Continuity Notice so the disclosure is identical
-// whether the loss is detected pre-launch (daemon gate) or only by the live
-// thread/resume RPC (MUL-4424).
-const codexResumeUnavailableNotice = "[System notice] You were expected to continue an earlier conversation, but restoring that session failed and this is a fresh thread with no memory of the previous turns. Rebuild context from the issue/thread, and when you reply, tell the user up front (one short sentence) that the previous conversation context could not be restored and this is a new session.\n\n"
+// daemon's Session Continuity Notice so the wording is the same whether the
+// loss is detected pre-launch (daemon gate) or only by the live thread/resume
+// RPC (MUL-4424) — keep the two in sync, execenv holds the canonical text.
+//
+// durableHistory picks which of the two the caller gets; see
+// ExecOptions.DurableHistoryAvailable for why an issue and a chat differ.
+func codexResumeUnavailableNotice(durableHistory bool) string {
+	if durableHistory {
+		return "[System notice] You were expected to continue an earlier conversation, but restoring that provider session failed and this is a fresh thread. The issue and its comments are unaffected — that record is the authoritative version of this conversation, and reading it reconstructs it. What is gone is only your own working memory from earlier turns: what you tried, what you ruled out, how far you had got. Re-derive what you need rather than assuming it. Do not open your reply by announcing this; raise it only where it actually matters.\n\n"
+	}
+	return "[System notice] You were expected to continue an earlier conversation, but restoring that session failed and this is a fresh thread with no memory of the previous turns. This conversation's history lived only in that session, so nothing you can read now reconstructs it. When you reply, tell the user up front (one short sentence) that the previous conversation context could not be restored and this is a new session.\n\n"
+}
 
 // codexTurnInput builds the input content for the first turn/start. When a
 // resume was expected (resumeExpected) but the backend landed on a fresh thread
-// (!resumed), it prepends codexResumeUnavailableNotice so the user learns the
-// prior context was lost instead of the run silently continuing as new. The
-// notice is folded into the same text block as the prompt to stay within the
+// (!resumed), it prepends the continuity notice matching what the surface
+// actually lost, so the run does not silently continue as new. The notice is
+// folded into the same text block as the prompt to stay within the
 // single-text-block turn input Codex already accepts.
-func codexTurnInput(prompt string, resumeExpected, resumed bool) []map[string]any {
+func codexTurnInput(prompt string, resumeExpected, resumed, durableHistory bool) []map[string]any {
 	text := prompt
 	if resumeExpected && !resumed {
-		text = codexResumeUnavailableNotice + prompt
+		text = codexResumeUnavailableNotice(durableHistory) + prompt
 	}
 	return []map[string]any{{"type": "text", "text": text}}
 }
