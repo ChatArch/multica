@@ -180,7 +180,7 @@ func BuildTaskInitiatorBlock(initiatorType, initiatorName, initiatorEmail string
 	} else {
 		fmt.Fprintf(&b, "This task was initiated by **%s**, a member of this workspace.\n\n", safeInitiator)
 	}
-	b.WriteString("The initiator — not the runtime owner — is who you are answering: apply any per-person privacy or access rules your instructions define. Your Multica credentials stay scoped to the runtime owner; do not assume the initiator can see everything you can.\n\n")
+	b.WriteString("The initiator — not the runtime owner — is who you are answering: apply any per-person privacy or access rules your instructions define. Your Multica credentials stay scoped to the runtime owner, and initiator attribution does not change what you may read or write; do not assume the initiator can see everything you can.\n\n")
 	return b.String()
 }
 

@@ -5265,6 +5265,7 @@ func TestTaskInitiatorBlockMember(t *testing.T) {
 		"is who you are answering",
 		"apply any per-person privacy or access rules",
 		"credentials stay scoped to the runtime owner",
+		"attribution does not change what you may read or write",
 		"do not assume the initiator can see everything you can",
 	} {
 		if !strings.Contains(block, want) {
