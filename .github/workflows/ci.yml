@@ -284,7 +284,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Setup Helm
@@ -295,6 +296,10 @@ jobs:
 
       - name: Build
         run: cd server && go build ./...
+
+      - name: Scan Go vulnerabilities
+        working-directory: server
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: Run migrations
         run: cd server && go run ./cmd/migrate up
@@ -317,7 +322,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.1"
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Test Windows execution-environment isolation

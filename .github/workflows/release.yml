@@ -48,7 +48,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Verify Go test wrapper
@@ -56,6 +57,10 @@ jobs:
 
       - name: Run tests
         run: bash scripts/test-go.sh --race
+
+      - name: Scan Go vulnerabilities
+        working-directory: server
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
   release:
     needs: verify
@@ -75,7 +80,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Run GoReleaser
@@ -395,7 +401,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
+          go-version: "1.26.x"
+          check-latest: true
           cache-dependency-path: server/go.sum
 
       - name: Setup pnpm
