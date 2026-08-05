@@ -23,12 +23,15 @@ type streamTerminalState struct {
 	resultIsError     bool
 	scanErr           error
 	// terminalReasonError, when non-empty, is a failure the backend read out of
-	// a STRUCTURED field on the terminal result event that the event's own
-	// is_error flag does not reflect. The two answer different questions and a
-	// CLI is free to disagree with itself: Claude Code derives is_error from
-	// whether the last message it rendered was an API error, while
-	// terminal_reason states why the turn ended (GH #6402). Backends that read
-	// no such field leave this empty and keep the pre-existing contract.
+	// a STRUCTURED field on the terminal result event.
+	//
+	// It is not a claim that is_error missed the failure — on every frame
+	// captured so far the two fire together. It is a claim about which one
+	// NAMES the failure: Claude Code sets is_error from whether the last
+	// message it rendered was an API error, and terminal_reason from why the
+	// turn ended, so only the latter identifies the condition without relying
+	// on the CLI's prose (GH #6402). Backends that read no such field leave
+	// this empty and keep the pre-existing contract.
 	terminalReasonError string
 }
 

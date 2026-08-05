@@ -81,11 +81,17 @@ const contextExhaustedOutputMaxLen = 320
 // The CLI's bare "Prompt is too long" is deliberately NOT matched here, even
 // though it is a real terminal result — matching it would mean declaring a
 // task failed because its whole answer was one common English sentence, which
-// an agent asked "is my prompt too long?" can legitimately produce. Nothing is
-// lost by leaving it out: the captured frames show the bare form always arrives
-// with is_error set, so it reaches the server through /fail, where Classify's
-// rule 1 already routes "prompt is too long" to context_overflow. This
-// predicate only ever sees output a caller believed was a SUCCESS.
+// an agent asked "is my prompt too long?" can legitimately produce. And this
+// predicate only ever sees output a caller believed was a SUCCESS, so a match
+// costs a real task and a healthy session.
+//
+// Leaving it out costs nothing on the evidence we have: in the 2.1.220 and
+// 2.1.221 frames captured for GH #6402 the bare form arrives with is_error set,
+// which routes it through /fail, where Classify's rule 1 has always mapped
+// "prompt is too long" to context_overflow. That is a statement about those
+// captures, not about every build — if a frame ever carries the bare sentence
+// as a clean success, it will be missed here, and that is the deliberate
+// direction to err in.
 func ContextExhaustedCompletion(output string) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" || len(trimmed) > contextExhaustedOutputMaxLen {
