@@ -22,5 +22,6 @@ ALTER TABLE runtime_profile ADD CONSTRAINT runtime_profile_protocol_family_check
         'traecli',
         'deveco',
         'grok',
-        'qwen'
+        'qwen',
+        'qwenpaw'
     )) NOT VALID;

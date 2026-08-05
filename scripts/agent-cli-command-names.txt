@@ -17,3 +17,4 @@ qodercli
 qoderclicn
 reasonix
 traecli
+qwenpaw

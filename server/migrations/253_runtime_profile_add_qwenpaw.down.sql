@@ -1,5 +1,4 @@
--- Restore the pre-253 whitelist. Existing Reasonix rows remain valid because
--- the replacement constraint is NOT VALID, but new Reasonix profiles are blocked.
+-- Revert QwenPaw (`qwenpaw`) from the built-in runtime profile protocol whitelist.
 ALTER TABLE runtime_profile DROP CONSTRAINT IF EXISTS runtime_profile_protocol_family_check;
 
 ALTER TABLE runtime_profile ADD CONSTRAINT runtime_profile_protocol_family_check

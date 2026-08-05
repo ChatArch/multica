@@ -4993,6 +4993,12 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// pinning which section carries it.
 		for _, want := range []string{
 			"Decide whether a reply is warranted",
+			// Both outcomes pinned individually (MUL-5442 stage-1 review):
+			// the work-produced arm and the silent-exit arm must each
+			// survive compression, not just the bullet's heading.
+			"produced actual work",
+			"pure acknowledgment / thanks / sign-off",
+			"do NOT reply",
 			"Silence is a valid and preferred way",
 			"Never @mention the agent you are replying to as a thank-you or sign-off",
 		} {
@@ -5604,30 +5610,22 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	withSection := wantSection{
 		present: []string{
 			"## Issue Metadata",
-			"high-signal scratchpad",
 			"**Read on entry.**",
 			"**Write on exit.**",
-			"**What NOT to pin.**",
-			"**Recommended keys**",
-			// Recommended-key list — both lea's killer-use-case keys
-			// (pr_number, pipeline_status) and the broader set from
-			// review must be named so the workspace converges on shared
-			// vocabulary.
-			"pr_url",
-			"pr_number",
-			"pipeline_status",
-			"deploy_url",
-			"external_issue_url",
-			"waiting_on",
-			"blocked_reason",
-			"decision",
-			// Safety boundaries — these are the negative rules that
-			// keep metadata from rotting into a second description /
-			// log dump.
-			"No secrets, tokens, or API keys",
-			"No logs",
-			"runtime bookkeeping",
-			"snake_case ASCII",
+			"Hints, not truth",
+			// MUL-5442: the brief keeps only what the interface cannot
+			// express — the read stance, the re-read bar, and the two
+			// write-time boundaries (secrets, length). The full ban list
+			// and the key-naming conventions live in the
+			// multica-working-on-issues skill, pinned by
+			// TestWorkingOnIssuesSkillCoversIssueLoopContracts so this
+			// pointer cannot dangle. The recommended-keys block was
+			// removed outright: metadata is deliberately free-form custom
+			// state (owner decision on MUL-5442), not a vocabulary the
+			// platform curates in every brief.
+			"never secrets or long content",
+			"multica issue metadata delete",
+			"the `multica-working-on-issues` skill",
 		},
 	}
 	withoutSection := wantSection{
@@ -5670,6 +5668,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-1 --output json",
+				// Platform failure semantics, not tool mechanics: a failed
+				// metadata read must never block the main task (MUL-5442
+				// stage-1 review).
+				"CLI failures are normal",
 				// Both steps point at the section instead of restating its
 				// rules (MUL-5442); the entry step names what to look for,
 				// the exit step names the write bar.
