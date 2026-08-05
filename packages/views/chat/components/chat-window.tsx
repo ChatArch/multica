@@ -59,6 +59,7 @@ import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-acti
 import { useQuickActionsFailureToast } from "./use-quick-actions-failure-toast";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
+import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
@@ -77,7 +78,6 @@ import { useT } from "../../i18n";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 function appendChatMessageToLatestPageCache(
   qc: ReturnType<typeof useQueryClient>,
@@ -152,15 +152,12 @@ export function ChatWindow() {
   // When no active session, always show empty — don't use stale cache.
   // Page 0 contains the latest chronological window; later cursor pages are
   // older chronological windows. Reverse pages so older fetched pages render
-  // above the initial latest page. The Virtuoso firstItemIndex is client-owned:
-  // it starts from a large stable base and only subtracts the count of loaded
-  // prepended rows, so concurrent server inserts cannot drift the scroll anchor.
+  // above the initial latest page. The Virtuoso firstItemIndex is client-owned
+  // and anchored to a loaded message, so appends and page-window slides cannot
+  // drift the scroll anchor — see useChatFirstItemIndex (MUL-5711).
   const messagePages = activeSessionId ? rawMessagePages?.pages ?? [] : [];
   const messages = [...messagePages].reverse().flatMap((page) => page.messages);
-  const olderMessageCount = messagePages.slice(1).reduce((sum, page) => sum + page.messages.length, 0);
-  const firstItemIndex = messages.length > 0
-    ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-    : 0;
+  const firstItemIndex = useChatFirstItemIndex(activeSessionId, messages);
   // Skeleton only shows for an un-cached session fetch. Cached switches
   // return data synchronously — no flash. `enabled: false` (new chat)
   // keeps isLoading false so the starter prompts aren't hidden.

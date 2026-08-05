@@ -36,6 +36,7 @@ import {
 import { useChatStore } from "@multica/core/chat";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
+import { useChatFirstItemIndex } from "./use-chat-first-item-index";
 import { useChatProjectContextSupport } from "./use-chat-project-context-support";
 import { createLogger } from "@multica/core/logger";
 import type {
@@ -150,7 +151,6 @@ export function hasInFlightPendingTask(
   const pending = qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId));
   return Boolean(pending?.task_id);
 }
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 function appendChatMessageToLatestPageCache(
   qc: ReturnType<typeof useQueryClient>,
@@ -230,13 +230,10 @@ export function useChatController(opts?: { isActive?: boolean }) {
 
   const messagePages = activeSessionId ? rawMessagePages?.pages ?? [] : [];
   const messages = [...messagePages].reverse().flatMap((page) => page.messages);
-  const olderMessageCount = messagePages
-    .slice(1)
-    .reduce((sum, page) => sum + page.messages.length, 0);
-  const firstItemIndex =
-    messages.length > 0
-      ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-      : 0;
+  // Absolute row numbering is anchored to a loaded message rather than derived
+  // from page sizes — the newest page is a sliding 50-message window, so page
+  // counts move on every turn without anything being prepended (MUL-5711).
+  const firstItemIndex = useChatFirstItemIndex(activeSessionId, messages);
   const showSkeleton = !!activeSessionId && messagesLoading;
 
   const { data: pendingTask } = useQuery(

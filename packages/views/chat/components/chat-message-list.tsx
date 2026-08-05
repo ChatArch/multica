@@ -242,7 +242,12 @@ export function ChatMessageList({
     return items;
   }, [messages, hasLive, pendingTaskId]);
 
-  const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
+  // Passed straight through. Zeroing it while the list is momentarily empty
+  // (a pending task holds this list mounted before its messages land) made the
+  // next render raise it by the whole base, which react-virtuoso reads as
+  // "drop that many rows off the head" and which wrecks its size bookkeeping —
+  // the caller keeps this value stable instead (MUL-5711).
+  const firstIndex = firstItemIndex;
 
   const listContext: ChatListContext = {
     isFetchingOlderMessages,

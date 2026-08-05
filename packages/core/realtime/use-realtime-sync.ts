@@ -96,6 +96,7 @@ import type {
   ChatQuickActionsFailureState,
   ChatCancelFinalizedPayload,
   ChatMessage,
+  ChatMessageEventPayload,
   ChatPendingTask,
   ChatMessagesPage,
   ChatSession,
@@ -133,6 +134,60 @@ export function refetchPendingChatAggregate(
 ) {
   if (!wsId) return;
   qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+}
+
+/**
+ * Apply a chat:message event: insert the turn's USER message into both message
+ * caches, then reconcile authoritatively (MUL-5711).
+ *
+ * The inline insert is what `chat:done` has always done for the assistant reply,
+ * and its absence here was the whole bug: a user message reached the transcript
+ * ONLY through the refetch this handler triggers, so any client that did not
+ * write it locally (a second window/device, a send whose HTTP response errored
+ * after the server committed, a surface mounting mid-flight) lost the message
+ * whenever that refetch was dropped — most reliably by the chat:quick_actions
+ * cancel below. Both caches are `staleTime: Infinity`, so nothing re-fetched
+ * afterwards and the prompt stayed missing until a remount.
+ *
+ * Only `role: "user"` is inserted. The event has exactly one producer today
+ * (SendChatMessage), and an assistant row fabricated from this payload would
+ * carry no elapsed_ms / message_kind / quick_actions AND would make
+ * applyChatDoneToCache's id dedup skip the richer row it is about to write.
+ *
+ * The invalidate is kept: this payload has no `attachments`, so the reconciling
+ * refetch is what fills them in for clients that did not send the message.
+ */
+export function applyChatMessageToCache(
+  qc: QueryClient,
+  payload: ChatMessageEventPayload,
+) {
+  const sessionId = payload.chat_session_id;
+  if (payload.role === "user" && payload.message_id) {
+    const message: ChatMessage = {
+      id: payload.message_id,
+      chat_session_id: sessionId,
+      role: "user",
+      content: payload.content ?? "",
+      task_id: payload.task_id ?? null,
+      created_at: payload.created_at ?? new Date().toISOString(),
+    };
+    qc.setQueryData<ChatMessage[] | undefined>(
+      chatKeys.messages(sessionId),
+      (old) => {
+        if (!old) return old; // first fetch will pick it up
+        // Idempotent against the sender's own optimistic write and against
+        // reconnect replay.
+        if (old.some((m) => m.id === message.id)) return old;
+        return [...old, message];
+      },
+    );
+    qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
+      chatKeys.messagesPage(sessionId),
+      (old) => patchLatestChatMessagePage(old, message),
+    );
+  }
+  invalidateChatMessageQueries(qc, sessionId);
+  qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
 export function applyChatDoneToCache(
@@ -245,6 +300,16 @@ export async function applyChatQuickActionsToCache(
             }
           : old,
     );
+    // Re-sync after the cancel (MUL-5711). cancelQueries defaults to
+    // `revert: true`, so the cancelled refetch is not merely ignored — the cache
+    // is rolled back to the snapshot taken when it STARTED, and rows that only
+    // that response carried (a peer's user message, anything that landed while
+    // this surface was unmounted) are dropped. With `staleTime: Infinity` and no
+    // further trigger, the hole survived until a remount. Re-invalidating costs
+    // one request per supplement and cannot lose the pills: the server persists
+    // the actions BEFORE broadcasting this event (SupplementChatQuickActions),
+    // so the refetch this schedules reads them back.
+    invalidateChatMessageQueries(qc, sessionId);
   }
   // Resolve the marker only when it belongs to THIS message: a late
   // supplement for turn N must not clear the marker turn N+1's chat:done
@@ -1237,10 +1302,14 @@ export function useRealtimeSync(
     };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {
-      const payload = p as { chat_session_id: string };
-      chatWsLogger.info("chat:message (global)", { chat_session_id: payload.chat_session_id });
-      invalidateChatMessageQueries(qc, payload.chat_session_id);
-      qc.invalidateQueries({ queryKey: chatKeys.pendingTask(payload.chat_session_id) });
+      const payload = p as ChatMessageEventPayload;
+      chatWsLogger.info("chat:message (global)", {
+        chat_session_id: payload.chat_session_id,
+        role: payload.role,
+      });
+      // Inline-insert the user turn before invalidating, so the prompt does not
+      // depend on the refetch surviving (MUL-5711) — same shape as chat:done.
+      applyChatMessageToCache(qc, payload);
       // NOTE: intentionally does NOT touch the pending aggregate. chat:message
       // fires per streamed message with no status; the aggregate is maintained
       // by the task lifecycle handlers below (MUL-4159).
