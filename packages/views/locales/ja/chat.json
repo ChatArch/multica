@@ -35,6 +35,8 @@
     "title_other": "キュー内のメッセージ {{count}} 件",
     "clear": "すべて削除",
     "send_now": "今すぐ送信",
+    "send_now_unavailable": "現在の返信が開始されると今すぐ送信できます",
+    "send_now_unavailable_toast": "今すぐ送信できません。キューを更新しています。",
     "edit": "キュー内のメッセージを編集",
     "remove": "キューから削除",
     "fallback": "キュー内のメッセージ",
@@ -160,6 +162,7 @@
     "stages": {
       "offline": "オフライン",
       "reconnecting": "再接続中",
+      "retrying": "再試行中",
       "queued": "待機中",
       "waiting_local_directory": "ローカルディレクトリを待機中",
       "starting_up": "起動中",

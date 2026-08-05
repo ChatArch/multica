@@ -1545,6 +1545,21 @@ func (h *Handler) PrioritizeQueuedChatTask(w http.ResponseWriter, r *http.Reques
 		db.PrioritizeQueuedChatTaskParams{ID: taskID, ChatSessionID: session.ID},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The compare-and-set rejects both a stale queue row and a still-valid
+		// follow-up that has no claimed reply to replace. Distinguish them for
+		// current clients while preserving the same 409 compatibility contract.
+		queuedTask, loadErr := qtx.GetAgentTask(r.Context(), taskID)
+		if loadErr != nil && !errors.Is(loadErr, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to load queued task")
+			return
+		}
+		if loadErr == nil &&
+			queuedTask.Status == "queued" &&
+			queuedTask.ChatSessionID.Valid &&
+			uuidToString(queuedTask.ChatSessionID) == uuidToString(session.ID) {
+			writeError(w, http.StatusConflict, "there is no active reply to replace")
+			return
+		}
 		writeError(w, http.StatusConflict, "task is no longer queued")
 		return
 	}

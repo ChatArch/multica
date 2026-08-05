@@ -35,6 +35,8 @@
     "title_other": "{{count}} 条排队消息",
     "clear": "全部清空",
     "send_now": "立即发送",
+    "send_now_unavailable": "当前回复开始后才能立即发送",
+    "send_now_unavailable_toast": "暂时无法立即发送，正在刷新队列。",
     "edit": "编辑排队消息",
     "remove": "移除排队消息",
     "fallback": "排队消息",
@@ -160,6 +162,7 @@
     "stages": {
       "offline": "离线",
       "reconnecting": "重连中",
+      "retrying": "重试中",
       "queued": "排队中",
       "waiting_local_directory": "等待本地目录释放",
       "starting_up": "启动中",

@@ -71,6 +71,7 @@ describe("chat column geometry", () => {
       "follow-up queue",
       <ChatQueue
         key="q"
+        headStatus="running"
         tasks={[
           {
             task_id: "task-queued",

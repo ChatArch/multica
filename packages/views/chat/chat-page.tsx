@@ -299,6 +299,7 @@ export function ChatPage() {
 
       <ChatQueue
         tasks={c.pendingTask?.queued_tasks ?? []}
+        headStatus={c.pendingTask?.status}
         onSendNow={c.handleSendQueuedTaskNow}
         onEdit={c.handleEditQueuedTask}
         onRemove={c.handleRemoveQueuedTask}

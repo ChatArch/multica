@@ -479,6 +479,15 @@ func TestPrioritizeQueuedChatTask_StaleTargetPreservesExistingPriority(t *testin
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
+	var conflictBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &conflictBody); err != nil {
+		t.Fatalf("decode stale-task conflict: %v", err)
+	}
+	if conflictBody.Error != "task is no longer queued" {
+		t.Fatalf("stale-task error = %q", conflictBody.Error)
+	}
 
 	var priority int
 	if err := testPool.QueryRow(
@@ -525,6 +534,15 @@ func TestPrioritizeQueuedChatTask_RejectsWhileVisibleHeadIsUnclaimed(t *testing.
 	testHandler.PrioritizeQueuedChatTask(w, chatPendingCtxAs(t, req, testUserID))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	var conflictBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &conflictBody); err != nil {
+		t.Fatalf("decode unclaimed-head conflict: %v", err)
+	}
+	if conflictBody.Error != "there is no active reply to replace" {
+		t.Fatalf("unclaimed-head error = %q", conflictBody.Error)
 	}
 
 	pending, err := testHandler.Queries.ListPendingChatTasksForSession(ctx, parseUUID(sessionID))
@@ -703,6 +721,37 @@ func TestListPendingChatTasks_OwnerSeesPrivateAgentTask(t *testing.T) {
 
 	if !containsPendingTask(resp.Tasks, task) {
 		t.Fatalf("agent owner did not see their own private-agent task %s: %+v", task, resp.Tasks)
+	}
+}
+
+func TestPendingChatTaskAggregatesIncludeDeferredRetry(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	_, _, memberID := privateAgentTestFixture(t)
+	publicAgentID := createHandlerTestAgent(t, "PendingDeferredAggregateAgent", []byte("[]"))
+	sessionID := insertChatSessionAs(t, publicAgentID, memberID)
+	taskID := insertPendingChatTask(t, publicAgentID, sessionID, "deferred")
+
+	w := httptest.NewRecorder()
+	testHandler.ListPendingChatTasks(w, chatPendingCtxAs(
+		t,
+		newRequestAs(memberID, "GET", "/api/chat/pending-tasks", nil),
+		memberID,
+	))
+	if resp := decodePendingTasks(t, w); !containsPendingTask(resp.Tasks, taskID) {
+		t.Fatalf("deferred retry %s missing from pending aggregate: %+v", taskID, resp.Tasks)
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.HasPendingChatTasks(w, chatPendingCtxAs(
+		t,
+		newRequestAs(memberID, "GET", "/api/chat/pending-tasks/has-any", nil),
+		memberID,
+	))
+	if !decodeHasPending(t, w) {
+		t.Fatal("has-any returned false for an accessible deferred retry")
 	}
 }
 

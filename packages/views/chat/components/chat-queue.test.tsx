@@ -6,7 +6,7 @@ import { ChatQueue } from "./chat-queue";
 
 const TEST_RESOURCES = { en: { chat: enChat } };
 
-function renderQueue() {
+function renderQueue(headStatus = "running") {
   const callbacks = {
     onSendNow: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
     onEdit: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
@@ -16,6 +16,7 @@ function renderQueue() {
   const view = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <ChatQueue
+        headStatus={headStatus}
         tasks={[
           {
             task_id: "task-2",
@@ -61,6 +62,17 @@ describe("ChatQueue", () => {
     await waitFor(() => expect(actions.onRemove).toHaveBeenCalledWith("task-3"));
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     await waitFor(() => expect(actions.onClear).toHaveBeenCalledTimes(1));
+  });
+
+  it("disables send-now until the current positional head is claimable", () => {
+    const actions = renderQueue("queued");
+
+    const buttons = screen.getAllByRole("button", {
+      name: "Send now is available after the current reply starts",
+    });
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) expect(button).toBeDisabled();
+    expect(actions.onSendNow).not.toHaveBeenCalled();
   });
 
   it("keeps long queues bounded and blocks duplicate actions while one is pending", async () => {

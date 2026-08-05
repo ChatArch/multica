@@ -10,15 +10,27 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 
 interface ChatQueueProps {
   tasks: ChatQueuedTask[];
+  headStatus: string | undefined;
   onSendNow: (taskId: string) => Promise<void> | void;
   onEdit: (taskId: string) => Promise<void> | void;
   onRemove: (taskId: string) => Promise<void> | void;
   onClear: () => Promise<void> | void;
 }
 
-export function ChatQueue({ tasks, onSendNow, onEdit, onRemove, onClear }: ChatQueueProps) {
+export function ChatQueue({
+  tasks,
+  headStatus,
+  onSendNow,
+  onEdit,
+  onRemove,
+  onClear,
+}: ChatQueueProps) {
   const { t } = useT("chat");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const canSendNow =
+    headStatus === "dispatched" ||
+    headStatus === "running" ||
+    headStatus === "waiting_local_directory";
 
   if (tasks.length === 0) return null;
 
@@ -68,21 +80,31 @@ export function ChatQueue({ tasks, onSendNow, onEdit, onRemove, onClear }: ChatQ
                 <span className="min-w-0 flex-1 truncate">
                   {task.content?.trim() || t(($) => $.queue.fallback)}
                 </span>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="shrink-0 text-muted-foreground"
-                  disabled={busyAction !== null}
-                  title={t(($) => $.queue.send_now)}
-                  aria-label={t(($) => $.queue.send_now)}
-                  onClick={() => void run(sendNowKey, () => onSendNow(task.task_id))}
-                >
-                  {busyAction === sendNowKey ? (
-                    <Loader2 className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Send aria-hidden="true" />
+                <span
+                  className="shrink-0"
+                  title={t(($) =>
+                    canSendNow ? $.queue.send_now : $.queue.send_now_unavailable
                   )}
-                </Button>
+                >
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground"
+                    disabled={busyAction !== null || !canSendNow}
+                    aria-label={t(($) =>
+                      canSendNow
+                        ? $.queue.send_now
+                        : $.queue.send_now_unavailable
+                    )}
+                    onClick={() => void run(sendNowKey, () => onSendNow(task.task_id))}
+                  >
+                    {busyAction === sendNowKey ? (
+                      <Loader2 className="animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Send aria-hidden="true" />
+                    )}
+                  </Button>
+                </span>
                 <Button
                   variant="ghost"
                   size="icon-xs"

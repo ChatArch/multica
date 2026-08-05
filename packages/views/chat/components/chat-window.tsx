@@ -895,6 +895,7 @@ export function ChatWindow() {
 
       <ChatQueue
         tasks={pendingTask?.queued_tasks ?? []}
+        headStatus={pendingTask?.status}
         onSendNow={handleSendQueuedTaskNow}
         onEdit={handleEditQueuedTask}
         onRemove={handleRemoveQueuedTask}

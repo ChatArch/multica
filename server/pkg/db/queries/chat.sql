@@ -447,6 +447,9 @@ RETURNING *;
 -- agent.sql. Keep the eligible statuses and ordering identical: a claimed task
 -- is current, a deferred retry precedes still-queued work, and queued peers use
 -- claim priority/FIFO order. Background quick-action regeneration is invisible.
+-- This is a presentation/visibility order, not a scheduling guarantee:
+-- deferred rows are not claimable before promotion, so a queued row may be
+-- claimed during the backoff and then becomes the visible claimed head.
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND NOT (
@@ -834,12 +837,12 @@ FROM prioritized;
 --
 -- atq.chat_session_id IS NOT NULL is redundant given the JOIN, but stated
 -- explicitly so the planner can prove the query predicate is a subset of the
--- idx_agent_task_queue_chat_pending_v2 partial-index predicate and use it.
+-- idx_agent_task_queue_chat_pending_v3 partial-index predicate and use it.
 SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id
 FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL
-  AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   -- Exclude background quick-actions regeneration passes: they own no assistant
   -- turn and must not surface as "running" chat work (MUL-5149 refresh follow-up).
   AND atq.regenerate_quick_actions_for IS NULL
@@ -862,7 +865,7 @@ SELECT EXISTS (
   FROM agent_task_queue atq
   JOIN chat_session cs ON cs.id = atq.chat_session_id
   WHERE atq.chat_session_id IS NOT NULL
-    AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
     -- Background quick-actions regeneration passes own no visible turn and must
     -- never light the FAB "running" indicator (MUL-5149 refresh follow-up).
     AND atq.regenerate_quick_actions_for IS NULL

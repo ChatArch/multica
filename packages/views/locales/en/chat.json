@@ -37,6 +37,8 @@
     "title_other": "{{count}} queued messages",
     "clear": "Clear all",
     "send_now": "Send now",
+    "send_now_unavailable": "Send now is available after the current reply starts",
+    "send_now_unavailable_toast": "Send now is unavailable. Refreshing the queue.",
     "edit": "Edit queued message",
     "remove": "Remove queued message",
     "fallback": "Queued message",
@@ -164,6 +166,7 @@
     "stages": {
       "offline": "Offline",
       "reconnecting": "Reconnecting",
+      "retrying": "Retrying",
       "queued": "Queued",
       "waiting_local_directory": "Waiting for local directory",
       "starting_up": "Starting up",

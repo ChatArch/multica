@@ -46,6 +46,7 @@ import type {
   ChatPendingTask,
 } from "@multica/core/types";
 import {
+  enqueuePendingChatTask,
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
@@ -279,14 +280,25 @@ export default function ChatTab() {
         task_id: null,
         created_at: sentAt,
       };
+      const optimisticTaskId = `optimistic-${optimistic.id}`;
       qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
         old ? [...old, optimistic] : [optimistic],
       );
-      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
-        task_id: `optimistic-${optimistic.id}`,
-        status: "queued",
-        created_at: sentAt,
-      });
+      qc.setQueryData<ChatPendingTask>(
+        chatKeys.pendingTask(sessionId),
+        (old) =>
+          enqueuePendingChatTask(
+            old,
+            {
+              task_id: optimisticTaskId,
+              status: "queued",
+              created_at: sentAt,
+              message_id: optimistic.id,
+              content,
+            },
+            Boolean(old?.task_id),
+          ),
+      );
       if (isNewSession) {
         promoteNewDraft(sessionId);
         setActiveSessionId(sessionId);
@@ -296,10 +308,28 @@ export default function ChatTab() {
         const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
+          old?.map((message) =>
+            message.id === optimistic.id
+              ? {
+                  ...message,
+                  id: result.message_id,
+                  task_id: result.task_id,
+                  created_at: result.created_at,
+                }
+              : message,
+          ),
+        );
         seedAcceptedPendingTask(qc, {
           chat_session_id: sessionId,
           task_id: result.task_id,
           created_at: result.created_at,
+          message_id: result.message_id,
+          content,
+          optimistic_task_id: optimisticTaskId,
           supports_queue: result.supports_queue,
           queued: result.queued,
         });
@@ -311,7 +341,10 @@ export default function ChatTab() {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
         );
-        qc.setQueryData(chatKeys.pendingTask(sessionId), {});
+        qc.setQueryData<ChatPendingTask>(
+          chatKeys.pendingTask(sessionId),
+          (old) => removePendingChatTask(old, optimisticTaskId),
+        );
         throw err;
       }
     },

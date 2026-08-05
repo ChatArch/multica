@@ -20,7 +20,10 @@
  *   - chatKeys.pendingTask(sessionId)→ ChatPendingTask (empty `{}` = no in-flight)
  */
 import type { QueryClient } from "@tanstack/react-query";
-import { enqueuePendingChatTask } from "@multica/core/chat/pending";
+import {
+  enqueuePendingChatTask,
+  removePendingChatTask,
+} from "@multica/core/chat/pending";
 import type {
   ChatDonePayload,
   ChatMessage,
@@ -249,6 +252,9 @@ export function seedAcceptedPendingTask(
     chat_session_id: string;
     task_id: string;
     created_at: string;
+    message_id?: string;
+    content?: string;
+    optimistic_task_id?: string;
     supports_queue?: boolean;
     queued?: boolean;
   },
@@ -260,11 +266,27 @@ export function seedAcceptedPendingTask(
         task_id: payload.task_id,
         status: "queued",
         created_at: payload.created_at,
+        ...(payload.message_id ? { message_id: payload.message_id } : {}),
+        ...(payload.content !== undefined ? { content: payload.content } : {}),
       };
-      const next =
-        old?.task_id?.startsWith("optimistic-")
-          ? enqueuePendingChatTask(undefined, task, payload.queued)
-          : enqueuePendingChatTask(old, task, payload.queued);
+      let next: ChatPendingTask;
+      if (
+        payload.queued === true &&
+        payload.optimistic_task_id &&
+        old?.task_id === payload.optimistic_task_id
+      ) {
+        // The server knows an authoritative predecessor exists, but this
+        // client has not loaded it yet. Retain the optimistic root as a
+        // non-network placeholder until the invalidation fills that head;
+        // dropping it here would briefly unlock the composer and remove the
+        // status line while leaving only a queue row.
+        next = enqueuePendingChatTask(old, task, true);
+      } else {
+        const reconciled = payload.optimistic_task_id
+          ? removePendingChatTask(old, payload.optimistic_task_id)
+          : old;
+        next = enqueuePendingChatTask(reconciled, task, payload.queued);
+      }
       if (payload.supports_queue === true || old?.supports_queue === true) {
         next.supports_queue = true;
       }
