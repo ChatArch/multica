@@ -106,6 +106,23 @@ describe("applyChatDoneToCache", () => {
 });
 
 describe("pending task queue events", () => {
+  it("keeps an idle accepted send out of the follow-up queue", () => {
+    const qc = new QueryClient();
+
+    seedAcceptedPendingTask(qc, {
+      chat_session_id: SESSION,
+      task_id: "task-1",
+      created_at: "2026-07-09T00:00:00Z",
+      supports_queue: true,
+      queued: false,
+    });
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toMatchObject({
+      task_id: "task-1",
+      queued_tasks: [],
+    });
+  });
+
   it("keeps dispatch state when the send response arrives later", () => {
     const qc = new QueryClient();
     qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
@@ -126,6 +143,7 @@ describe("pending task queue events", () => {
       chat_session_id: SESSION,
       task_id: "task-1",
       created_at: "2026-07-09T00:00:01Z",
+      queued: false,
     });
 
     expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toMatchObject({

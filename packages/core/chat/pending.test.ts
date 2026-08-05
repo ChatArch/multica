@@ -24,15 +24,43 @@ describe("pending chat queue", () => {
     expect(result.queued_tasks?.map((item) => item.task_id)).toEqual(["next", "later"]);
   });
 
-  it("keeps the first queued prompt in the queue until it starts running", () => {
+  it("treats the first accepted task as the current head before it starts running", () => {
     const queued = {
       ...task("next", "2026-01-01T00:00:01Z"),
       message_id: "message-next",
     };
     const pending = enqueuePendingChatTask(undefined, queued);
 
-    expect(pending.queued_tasks).toEqual([queued]);
+    expect(pending.queued_tasks).toEqual([]);
     expect(promotePendingChatTask(pending, "next", "running").queued_tasks).toEqual([]);
+  });
+
+  it("keeps an authoritative queued send hidden while its head is still loading", () => {
+    const queued = {
+      ...task("next", "2026-01-01T00:00:01Z"),
+      message_id: "message-next",
+    };
+
+    expect(enqueuePendingChatTask(undefined, queued, true)).toEqual({
+      queued_tasks: [queued],
+    });
+  });
+
+  it("preserves a follow-up when its response arrives before the head response", () => {
+    const followUp = {
+      ...task("next", "2026-01-01T00:00:01Z"),
+      message_id: "message-next",
+    };
+    const waitingForHead = enqueuePendingChatTask(undefined, followUp, true);
+    const head = {
+      ...task("head", "2026-01-01T00:00:00Z"),
+      message_id: "message-head",
+    };
+
+    expect(enqueuePendingChatTask(waitingForHead, head, false)).toEqual({
+      ...head,
+      queued_tasks: [followUp],
+    });
   });
 
   it("keeps a send response preview when a sparse queued event arrives later", () => {
@@ -174,7 +202,7 @@ describe("pending chat queue", () => {
     const result = removePendingChatTask(current, "active");
     expect(result.task_id).toBe("next");
     expect(result.supports_queue).toBe(true);
-    expect(result.queued_tasks?.map((item) => item.task_id)).toEqual(["next", "later"]);
+    expect(result.queued_tasks?.map((item) => item.task_id)).toEqual(["later"]);
   });
 
   it("keeps queued prompts out of the settled transcript", () => {
@@ -204,7 +232,7 @@ describe("pending chat queue", () => {
 
     expect(hideQueuedChatMessages(messages, pending)).toEqual([messages[0]]);
     const waiting = removePendingChatTask(pending, "active");
-    expect(hideQueuedChatMessages(messages, waiting)).toEqual([messages[0]]);
+    expect(hideQueuedChatMessages(messages, waiting)).toEqual(messages);
     expect(
       hideQueuedChatMessages(messages, promotePendingChatTask(waiting, "next", "running")),
     ).toEqual(
@@ -260,6 +288,6 @@ describe("pending chat queue", () => {
 
     const result = removePendingChatTask(current, "active");
     expect(result.task_id).toBe("send-now");
-    expect(result.queued_tasks?.map((item) => item.task_id)).toEqual(["send-now", "next"]);
+    expect(result.queued_tasks?.map((item) => item.task_id)).toEqual(["next"]);
   });
 });

@@ -326,6 +326,7 @@ export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> =
   message_id: z.string(),
   task_id: z.string(),
   supports_queue: z.boolean().optional(),
+  queued: z.boolean().optional().catch(undefined),
   created_at: z.string().default(""),
 }).loose();
 

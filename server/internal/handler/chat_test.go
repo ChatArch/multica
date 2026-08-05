@@ -33,6 +33,37 @@ func withChatTestWorkspaceCtx(t *testing.T, req *http.Request) *http.Request {
 	return req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, memberRow))
 }
 
+func TestSendChatMessage_ReportsPositionInsteadOfQueuedStatus(t *testing.T) {
+	agentID := createHandlerTestAgent(t, "ChatSendQueuePositionAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+
+	send := func(content string) SendChatMessageResponse {
+		t.Helper()
+		req := newRequest("POST", "/api/chat-sessions/"+sessionID+"/messages", map[string]any{
+			"content": content,
+		})
+		req = withURLParam(req, "sessionId", sessionID)
+		req = withChatTestWorkspaceCtx(t, req)
+		w := httptest.NewRecorder()
+		testHandler.SendChatMessage(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("SendChatMessage: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var response SendChatMessageResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode send response: %v", err)
+		}
+		return response
+	}
+
+	if first := send("first"); first.Queued {
+		t.Fatal("idle session's first task must not be reported as a queued follow-up")
+	}
+	if second := send("second"); !second.Queued {
+		t.Fatal("second task behind an in-flight head must be reported as queued")
+	}
+}
+
 // TestSendChatMessage_LinksAttachments verifies that attachments uploaded
 // against a chat_session (chat_message_id NULL) are back-filled with the
 // message_id when SendChatMessage receives the matching attachment_ids.

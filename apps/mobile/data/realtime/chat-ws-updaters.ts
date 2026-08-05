@@ -250,6 +250,7 @@ export function seedAcceptedPendingTask(
     task_id: string;
     created_at: string;
     supports_queue?: boolean;
+    queued?: boolean;
   },
 ) {
   qc.setQueryData<ChatPendingTask>(
@@ -262,13 +263,8 @@ export function seedAcceptedPendingTask(
       };
       const next =
         old?.task_id?.startsWith("optimistic-")
-          ? {
-              ...old,
-              ...task,
-              status: old.status && old.status !== "queued" ? old.status : task.status,
-              created_at: old.created_at || task.created_at,
-            }
-          : enqueuePendingChatTask(old, task);
+          ? enqueuePendingChatTask(undefined, task, payload.queued)
+          : enqueuePendingChatTask(old, task, payload.queued);
       if (payload.supports_queue === true || old?.supports_queue === true) {
         next.supports_queue = true;
       }

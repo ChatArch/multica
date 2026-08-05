@@ -317,14 +317,26 @@ func TestGetPendingChatTask_ReturnsActiveHeadAndFIFOQueue(t *testing.T) {
 	}
 	if resp.TaskID != laterID ||
 		resp.Status != "queued" ||
-		len(resp.QueuedTasks) != 2 ||
-		resp.QueuedTasks[0].TaskID != laterID ||
-		resp.QueuedTasks[1].TaskID != nextID {
-		t.Fatalf("all queued prompts must remain in the dedicated queue: %+v", resp)
+		len(resp.QueuedTasks) != 1 ||
+		resp.QueuedTasks[0].TaskID != nextID {
+		t.Fatalf("the first queued row must become the head, not a follow-up: %+v", resp)
+	}
+
+	transcript, err = testHandler.Queries.ListChatMessages(
+		context.Background(),
+		util.MustParseUUID(sessionID),
+	)
+	if err != nil {
+		t.Fatalf("list transcript after head promotion: %v", err)
+	}
+	if len(transcript) != 2 ||
+		transcript[0].Content != "active prompt" ||
+		transcript[1].Content != "later prompt" {
+		t.Fatalf("transcript must expose the queued-status head only: %+v", transcript)
 	}
 }
 
-func TestListChatMessagesPage_QueuedRowsDoNotConsumeLimit(t *testing.T) {
+func TestListChatMessagesPage_QueuedFollowUpsDoNotConsumeLimit(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -365,27 +377,31 @@ func TestListChatMessagesPage_QueuedRowsDoNotConsumeLimit(t *testing.T) {
 		}
 	}
 
-	t.Log("PAGING FIXTURE: endpoint=GET /api/chat/sessions/{id}/messages/page settled=4 queued=3 limit=2")
-	t.Log("REQUEST page=1: limit=2 before=<none>")
-	page1 := fetchChatMessagesPageForTest(t, sessionID, url.Values{"limit": {"2"}})
-	if len(page1.Messages) != 2 || page1.Messages[0].Content != "settled 3" || page1.Messages[1].Content != "settled 4" || !page1.HasMore || page1.NextCursor == nil {
+	t.Log("PAGING FIXTURE: endpoint=GET /api/chat/sessions/{id}/messages/page settled=4 head=1 follow_ups=2 limit=3")
+	t.Log("REQUEST page=1: limit=3 before=<none>")
+	page1 := fetchChatMessagesPageForTest(t, sessionID, url.Values{"limit": {"3"}})
+	if len(page1.Messages) != 3 ||
+		page1.Messages[0].Content != "settled 3" ||
+		page1.Messages[1].Content != "settled 4" ||
+		page1.Messages[2].Content != "queued prompt A" ||
+		!page1.HasMore || page1.NextCursor == nil {
 		t.Fatalf("unexpected first page: %+v", page1)
 	}
-	t.Logf("RESPONSE page=1: messages=[%q, %q] has_more=%t", page1.Messages[0].Content, page1.Messages[1].Content, page1.HasMore)
+	t.Logf("RESPONSE page=1: messages=[%q, %q, %q] has_more=%t", page1.Messages[0].Content, page1.Messages[1].Content, page1.Messages[2].Content, page1.HasMore)
 	t.Logf("CURSOR page=1: created_at=%s id=%s", page1.NextCursor.CreatedAt, page1.NextCursor.ID)
 
 	page2Params := url.Values{
-		"limit":             {"2"},
+		"limit":             {"3"},
 		"before_created_at": {page1.NextCursor.CreatedAt},
 		"before_id":         {page1.NextCursor.ID},
 	}
-	t.Logf("REQUEST page=2: limit=2 before_created_at=%s before_id=%s", page1.NextCursor.CreatedAt, page1.NextCursor.ID)
+	t.Logf("REQUEST page=2: limit=3 before_created_at=%s before_id=%s", page1.NextCursor.CreatedAt, page1.NextCursor.ID)
 	page2 := fetchChatMessagesPageForTest(t, sessionID, page2Params)
 	if len(page2.Messages) != 2 || page2.Messages[0].Content != "settled 1" || page2.Messages[1].Content != "settled 2" || page2.HasMore || page2.NextCursor != nil {
 		t.Fatalf("unexpected second page: %+v", page2)
 	}
 	t.Logf("RESPONSE page=2: messages=[%q, %q] has_more=%t next_cursor=<nil>", page2.Messages[0].Content, page2.Messages[1].Content, page2.HasMore)
-	t.Log("ASSERTION: page_sizes=2,2 queued_visible=0 cursor_advanced=true duplicates=0")
+	t.Log("ASSERTION: page_sizes=3,2 head_visible=1 follow_ups_visible=0 cursor_advanced=true duplicates=0")
 }
 
 func TestPendingQueueHeadMatchesClaimForEqualCreatedAt(t *testing.T) {

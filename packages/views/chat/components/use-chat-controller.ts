@@ -164,6 +164,7 @@ export function seedAcceptedPendingTask(
     message_id: string;
     content: string;
     supports_queue?: boolean;
+    queued?: boolean;
   },
 ) {
   qc.setQueryData<ChatPendingTask>(
@@ -175,7 +176,7 @@ export function seedAcceptedPendingTask(
         created_at: task.created_at,
         message_id: task.message_id,
         content: task.content,
-      });
+      }, task.queued);
       if (task.supports_queue === true || old?.supports_queue === true) {
         next.supports_queue = true;
       }
@@ -602,6 +603,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
         message_id: result.message_id,
         content: finalContent,
         supports_queue: result.supports_queue,
+        queued: result.queued,
       });
       // Cache primed → publish the new active session, but only if the user
       // hasn't navigated away mid-send. See isStillOnComposeTarget. commitInput

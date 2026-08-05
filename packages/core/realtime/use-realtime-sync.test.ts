@@ -381,12 +381,6 @@ describe("applyChatCancelFinalizedToCache", () => {
       content: "next",
       queued_tasks: [
         {
-          task_id: "task-next",
-          status: "queued",
-          created_at: "2026-05-13T05:00:01Z",
-          content: "next",
-        },
-        {
           task_id: "task-later",
           status: "queued",
           created_at: "2026-05-13T05:00:02Z",

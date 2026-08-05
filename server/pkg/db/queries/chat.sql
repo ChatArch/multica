@@ -451,6 +451,21 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        -- "Queued follow-up" is positional, not the row's transient status:
+        -- the first pending task is the current turn even before claim.
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = message.chat_session_id
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE WHEN head.status = 'queued' THEN 1 ELSE 0 END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
 ORDER BY message.created_at ASC, message.id ASC;
@@ -468,6 +483,19 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = message.chat_session_id
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE WHEN head.status = 'queued' THEN 1 ELSE 0 END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
 ORDER BY message.created_at ASC, message.id ASC;
@@ -495,6 +523,19 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = message.chat_session_id
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE WHEN head.status = 'queued' THEN 1 ELSE 0 END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
   AND (

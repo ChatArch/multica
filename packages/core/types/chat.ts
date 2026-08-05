@@ -173,6 +173,11 @@ export interface SendChatMessageResponse {
   /** True when the server supports queued follow-up sends. */
   supports_queue?: boolean;
   /**
+   * True only when this task was accepted behind another in-flight task in
+   * the same chat session. Optional for compatibility with older servers.
+   */
+  queued?: boolean;
+  /**
    * Server-authoritative task creation time. Optimistic StatusPill seed
    * uses this as its anchor so the timer starts from the real `0s` —
    * without it the front-end falls back to its local clock and the
@@ -260,8 +265,8 @@ export interface ChatPendingTask {
   /** Explicit capability gate; absent on servers predating follow-up queues. */
   supports_queue?: boolean;
   /**
-   * Ordered prompts that are still queued. When no task is active, the legacy
-   * root fields mirror the first entry for backward compatibility.
+   * Ordered follow-ups behind the root task. The root may itself still have
+   * database status `queued` before claim, but is never duplicated here.
    */
   queued_tasks?: ChatQueuedTask[];
 }

@@ -37,9 +37,26 @@ function asSummary(task: ChatPendingTask): ChatQueuedTask | undefined {
 export function enqueuePendingChatTask(
   current: ChatPendingTask | undefined,
   task: ChatQueuedTask,
+  queued = Boolean(current?.task_id && current.task_id !== task.task_id),
 ): ChatPendingTask {
   if (!current?.task_id) {
-    return { ...task, queued_tasks: [task] };
+    // A queued send can arrive before this client has loaded the real head.
+    // Keep it hidden as a queue-only row until the authoritative refetch
+    // fills in the head; an idle send becomes the head immediately.
+    const queueSupport = current?.supports_queue === undefined
+      ? {}
+      : { supports_queue: current.supports_queue };
+    return queued
+      ? { ...queueSupport, queued_tasks: [task] }
+      : {
+          ...task,
+          ...queueSupport,
+          queued_tasks: normalizeQueue(
+            (current?.queued_tasks ?? []).filter((queuedTask) =>
+              queuedTask.task_id !== task.task_id
+            ),
+          ),
+        };
   }
   if (current.task_id === task.task_id) {
     const status = current.status && current.status !== "queued"
@@ -53,9 +70,14 @@ export function enqueuePendingChatTask(
       ...task,
       status,
       created_at: current.created_at || task.created_at,
-      queued_tasks: status === "queued"
-        ? normalizeQueue([...queuedTasks, task])
-        : queuedTasks,
+      queued_tasks: queuedTasks,
+    };
+  }
+  if (!queued) {
+    return {
+      ...task,
+      supports_queue: current.supports_queue,
+      queued_tasks: [],
     };
   }
   return {
@@ -112,7 +134,10 @@ export function removePendingChatTask(
     (current.queued_tasks ?? []).filter((task) => task.task_id !== taskID),
   );
   if (!next) return EMPTY_PENDING_TASK;
-  return { ...next, supports_queue: current.supports_queue, queued_tasks: [next, ...rest] };
+  const queueSupport = current.supports_queue === undefined
+    ? {}
+    : { supports_queue: current.supports_queue };
+  return { ...next, ...queueSupport, queued_tasks: rest };
 }
 
 export function prioritizePendingChatTask(

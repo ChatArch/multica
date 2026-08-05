@@ -688,6 +688,7 @@ type SendChatMessageResponse struct {
 	MessageID     string `json:"message_id"`
 	TaskID        string `json:"task_id"`
 	SupportsQueue bool   `json:"supports_queue"`
+	Queued        bool   `json:"queued"`
 	// AttachmentIDs are the attachment rows actually bound to this message by
 	// the server. The client diffs these against the ids it requested so it
 	// can warn the user when an attachment silently failed to bind — no extra
@@ -869,6 +870,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		MessageID:     uuidToString(msg.ID),
 		TaskID:        uuidToString(task.ID),
 		SupportsQueue: true,
+		Queued:        sent.Queued,
 		CreatedAt:     timestampToString(task.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
@@ -1481,8 +1483,8 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	head := tasks[0]
-	queued := make([]QueuedChatTaskResponse, 0, len(tasks))
-	for _, task := range tasks {
+	queued := make([]QueuedChatTaskResponse, 0, len(tasks)-1)
+	for _, task := range tasks[1:] {
 		if task.Status != "queued" {
 			continue
 		}

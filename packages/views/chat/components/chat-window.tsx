@@ -534,6 +534,7 @@ export function ChatWindow() {
         message_id: result.message_id,
         content: finalContent,
         supports_queue: result.supports_queue,
+        queued: result.queued,
       });
       // Cache primed → publish the new active session, but only if the user
       // hasn't navigated away mid-send. Compare the live store against the

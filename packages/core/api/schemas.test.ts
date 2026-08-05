@@ -35,6 +35,7 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  SendChatMessageResponseSchema,
   SquadListSchema,
   SquadSchema,
   TimelineEntriesSchema,
@@ -473,6 +474,22 @@ describe("ChatPendingTaskSchema", () => {
       task_id: "task-active",
       queued_tasks: [],
     });
+  });
+});
+
+describe("SendChatMessageResponseSchema", () => {
+  const base = {
+    message_id: "message-1",
+    task_id: "task-1",
+    created_at: "2026-08-05T00:00:00Z",
+  };
+
+  it("parses the server-authoritative queue position", () => {
+    expect(SendChatMessageResponseSchema.parse({ ...base, queued: false }).queued).toBe(false);
+  });
+
+  it("ignores a malformed additive queue position without losing the accepted send", () => {
+    expect(SendChatMessageResponseSchema.parse({ ...base, queued: "no" }).queued).toBeUndefined();
   });
 });
 

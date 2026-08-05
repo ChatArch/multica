@@ -301,6 +301,7 @@ export default function ChatTab() {
           task_id: result.task_id,
           created_at: result.created_at,
           supports_queue: result.supports_queue,
+          queued: result.queued,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         if (options.clearDraft !== false) {

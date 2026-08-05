@@ -1718,6 +1718,7 @@ type DirectChatSendResult struct {
 	Task               db.AgentTaskQueue
 	Message            db.ChatMessage
 	BoundAttachmentIDs []pgtype.UUID
+	Queued             bool
 }
 
 // SendDirectChatMessage atomically persists one web/mobile direct-chat turn:
@@ -1777,6 +1778,17 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 		}
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
+		}
+
+		// The database status of every newly-created task is "queued" until a
+		// daemon claims it. Product queue semantics are positional instead: this
+		// send is a follow-up only when another visible task in the same session
+		// is already ahead of it. The session + agent locks serialize sibling
+		// sends and claims around this read.
+		if _, err := qtx.GetPendingChatTask(ctx, session.ID); err == nil {
+			out.Queued = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check direct chat queue position: %w", err)
 		}
 
 		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
