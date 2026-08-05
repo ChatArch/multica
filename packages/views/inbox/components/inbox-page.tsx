@@ -636,22 +636,29 @@ export function InboxPage() {
       );
     }
 
-    // Mobile: show detail full-screen when an item is selected.
-    //
-    // No scroll container and no back bar of our own: `IssueDetail` owns both.
-    // Wrapping it in an `overflow-y-auto` used to collapse its inner scroller
-    // to content height, which took its header (and the done/pin/more/sidebar
-    // actions in it) out of the pinned position, made `position: sticky`
-    // inside it a no-op, and pointed both scroll restoration and the timeline
-    // virtualizer at an element that never scrolls. This wrapper only has to
-    // give the detail a definite height to fill.
+    // Mobile: show detail full-screen when an item is selected. The two kinds
+    // of selection get their chrome from different places, so they render
+    // differently — `InboxItem.issue_id` is nullable and a null one is a plain
+    // notification (a failed quick-create, say), not an issue.
+    if (selected?.issue_id) {
+      // No scroll container and no back bar of our own: `IssueDetail` owns
+      // both, and takes the way back through `leadingAction`. Wrapping it in
+      // an `overflow-y-auto` used to collapse its inner scroller to content
+      // height, which took its header (and the done/pin/more/sidebar actions
+      // in it) out of the pinned position, made `position: sticky` inside it a
+      // no-op, and pointed both scroll restoration and the timeline
+      // virtualizer at an element that never scrolls. This wrapper only has to
+      // give the detail a definite height to fill.
+      return <div className="flex flex-1 flex-col min-h-0">{detailContent}</div>;
+    }
+
     if (selected) {
+      // A notification body is a plain block with no header to host a leading
+      // slot and no scroller of its own, so this branch keeps supplying both.
       return (
         <div className="flex flex-1 flex-col min-h-0">
-          {/* `InboxItem.issue_id` is nullable, so `detailContent` can be null
-              for a selected row. Without the bar that is a blank screen with
-              no way back. */}
-          {detailContent ?? mobileBackBar}
+          {mobileBackBar}
+          <div className="flex-1 min-h-0 overflow-y-auto">{detailContent}</div>
         </div>
       );
     }
