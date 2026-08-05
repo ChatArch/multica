@@ -2248,7 +2248,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			var inputLoadErr error
 			if task.ChatInputTaskID.Valid {
 				unanswered, inputLoadErr = h.Queries.ListChatInputMessages(r.Context(), task.ChatInputTaskID)
-			} else if msgs, err := h.Queries.ListChatMessages(r.Context(), cs.ID); err == nil {
+			} else if msgs, err := h.Queries.ListChatMessagesForLegacyTask(r.Context(), cs.ID); err == nil {
 				unanswered = trailingUserMessages(msgs)
 			} else {
 				inputLoadErr = err

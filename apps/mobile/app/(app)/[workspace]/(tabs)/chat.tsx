@@ -33,7 +33,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  AppState,
   KeyboardAvoidingView,
   Platform,
   View,
@@ -46,6 +45,10 @@ import type {
   ChatMessage,
   ChatPendingTask,
 } from "@multica/core/types";
+import {
+  hideQueuedChatMessages,
+  removePendingChatTask,
+} from "@multica/core/chat/pending";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -59,11 +62,6 @@ import {
   taskMessagesOptions,
 } from "@/data/queries/chat";
 import {
-  ACTIVE_CHAT_POLL_INTERVAL_MS,
-  refetchActiveChat,
-  shouldPollActiveChat,
-} from "@/data/queries/chat-polling";
-import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
@@ -74,6 +72,10 @@ import {
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
+import {
+  invalidatePendingTask,
+  seedAcceptedPendingTask,
+} from "@/data/realtime/chat-ws-updaters";
 import { canAssignAgent } from "@/lib/can-assign-agent";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import { useAgentPresence } from "@/lib/use-agent-presence";
@@ -98,19 +100,6 @@ export default function ChatTab() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
-  const [isAppActive, setIsAppActive] = useState(
-    () => AppState.currentState === "active",
-  );
-
-  // React Navigation tracks tab focus, not whether iOS has backgrounded the
-  // app. Keep the pull fallback strictly foreground-only so it never turns
-  // into background polling when timers happen to survive a transition.
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (nextState) => {
-      setIsAppActive(nextState === "active");
-    });
-    return () => sub.remove();
-  }, []);
 
   // Bridge to the chat-sessions formSheet route. Mirror local
   // activeSessionId into the store so the picker can render the current
@@ -152,6 +141,7 @@ export default function ChatTab() {
   const { data: pendingTask } = useQuery(
     pendingChatTaskOptions(activeSessionId),
   );
+  const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -213,43 +203,6 @@ export default function ChatTab() {
     setActiveSessionId(null);
   });
 
-  const isFocused = useIsFocused();
-
-  // A chat that becomes visible must not depend on a reconnect or a fresh WS
-  // event to catch up. This also recovers a session after a tab/app switch.
-  useFocusEffect(
-    useCallback(() => {
-      if (isAppActive && activeSessionId) {
-        void refetchActiveChat(qc, activeSessionId);
-      }
-    }, [activeSessionId, isAppActive, qc]),
-  );
-
-  // WebSocket is the fast path, not the sole source of truth. While an active
-  // task is visible, pull its messages, task pointer, and persisted progress
-  // every four seconds. Stop immediately if the tab loses focus or the task
-  // completes, so idle/background chats consume no polling traffic.
-  useEffect(() => {
-    if (
-      !activeSessionId ||
-      !shouldPollActiveChat(
-        isFocused,
-        isAppActive,
-        activeSessionId,
-        pendingTask?.task_id,
-      )
-    ) {
-      return;
-    }
-    const sessionId = activeSessionId;
-    const refresh = () => {
-      void refetchActiveChat(qc, sessionId, pendingTask?.task_id);
-    };
-    refresh();
-    const timer = setInterval(refresh, ACTIVE_CHAT_POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [activeSessionId, isAppActive, isFocused, pendingTask?.task_id, qc]);
-
   // Exit text-selection mode whenever the chat tab loses focus. Expo
   // Router bottom tabs stay mounted across tab switches, so a plain
   // useEffect cleanup wouldn't fire — useFocusEffect is the navigation-
@@ -259,6 +212,7 @@ export default function ChatTab() {
   );
 
   // ── Auto markRead while viewing a session with unread state ──────────
+  const isFocused = useIsFocused();
   const markRead = useMarkChatSessionRead();
   useEffect(() => {
     if (!isFocused) return;
@@ -342,10 +296,11 @@ export default function ChatTab() {
         const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
-        qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
+        seedAcceptedPendingTask(qc, {
+          chat_session_id: sessionId,
           task_id: result.task_id,
-          status: "queued",
           created_at: result.created_at,
+          supports_queue: result.supports_queue,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         if (options.clearDraft !== false) {
@@ -373,11 +328,18 @@ export default function ChatTab() {
   // ── Cancel in-flight ───────────────────────────────────────────────────
   const handleStop = useCallback(() => {
     if (!pendingTask?.task_id || !activeSessionId) return;
-    qc.setQueryData(chatKeys.pendingTask(activeSessionId), {});
-    void api.cancelTaskById(pendingTask.task_id).catch(() => {
-      // Silent — task may have already terminated server-side.
-    });
-  }, [pendingTask?.task_id, activeSessionId, qc]);
+    if (pendingTask.status === "queued") return;
+    const taskId = pendingTask.task_id;
+    const sessionId = activeSessionId;
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
+      removePendingChatTask(old, taskId),
+    );
+    void api.cancelTaskById(taskId)
+      .catch(() => {
+        // Silent — task may have already terminated server-side.
+      })
+      .finally(() => invalidatePendingTask(qc, sessionId));
+  }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
 
   // ── Header / sheet actions ─────────────────────────────────────────────
   const handleNewChat = useCallback(() => {
@@ -470,7 +432,7 @@ export default function ChatTab() {
         className="flex-1"
       >
         <ChatMessageList
-          messages={messages}
+          messages={visibleMessages}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
           agentName={currentAgent?.name}
@@ -497,6 +459,7 @@ export default function ChatTab() {
           onSend={handleSend}
           onStop={handleStop}
           sending={sending}
+          allowStop={pendingTask?.status !== "queued"}
           disabled={disabled}
           disabledReason={disabledReason}
         />

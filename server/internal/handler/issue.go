@@ -2974,7 +2974,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			AssigneeChanged: assigneeChanged,
 			StatusChanged:   statusChanged,
 		},
-		h.issueTriggerProbe(r, actorType, actorID, workspaceID, issue),
+		h.issueTriggerWriteProbe(r, actorType, issue),
 	); ok && !req.SuppressRun {
 		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
 	}
@@ -3067,8 +3067,8 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 // shouldEnqueueAgentTask returns true when an issue creation or assignment
 // should trigger the assigned agent. Backlog issues are skipped — backlog
 // acts as a parking lot where issues can be pre-assigned without immediately
-// triggering execution. Moving out of backlog or blocked is handled separately
-// in UpdateIssue.
+// triggering execution. Moving out of backlog is handled separately in
+// UpdateIssue.
 func (h *Handler) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bool {
 	if issue.Status == "backlog" {
 		return false
@@ -3472,7 +3472,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				AssigneeChanged: assigneeChanged,
 				StatusChanged:   statusChanged,
 			},
-			h.issueTriggerProbe(r, actorType, actorID, workspaceID, issue),
+			h.issueTriggerWriteProbe(r, actorType, issue),
 		); ok && !req.Updates.SuppressRun {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}

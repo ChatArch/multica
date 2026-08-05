@@ -20,6 +20,7 @@
  *   - chatKeys.pendingTask(sessionId)→ ChatPendingTask (empty `{}` = no in-flight)
  */
 import type { QueryClient } from "@tanstack/react-query";
+import { enqueuePendingChatTask } from "@multica/core/chat/pending";
 import type {
   ChatDonePayload,
   ChatMessage,
@@ -150,9 +151,9 @@ export function applyChatDoneToCache(
   qc.invalidateQueries({
     queryKey: chatKeys.messages(payload.chat_session_id),
   });
-  // Clear in-flight pointer in the same tick so StatusPill unmounts and
-  // the AssistantMessage owns the rendering.
-  qc.setQueryData(chatKeys.pendingTask(payload.chat_session_id), {});
+  // A queued successor may already exist. Refetch the server-authoritative
+  // head instead of clearing it and briefly presenting the session as idle.
+  invalidatePendingTask(qc, payload.chat_session_id);
 }
 
 /**
@@ -210,14 +211,9 @@ export function seedPendingTaskFromQueued(
   payload: TaskQueuedPayload,
 ) {
   if (!payload.chat_session_id) return;
-  qc.setQueryData<ChatPendingTask>(
-    chatKeys.pendingTask(payload.chat_session_id),
-    (old) => ({
-      ...(old ?? {}),
-      task_id: payload.task_id,
-      status: "queued",
-    }),
-  );
+  // A follow-up can be queued while another task is active. The event does
+  // not carry enough queue state to replace that active head safely.
+  invalidatePendingTask(qc, payload.chat_session_id);
 }
 
 export function promotePendingTaskToRunning(
@@ -234,13 +230,52 @@ export function promotePendingTaskToRunning(
       return { ...old, status: "running" };
     },
   );
+  invalidatePendingTask(qc, payload.chat_session_id);
+  qc.invalidateQueries({
+    queryKey: chatKeys.messages(payload.chat_session_id),
+  });
 }
 
-export function clearPendingTask(
+export function invalidatePendingTask(
   qc: QueryClient,
   sessionId: string,
 ) {
-  qc.setQueryData(chatKeys.pendingTask(sessionId), {});
+  qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+}
+
+export function seedAcceptedPendingTask(
+  qc: QueryClient,
+  payload: {
+    chat_session_id: string;
+    task_id: string;
+    created_at: string;
+    supports_queue?: boolean;
+  },
+) {
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(payload.chat_session_id),
+    (old) => {
+      const task = {
+        task_id: payload.task_id,
+        status: "queued",
+        created_at: payload.created_at,
+      };
+      const next =
+        old?.task_id?.startsWith("optimistic-")
+          ? {
+              ...old,
+              ...task,
+              status: old.status && old.status !== "queued" ? old.status : task.status,
+              created_at: old.created_at || task.created_at,
+            }
+          : enqueuePendingChatTask(old, task);
+      if (payload.supports_queue === true || old?.supports_queue === true) {
+        next.supports_queue = true;
+      }
+      return next;
+    },
+  );
+  invalidatePendingTask(qc, payload.chat_session_id);
 }
 
 // =====================================================

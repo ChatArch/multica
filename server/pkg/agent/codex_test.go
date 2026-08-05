@@ -3133,8 +3133,8 @@ func TestCodexExecuteCleansUpWhenScannerOverflowsOnResume(t *testing.T) {
 	}
 
 	// Regression for GH#4520. On `thread/resume`, the fake codex emits a
-	// single stdout line larger than the daemon's bufio.Scanner cap (10 MB),
-	// which trips "bufio.Scanner: token too long" in the reader goroutine.
+	// single stdout line larger than agentStreamMaxLineBytes, which trips
+	// "bufio.Scanner: token too long" in the reader goroutine.
 	// Pre-fix, drainAndWait then hung forever on cmd.Wait(): the reader had
 	// stopped consuming the pipe, codex was blocked writing into a full
 	// stdout buffer, stdin.Close never unblocked codex, and the deferred
@@ -3155,12 +3155,13 @@ func TestCodexExecuteCleansUpWhenScannerOverflowsOnResume(t *testing.T) {
 		`read line`+"\n"+
 		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
 		`read line`+"\n"+
-		// Emit a > 10 MB single line with no embedded newline. printf
+		// Emit a single line past the cap with no embedded newline. printf
 		// avoids the trailing newline echo would add; head + tr generates
-		// the bulk payload in pure POSIX shell. The scanner errors out at
-		// 10 MB even though we write 11 MB.
+		// the bulk payload in pure POSIX shell. The size is derived from
+		// the production constant so raising the cap cannot silently turn
+		// this regression test into a no-op.
 		`printf '{"jsonrpc":"2.0","id":2,"result":{"big":"'`+"\n"+
-		`head -c 11000000 /dev/zero | tr '\0' 'x'`+"\n"+
+		fmt.Sprintf(`head -c %d /dev/zero | tr '\0' 'x'`, agentStreamMaxLineBytes+1024*1024)+"\n"+
 		`printf '"}}\n'`+"\n"+
 		// Hold the process open without reading more stdin. Pre-fix this
 		// hangs cmd.Wait() because codex never sees stdin EOF (it isn't

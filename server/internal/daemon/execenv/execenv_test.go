@@ -989,62 +989,49 @@ func TestInjectRuntimeConfigBackgroundTaskSafetyProviderAgnostic(t *testing.T) {
 			s := string(data)
 			for _, want := range []string{
 				"## Background Task Safety",
-				// The orphan rule is scoped to run-owned work — an unscoped
-				// "anything still running" would sweep in external systems
-				// (GitHub Actions) the section later says NOT to wait for.
+				// MUL-5442 judgment rewrite (owner-authorized pin renegotiation): the
+				// section now states the one platform fact, the external-systems/CI
+				// boundary with its single exception, and the review-locked
+				// persistent-service contract. Enforcement-detail pins that only
+				// restated derivations of the platform fact were retired with the
+				// prose ("Do NOT end your turn while background tasks", the
+				// tool-promise enumeration, "does not cover tests, builds, CI
+				// polling", "any sleep / retry loop that polls check status", ...).
+				// What stays pinned: the fact, each boundary, each exception, and
+				// the handoff triple — the things an agent cannot infer.
 				"any run-owned work still active is orphaned",
-				"Do NOT end your turn while background tasks",
-				"wait for a future notification/reminder",
-				"run the work synchronously instead",
-				// Hardened pins (MUL-4140): the mechanism that slipped
-				// through in MUL-4091 was a turn ending cleanly with a
-				// "standing by, I'll report when CI finishes" message and
-				// no follow-up wakeup. These pins forbid that shape.
+				"no background-completion wakeup",
+				"whatever a tool response promises",
 				"Never background-and-yield",
-				"foreground tool call that blocks",
-				// MUL-5274: persistent local services are allowed only as
-				// an explicit, verified handoff with a cleanup handle.
+				"foreground tool calls that block",
+				"run unobservable work synchronously",
+				"standing by",
+				"are not run-owned: do not wait",
+				// The full compound ban, not its first item — MUL-5223 made this a
+				// non-derivable boundary, so no member may be silently dropped.
+				"do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls",
+				"GitHub Actions after a successful push",
+				"NOT your delivery acceptance criteria",
+				"CI running: <PR link>",
+				"The one exception",
+				"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
 				"persistent service handoff",
 				"running service itself is the requested deliverable",
-				// MUL-5442: pin the handoff concepts, not the operational
-				// phrasing — but the cleanup handle must stay general (a
-				// supervisor/profile-managed service has no single stable PID)
-				// and the user-facing reply must keep the full URL/logs/stop
-				// triple (durable logs alone are unobservable if the user is
-				// never told where they are).
 				"durable logs",
 				"cleanup handle such as PID/profile",
 				"verify readiness",
 				"URL, logs, and stop instructions",
 				"survival as best-effort, not guaranteed",
-				"does not cover tests, builds, CI polling",
-				"are not agent-owned background tasks",
-				"GitHub Actions after a successful push",
-				"Do not wait for them by default",
-				// MUL-5223: the conceptual boundary above was read as
-				// compatible with `gh pr checks --watch` (a blocking
-				// foreground call) whenever the repo required green CI to
-				// merge. These pins name the banned tool shapes, deny
-				// merge requirements as acceptance criteria, and supply
-				// the replacement hand-off phrasing.
-				"do NOT run `gh pr checks --watch`",
-				"any sleep / retry loop that polls check status",
-				"NOT your delivery acceptance criteria",
-				"CI running: <PR link>",
-				// The ban must stay scoped: an explicitly requested CI
-				// result is still reachable, and the section must name
-				// the one executable way to collect it. Without these
-				// pins the ban could be re-absolutised and the exception
-				// would become unfollowable.
-				"unless the explicit exception below applies",
-				"The one exception",
-				"ONE foreground blocking call (`gh pr checks <pr> --watch`)",
-				"running in the background so you can keep working",
-				"standing by",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s missing background task safety text %q\n---\n%s", tc.file, want, s)
 				}
+			}
+			// Exactly one exception: substring pins cannot see a duplicated
+			// "The one exception" clause (a second, wider-scope copy slipped
+			// in during the MUL-5442 rewrite and every pin stayed green).
+			if got := strings.Count(s, "The one exception"); got != 1 {
+				t.Errorf("%s must state the CI exception exactly once, got %d\n---\n%s", tc.file, got, s)
 			}
 			// `gh run watch` may only appear as a banned command, never as
 			// the section's example of how to wait properly.
@@ -4993,6 +4980,12 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// pinning which section carries it.
 		for _, want := range []string{
 			"Decide whether a reply is warranted",
+			// Both outcomes pinned individually (MUL-5442 stage-1 review):
+			// the work-produced arm and the silent-exit arm must each
+			// survive compression, not just the bullet's heading.
+			"produced actual work",
+			"pure acknowledgment / thanks / sign-off",
+			"do NOT reply",
 			"Silence is a valid and preferred way",
 			"Never @mention the agent you are replying to as a thank-you or sign-off",
 		} {
@@ -5256,8 +5249,11 @@ func TestTaskInitiatorBlockMember(t *testing.T) {
 	for _, want := range []string{
 		"## Task Initiator",
 		"initiated by **Bohan** (bohan@example.com), a member of this workspace",
+		"is who you are answering",
 		"apply any per-person privacy or access rules",
 		"credentials stay scoped to the runtime owner",
+		"attribution does not change what you may read or write",
+		"do not assume the initiator can see everything you can",
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("expected initiator block to contain %q\n---\n%s", want, block)
@@ -5436,7 +5432,6 @@ func TestInjectRuntimeConfigBriefOmitsResumedThreadAnchor(t *testing.T) {
 	for _, want := range []string{
 		"triggering comment is already included above",
 		"No other new comments on this issue since your last run",
-		"active thread anchor `thread-root-1` and triggering comment ID `" + triggerID + "`",
 		"If your reply depends on thread context",
 		"do not rely only on resumed session memory",
 		"multica issue comment list " + issueID + " --thread thread-root-1 --tail 30 --output json",
@@ -5444,6 +5439,11 @@ func TestInjectRuntimeConfigBriefOmitsResumedThreadAnchor(t *testing.T) {
 		if !strings.Contains(hint, want) {
 			t.Errorf("resumed hint missing %q\n---\n%s", want, hint)
 		}
+	}
+	// The anchor-restating sentence is gone (MUL-5721 OPT-1): the read command
+	// carries the thread anchor and the reply cookbook carries the trigger id.
+	if strings.Contains(hint, "active thread anchor") {
+		t.Errorf("resumed hint must not restate anchors outside the commands, got:\n%s", hint)
 	}
 }
 
@@ -5604,30 +5604,22 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	withSection := wantSection{
 		present: []string{
 			"## Issue Metadata",
-			"high-signal scratchpad",
 			"**Read on entry.**",
 			"**Write on exit.**",
-			"**What NOT to pin.**",
-			"**Recommended keys**",
-			// Recommended-key list — both lea's killer-use-case keys
-			// (pr_number, pipeline_status) and the broader set from
-			// review must be named so the workspace converges on shared
-			// vocabulary.
-			"pr_url",
-			"pr_number",
-			"pipeline_status",
-			"deploy_url",
-			"external_issue_url",
-			"waiting_on",
-			"blocked_reason",
-			"decision",
-			// Safety boundaries — these are the negative rules that
-			// keep metadata from rotting into a second description /
-			// log dump.
-			"No secrets, tokens, or API keys",
-			"No logs",
-			"runtime bookkeeping",
-			"snake_case ASCII",
+			"Hints, not truth",
+			// MUL-5442: the brief keeps only what the interface cannot
+			// express — the read stance, the re-read bar, and the two
+			// write-time boundaries (secrets, length). The full ban list
+			// and the key-naming conventions live in the
+			// multica-working-on-issues skill, pinned by
+			// TestWorkingOnIssuesSkillCoversIssueLoopContracts so this
+			// pointer cannot dangle. The recommended-keys block was
+			// removed outright: metadata is deliberately free-form custom
+			// state (owner decision on MUL-5442), not a vocabulary the
+			// platform curates in every brief.
+			"never secrets or long content",
+			"multica issue metadata delete",
+			"the `multica-working-on-issues` skill",
 		},
 	}
 	withoutSection := wantSection{
@@ -5670,6 +5662,10 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
 				"multica issue metadata list issue-md-1 --output json",
+				// Platform failure semantics, not tool mechanics: a failed
+				// metadata read must never block the main task (MUL-5442
+				// stage-1 review).
+				"CLI failures are normal",
 				// Both steps point at the section instead of restating its
 				// rules (MUL-5442); the entry step names what to look for,
 				// the exit step names the write bar.

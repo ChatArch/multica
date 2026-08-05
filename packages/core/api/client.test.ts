@@ -1399,6 +1399,26 @@ describe("ApiClient", () => {
       expect(init.headers["X-Client-Capabilities"]).toBe(CHAT_DRAFT_RESTORE_CAPABILITY);
     });
 
+    it("scopes queued edit cancellation to the expected chat session", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(taskResponse), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await new ApiClient("https://api.example.test").cancelTaskById("task-1", {
+        queuedAction: "edit",
+        sessionId: "session-1",
+      });
+
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(
+        "https://api.example.test/api/tasks/task-1/cancel" +
+          "?expected_status=queued&chat_session_id=session-1&queue_action=edit",
+      );
+    });
+
     it("treats a null cancelled chat message as absent", async () => {
       vi.stubGlobal(
         "fetch",
@@ -1452,6 +1472,18 @@ describe("ApiClient", () => {
       expect(result.id).toBe("");
       expect(result.cancelled_chat_message).toBeUndefined();
     });
+  });
+
+  it("clears a chat queue with one session-scoped request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test").clearQueuedChatTasks("session-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/chat/sessions/session-1/queued-tasks",
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   describe("chat attachment wiring", () => {
@@ -1520,7 +1552,7 @@ describe("ApiClient", () => {
 
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "" }), {
+        new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
           status: 201,
           headers: { "Content-Type": "application/json" },
         }),
@@ -1540,7 +1572,7 @@ describe("ApiClient", () => {
     it("sendChatMessage omits attachment_ids when the list is empty or undefined", async () => {
       const fetchMock = vi.fn().mockImplementation(() =>
         Promise.resolve(
-          new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "" }), {
+          new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
             status: 201,
             headers: { "Content-Type": "application/json" },
           }),
@@ -1554,6 +1586,43 @@ describe("ApiClient", () => {
 
       expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
       expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+    });
+
+    it("sendChatMessage accepts the server's null attachment_ids for text-only sends", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({
+            message_id: "m1",
+            task_id: "t1",
+            created_at: "2026-08-01T00:00:00Z",
+            attachment_ids: null,
+          }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      await expect(
+        new ApiClient("https://api.example.test").sendChatMessage("session-1", "hello"),
+      ).resolves.toMatchObject({ attachment_ids: undefined });
+    });
+
+    it("sendChatMessage rejects a malformed response", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ message_id: "m1", task_id: 42 }), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      await expect(
+        new ApiClient("https://api.example.test").sendChatMessage("session-1", "hello"),
+      ).rejects.toThrow();
     });
   });
 });

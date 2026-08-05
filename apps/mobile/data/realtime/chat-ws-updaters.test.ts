@@ -3,6 +3,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type {
   ChatDonePayload,
   ChatMessage,
+  ChatPendingTask,
   ChatQuickActionsPayload,
 } from "@multica/core/types";
 
@@ -14,6 +15,9 @@ vi.mock("@/data/api", () => ({ api: {} }));
 import {
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
+  promotePendingTaskToRunning,
+  seedAcceptedPendingTask,
+  seedPendingTaskFromQueued,
 } from "./chat-ws-updaters";
 import { chatKeys } from "@/data/queries/chat";
 
@@ -50,8 +54,9 @@ describe("applyChatDoneToCache", () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: chatKeys.messages(SESSION),
     });
-    // pendingTask cleared so the status pill unmounts.
-    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual({});
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
   });
 
   it("invalidates even when the payload lacks an inline message (legacy shape)", () => {
@@ -97,6 +102,90 @@ describe("applyChatDoneToCache", () => {
     applyChatDoneToCache(qc, donePayload());
 
     expect(qc.getQueryData<ChatMessage[]>(chatKeys.messages(SESSION))).toHaveLength(1);
+  });
+});
+
+describe("pending task queue events", () => {
+  it("keeps dispatch state when the send response arrives later", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-1",
+      status: "queued",
+      created_at: "2026-07-09T00:00:00Z",
+    });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    promotePendingTaskToRunning(qc, {
+      task_id: "task-1",
+      agent_id: "agent-1",
+      issue_id: "",
+      runtime_id: "runtime-1",
+      chat_session_id: SESSION,
+    });
+    seedAcceptedPendingTask(qc, {
+      chat_session_id: SESSION,
+      task_id: "task-1",
+      created_at: "2026-07-09T00:00:01Z",
+    });
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toMatchObject({
+      task_id: "task-1",
+      status: "running",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
+  });
+
+  it("does not replace an active head with a sparse follow-up queued event", () => {
+    const qc = new QueryClient();
+    const active: ChatPendingTask = {
+      task_id: "task-active",
+      status: "running",
+      created_at: "2026-07-09T00:00:00Z",
+    };
+    qc.setQueryData(chatKeys.pendingTask(SESSION), active);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    seedPendingTaskFromQueued(qc, {
+      task_id: "task-follow-up",
+      agent_id: "agent-1",
+      issue_id: "",
+      chat_session_id: SESSION,
+      status: "queued",
+    });
+
+    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(active);
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
+  });
+
+  it("refetches pending state and messages when a task is dispatched", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-active",
+      status: "running",
+    });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    promotePendingTaskToRunning(qc, {
+      task_id: "task-follow-up",
+      agent_id: "agent-1",
+      issue_id: "",
+      runtime_id: "runtime-1",
+      chat_session_id: SESSION,
+    });
+
+    expect(qc.getQueryData<ChatPendingTask>(
+      chatKeys.pendingTask(SESSION),
+    )?.task_id).toBe("task-active");
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.messages(SESSION),
+    });
   });
 });
 

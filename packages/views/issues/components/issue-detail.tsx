@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -91,7 +91,6 @@ import { propertyListOptions } from "@multica/core/properties";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import {
   selectExpandedResolved,
-  useCommentComposerStore,
   useRecentIssuesStore,
   useResolvedExpandStore,
   useSubIssueDisplayStore,
@@ -114,6 +113,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useInPageFind } from "../hooks/use-in-page-find";
+import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
 import {
   AnimatedRightSidebar,
@@ -122,17 +122,34 @@ import {
   useAnimatedRightSidebarState,
 } from "../../layout/animated-right-sidebar";
 
+// Shared by the subscribe button and the unsubscribe menu trigger so the two
+// stay one control visually — they occupy the same slot and only differ in
+// what a click does.
+const SUBSCRIPTION_ACTION_CLASS =
+  "text-caption text-muted-foreground hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50";
+
 function SubscriberPopoverContent({
   members,
   agents,
   subscribers,
   toggleSubscriber,
+  togglesDisabled,
   t,
 }: {
   members: { user_id: string; name: string }[];
   agents: { id: string; name: string; archived_at?: string | null }[];
   subscribers: { user_type: string; user_id: string }[];
   toggleSubscriber: (id: string, type: "member" | "agent", subscribed: boolean) => void;
+  /**
+   * Every checkbox here is drawn from `subscribers`, which defaults to an empty
+   * list until the query resolves — so an unresolved query renders everyone as
+   * unsubscribed. Acting on that is not a harmless no-op: an explicit subscribe
+   * rewrites the target's reason to 'manual' and clears any opt-out scope
+   * (server/pkg/db/queries/subscriber.sql), which would quietly discard a
+   * delegated subscription or someone's deliberate opt-out. So these rows wait
+   * for a real answer, not just for the in-flight mutation (MUL-5714).
+   */
+  togglesDisabled: boolean;
   t: ActivityT;
 }) {
   const [search, setSearch] = useState("");
@@ -169,6 +186,7 @@ function SubscriberPopoverContent({
                   <CommandItem
                     key={`member-${m.user_id}`}
                     onSelect={() => toggleSubscriber(m.user_id, "member", isSubbed)}
+                    disabled={togglesDisabled}
                     className="flex items-center gap-2.5"
                   >
                     <Checkbox checked={isSubbed} className="pointer-events-none" />
@@ -188,6 +206,7 @@ function SubscriberPopoverContent({
                   <CommandItem
                     key={`agent-${a.id}`}
                     onSelect={() => toggleSubscriber(a.id, "agent", isSubbed)}
+                    disabled={togglesDisabled}
                     className="flex items-center gap-2.5"
                   >
                     <Checkbox checked={isSubbed} className="pointer-events-none" />
@@ -901,6 +920,14 @@ interface IssueDetailProps {
   layoutId?: string;
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
   highlightCommentId?: string;
+  /**
+   * Far-left header slot, replacing the mobile sidebar trigger. A host that
+   * embeds this detail one level deep (the inbox, on a phone) passes its own
+   * "back" control here instead of stacking a second 48px bar above us — the
+   * breadcrumb this header already renders names the issue's container, not
+   * the surface the reader arrived from, so only the host can spell that trip.
+   */
+  leadingAction?: ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,20 +940,37 @@ interface IssueDetailProps {
  * so mounts a second observer on the already-failed query, which refetches it
  * and restarts the resolve/remount cycle indefinitely.
  */
-export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean }) {
+export function IssueNotFound({
+  showBackLink = true,
+  leading,
+}: {
+  showBackLink?: boolean;
+  /**
+   * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
+   * host that hands its whole screen to this component (the inbox, on a phone)
+   * has no bar of its own left, so this state has to carry the trip back or
+   * there is none.
+   */
+  leading?: ReactNode;
+}) {
   const { t } = useT("issues");
   const backOrReplace = useBackOrReplace();
   const paths = useWorkspacePaths();
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-      <p>{t(($) => $.detail.not_found)}</p>
-      {showBackLink && (
-        <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-          {t(($) => $.detail.back)}
-        </Button>
+    <div className="flex flex-1 min-h-0 flex-col">
+      {leading && (
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">{leading}</div>
       )}
+      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
+        <p>{t(($) => $.detail.not_found)}</p>
+        {showBackLink && (
+          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+            {t(($) => $.detail.back)}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -940,19 +984,28 @@ export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean 
  * an identifier URL to its issue — the two waits are indistinguishable to the
  * user, and rendering the same skeleton keeps them that way.
  */
-export function IssueDetailSkeleton() {
+export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
   return (
     <div className="flex flex-1 min-h-0 flex-col">
+      {/* The way back is real from the first frame, not once the issue lands:
+          a host that gave up its own bar for `leadingAction` has nothing else
+          to offer while this skeleton owns the screen. */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Skeleton className="h-4 w-16" />
-        <Skeleton className="h-4 w-4" />
-        <Skeleton className="h-4 w-24" />
+        {leading ?? (
+          <>
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-4" />
+            <Skeleton className="h-4 w-24" />
+          </>
+        )}
       </div>
       <div className="flex flex-1 min-h-0">
         {/* Same scrollbar-gutter as the loaded scroller below, so the skeleton
             column doesn't shift sideways when real content mounts. */}
         <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
-          <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
+          {/* Gutters match the loaded column exactly (see its comment), so the
+              skeleton doesn't reflow sideways when real content mounts. */}
+          <div className="mx-auto w-full max-w-4xl px-4 py-6 space-y-6 md:px-8 md:py-8">
             <Skeleton className="h-8 w-3/4" />
             <div className="space-y-2">
               <Skeleton className="h-4 w-full" />
@@ -996,7 +1049,7 @@ export function IssueDetailSkeleton() {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const id = issueId;
@@ -1094,8 +1147,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     [restoreScrollRef],
   );
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
-  // User preference: pin the bottom comment bar to the scroll viewport.
-  const stickyComposer = useCommentComposerStore((s) => s.sticky);
+  // User preference: pin the bottom comment bar to the scroll viewport. Off
+  // below `md` regardless of the preference — see the hook.
+  const stickyComposer = useStickyComposer();
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -1467,7 +1521,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   } = useIssueReactions(id, user?.id);
 
   const {
-    subscribers, isSubscribed, subscriptionReason,
+    subscribers, isSubscribed, subscriptionReason, subscriptionKnown,
+    togglePending, subtreePending,
     toggleSubscribe: handleToggleSubscribe, toggleSubscriber,
     unsubscribeFromSubtree: handleUnsubscribeSubtree,
   } = useIssueSubscribers(id, user?.id);
@@ -1496,10 +1551,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     ...projectDetailOptions(wsId, issueProjectId ?? ""),
     enabled: !!issueProjectId,
   });
-  const { data: childIssues = [] } = useQuery({
+  const {
+    data: childIssues = [],
+    isSuccess: childIssuesLoaded,
+    isFetching: childIssuesFetching,
+  } = useQuery({
     ...childIssuesOptions(wsId, id),
     enabled: !!issue,
   });
+  // Whether this issue has sub-issues, as opposed to "we have not looked yet".
+  // childIssuesOptions sets refetchOnMount: "always", so a cached snapshot is
+  // re-fetched on every mount and isSuccess alone still describes the previous
+  // visit. The unsubscribe control below picks a different server write from
+  // this answer, so a defaulted or stale empty array must not count as "no
+  // sub-issues" (MUL-5714).
+  const childCountKnown = childIssuesLoaded && !childIssuesFetching;
   // Parent's children — used to render the "x/y" progress next to the
   // "Sub-issue of …" breadcrumb under the title.
   const { data: parentChildIssues = [] } = useQuery({
@@ -1809,11 +1875,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
 
   if (loading) {
-    return <IssueDetailSkeleton />;
+    return <IssueDetailSkeleton leading={leadingAction} />;
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} />;
+    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} />;
   }
 
   const sidebarContent = (
@@ -2274,6 +2340,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           />
         )}
         <BreadcrumbHeader
+          leading={leadingAction}
           segments={breadcrumbSegments}
           leaf={
             <AppLink
@@ -2383,7 +2450,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           data-tab-scroll-root
           className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
-        <div className="mx-auto w-full max-w-4xl px-8 py-8">
+        {/* Gutters: 32px is a comfortable reading margin on a desktop column
+            but eats 16% of a 393px phone, so below `md` they drop to 16px.
+            `max-md:pb-chat-launcher` reserves the launcher's corner at the end
+            of the scroll: below `md` the composer is not pinned (see
+            `useStickyComposer`), so it lands here — right where the launcher
+            floats — once the reader scrolls to the bottom. */}
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 max-md:pb-chat-launcher md:px-8 md:py-8">
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor
@@ -2646,29 +2719,66 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     </TooltipContent>
                   </Tooltip>
                 )}
-                {isSubscribed ? (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger className="text-caption text-muted-foreground hover:text-foreground transition-colors">
-                      {t(($) => $.detail.unsubscribe)}
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={handleToggleSubscribe}>
-                        {t(($) => $.detail.unsubscribe_this)}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={handleUnsubscribeSubtree}>
-                        {t(($) => $.detail.unsubscribe_subtree)}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleToggleSubscribe}
-                    className="text-caption text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {t(($) => $.detail.subscribe)}
-                  </button>
-                )}
+                {/* Nothing until the subscribers query resolves: the default
+                    empty list reads as "not subscribed" for everyone, so
+                    rendering it flashes Subscribe at someone who is already
+                    subscribed, and a click landing in that window sends a
+                    subscribe instead of the unsubscribe they meant. An
+                    unresolved state is better shown as no control than as the
+                    wrong one (MUL-5714). */}
+                {subscriptionKnown &&
+                  (!isSubscribed || (childCountKnown && childIssues.length === 0) ? (
+                    /* One button, no menu, when there is nothing for the
+                       subtree option to cover. This is the root-only path
+                       (opt_out_scope='issue'), NOT the subtree one: even at
+                       zero children the two are different server writes,
+                       because a subtree tombstone also keeps FUTURE children
+                       from re-subscribing the user
+                       (server/pkg/db/queries/subscriber.sql). Declining one
+                       issue must not silently opt someone out of a tree that
+                       does not exist yet. While the child count is unknown we
+                       keep the menu below — it never picks a scope for the
+                       user. */
+                    <button
+                      type="button"
+                      onClick={handleToggleSubscribe}
+                      disabled={togglePending || !user?.id}
+                      className={SUBSCRIPTION_ACTION_CLASS}
+                    >
+                      {isSubscribed
+                        ? t(($) => $.detail.unsubscribe)
+                        : t(($) => $.detail.subscribe)}
+                    </button>
+                  ) : (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        disabled={togglePending || subtreePending || !user?.id}
+                        className={SUBSCRIPTION_ACTION_CLASS}
+                      >
+                        {t(($) => $.detail.unsubscribe)}
+                      </DropdownMenuTrigger>
+                      {/* onClick, not onSelect: Base UI's Menu.Item exposes no
+                          onSelect (that is the Radix spelling), and because its
+                          props extend the full div attribute set, an onSelect
+                          typechecks and silently lands on the DOM node as the
+                          native text-selection event — the handler never runs
+                          (MUL-5710). */}
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={handleToggleSubscribe}
+                          disabled={togglePending}
+                        >
+                          {t(($) => $.detail.unsubscribe_this)}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={handleUnsubscribeSubtree}
+                          disabled={subtreePending}
+                        >
+                          {t(($) => $.detail.unsubscribe_subtree)}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ))}
                 <Popover>
                   <PopoverTrigger className="cursor-pointer hover:opacity-80 transition-opacity">
                     {subscribers.length > 0 ? (
@@ -2697,6 +2807,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     agents={agents}
                     subscribers={subscribers}
                     toggleSubscriber={toggleSubscriber}
+                    togglesDisabled={
+                      !subscriptionKnown || togglePending || !user?.id
+                    }
                     t={t}
                   />
                 </Popover>
