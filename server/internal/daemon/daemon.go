@@ -5706,6 +5706,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// NEXT task off that thread rather than replaying the overflow
 			// forever (MUL-5722).
 			failureReason, _ = classifyResumeUnsafeTransport(provider, errMsg)
+			if failureReason != "" && retiredSessionID == "" && task.PriorSessionID != "" {
+				// Name the thread explicitly. The failure happens before the
+				// turn starts, so the backend has no session id to report and
+				// this row lands with session_id NULL — which means neither
+				// the reason above nor any error-text filter on this row can
+				// identify WHICH session to avoid. retired_session_id is the
+				// one channel that does not depend on the failed row carrying
+				// the session, and it is what the resume lookups and the chat
+				// pointer cleanup both key off.
+				retiredSessionID = task.PriorSessionID
+			}
 		}
 		if failureReason != "" {
 			taskLog.Warn("agent failed with a resume-unsafe error, retiring the session",

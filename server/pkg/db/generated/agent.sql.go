@@ -3016,6 +3016,15 @@ WITH retired_sessions AS (
     FROM agent_task_queue r
     WHERE r.agent_id = $1 AND r.issue_id = $2
       AND r.retired_session_id IS NOT NULL
+), resume_overflow_at AS (
+    SELECT MAX(COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at)) AS at
+    FROM agent_task_queue t
+    WHERE t.agent_id = $1 AND t.issue_id = $2
+      AND t.status = 'failed'
+      AND (
+        COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
+      )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
@@ -3035,10 +3044,20 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
       AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%image dimensions exceed max allowed size%' AND COALESCE(error, '') ILIKE '%image.source.base64.data%')
-      AND NOT (COALESCE(error, '') ILIKE '%thread/resume failed%' AND COALESCE(error, '') ILIKE '%token too long%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
     )
+  )
+  -- MUL-5722: a resume that overflowed the reader names no session, so it can
+  -- only be excluded by time, not by matching the failed row. Drop every
+  -- session whose last terminal activity predates the newest such failure: one
+  -- of them IS the oversized thread, and the row that would tell us which is
+  -- exactly the row that could not be written. Anything that terminated after
+  -- the overflow is the fresh thread that replaced it, so this un-blocks itself
+  -- as soon as one succeeds.
+  AND (
+    (SELECT at FROM resume_overflow_at) IS NULL
+    OR terminal_at > (SELECT at FROM resume_overflow_at)
   )
 ORDER BY terminal_at DESC
 LIMIT 1
@@ -3129,16 +3148,14 @@ type GetLastTaskSessionRow struct {
 // exactly as narrow as classifyPoisonedError and the Kiro detector — an
 // unrelated error that only mentions image dimensions is NOT excluded.
 //
-// The thread/resume + "token too long" ILIKE pair does the same job for
-// MUL-5722, and it is the clause that unsticks issues that are ALREADY stuck:
-// every such row in the table today was written before the daemon could
-// classify this failure, so it carries 'agent_error.process_failure' — a
-// resume-SAFE reason — and the oversized thread stays selected as the resume
-// pointer until this clause filters it out. It also covers the installs where
-// that is a permanent condition rather than a deploy window, since daemons
-// upgrade on their own schedule. Both markers are required, matching
-// agent.CodexResumeOverflowError exactly: an overflow on some other RPC says
-// nothing about whether the session can be resumed.
+// MUL-5722 needed a different shape, and the reason is worth stating because
+// the first attempt got it wrong: a row-level guard like the ones above CANNOT
+// work for an overflowed resume. That failure happens before the turn starts,
+// so the backend has no session id to report and the row lands with session_id
+// NULL — which the latest_per_session CTE drops before any filter runs. The
+// only row naming the oversized thread is the OLDER completed one, which looks
+// perfectly healthy. Hence resume_overflow_at below: block by TIME, which needs
+// nothing from the failed row but its existence. See the clause for details.
 //
 // The final pair of regexes is the provider-agnostic version of the same
 // guard, and it matters most for self-hosted installs: daemons upgrade on
