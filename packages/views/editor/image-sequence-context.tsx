@@ -44,6 +44,7 @@ import {
 import { useT } from "../i18n";
 import {
   AttachmentPreviewModal,
+  PreviewImagePrefetch,
   type PreviewSource,
 } from "./attachment-preview-modal";
 
@@ -198,6 +199,21 @@ export function ImageSequenceProvider({
     <ImageSequenceContext.Provider value={api}>
       {children}
       {modal}
+      {/* Warm the immediate neighbours while a preview is open, so paging
+          swaps from cache instead of waiting a network round-trip. Keyed
+          mounts: moving re-targets the prefetch to the new neighbours. */}
+      {open && session && prevIndex >= 0 && (
+        <PreviewImagePrefetch
+          key={session.items[prevIndex]!.key}
+          source={toPreviewSource(session.items[prevIndex]!)}
+        />
+      )}
+      {open && session && nextIndex >= 0 && (
+        <PreviewImagePrefetch
+          key={session.items[nextIndex]!.key}
+          source={toPreviewSource(session.items[nextIndex]!)}
+        />
+      )}
     </ImageSequenceContext.Provider>
   );
 }

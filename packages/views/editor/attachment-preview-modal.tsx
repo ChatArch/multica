@@ -36,6 +36,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -235,6 +236,80 @@ export function useAttachmentPreview(): AttachmentPreviewHandle {
 }
 
 // ---------------------------------------------------------------------------
+// Image swap without a blank frame
+// ---------------------------------------------------------------------------
+
+// Returns the last image URL that finished decoding, holding the previous one
+// on screen while the next downloads. Swapping `<img src>` (or remounting the
+// panel) the moment navigation happens blanks the canvas for the full
+// network+decode gap; decode-then-swap is the standard lightbox fix.
+//
+// On load failure the hook reports the error and keeps the last good frame —
+// when the whole remaining sequence is broken the reader stays on the last
+// image that worked (with the "unavailable" toast) instead of a broken glyph.
+//
+// Engines without `Image.decode()` (jsdom in tests) swap immediately: the old
+// pre-MUL-5752 behaviour, traded back for correctness there.
+function useSettledImageURL(
+  targetUrl: string,
+  enabled: boolean,
+  onLoadError?: () => void,
+): string {
+  const [settled, setSettled] = useState(targetUrl);
+  const onErrorRef = useRef(onLoadError);
+  onErrorRef.current = onLoadError;
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!targetUrl) {
+      setSettled(targetUrl);
+      return;
+    }
+    let cancelled = false;
+    const probe = new window.Image();
+    if (typeof probe.decode !== "function") {
+      setSettled(targetUrl);
+      return;
+    }
+    probe.src = targetUrl;
+    probe.decode().then(
+      () => {
+        if (!cancelled) setSettled(targetUrl);
+      },
+      () => {
+        // Rejection covers both load failure and undecodable bytes.
+        if (!cancelled) onErrorRef.current?.();
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [targetUrl, enabled]);
+
+  return enabled ? settled : targetUrl;
+}
+
+// Warms the browser cache for a sequence neighbour so paging to it swaps
+// without a visible wait: runs the same URL re-sign the panel itself would,
+// then fetches the bytes through a detached <img>. Renders nothing.
+export function PreviewImagePrefetch({ source }: { source: PreviewSource }) {
+  const state = normalize(source);
+  const url = useResignedInlineMediaURL(
+    state.attachmentId ?? undefined,
+    state.mediaUrl,
+    true,
+  );
+
+  useEffect(() => {
+    if (!url) return;
+    const probe = new window.Image();
+    probe.src = url;
+  }, [url]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Modal — frame + dispatch
 // ---------------------------------------------------------------------------
 
@@ -379,13 +454,14 @@ export function AttachmentPreviewModal({
                 destroyed on close, so every open re-fits instead of restoring
                 a stale zoom from the last time this image was viewed.
 
-                Keyed on the file for the same reason across sequence
-                navigation: the zoom canvas only re-fits when the natural size
-                changes, and a run of same-resolution screenshots — the common
-                case in one issue — would otherwise carry a 300% zoom and its
-                pan offset onto the next image. */}
+                Deliberately NOT keyed on the file: remounting the panel on
+                sequence navigation blanks the canvas for the whole
+                network+decode gap. The panel persists and swaps the image
+                only once the next one has decoded (`useSettledImageURL`).
+                Zoom still resets per image — `natural` passes through null on
+                every swap, so the canvas re-fits even across a run of
+                same-resolution screenshots. */}
             <PreviewPanel
-              key={state.attachmentId ?? state.mediaUrl}
               kind={kind}
               source={source}
               state={state}
@@ -435,11 +511,15 @@ function PreviewPanel({
   // clicked, so — unlike the click-through path, where <Attachment> had
   // already upgraded the URL — the modal has to run the re-sign itself. A
   // no-op for URLs that are already loadable (signed CDN, public storage).
-  const mediaUrl = useResignedInlineMediaURL(
+  const targetUrl = useResignedInlineMediaURL(
     state.attachmentId ?? undefined,
     state.mediaUrl,
     kind === "image",
   );
+  // The previous image stays on the canvas until this one has decoded — the
+  // swap itself is what used to flash. Also absorbs the re-sign URL upgrade
+  // (raw -> signed) without a second visible load.
+  const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
 
   // Natural size is carried with the URL it was measured from, so a panel
   // reused for a different attachment can never fit the new image against the
@@ -474,22 +554,23 @@ function PreviewPanel({
     <>
       <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2">
         <FileText className="size-4 shrink-0 text-muted-foreground" />
-        <p className="truncate text-body font-medium">{state.filename}</p>
-        <span className="ml-1 shrink-0 text-caption text-muted-foreground">
-          {state.contentType || "—"}
-        </span>
+        {/* Baseline group: filename (text-body) and type (text-caption) are
+            different type sizes on one line — the row's items-center would
+            center their unequal line boxes and visibly offset the smaller
+            text. Mixed-size text aligns by baseline. */}
+        <div className="flex min-w-0 items-baseline gap-2">
+          <p className="truncate text-body font-medium">{state.filename}</p>
+          <span className="shrink-0 text-caption text-muted-foreground">
+            {state.contentType || "—"}
+          </span>
+        </div>
         <div className="ml-auto flex items-center gap-1">
-          {sequence && (
-            <span className="mr-1 shrink-0 tabular-nums text-caption text-muted-foreground">
-              {t(($) => $.image.sequence_position, {
-                index: sequence.index + 1,
-                total: sequence.total,
-              })}
-            </span>
+          {/* Mounted disabled until the image is measured — appearing on load
+              (and vanishing for the un-measured frame during a sequence swap)
+              would shift the buttons to its right every navigation. */}
+          {kind === "image" && (
+            <ZoomControls canvas={canvas} disabled={!natural} />
           )}
-          {/* Only once the image has been measured: without a natural size
-              there is no canvas behind these buttons to drive. */}
-          {natural && <ZoomControls canvas={canvas} className="mr-1" />}
           {onOpenInNewTab && (
             <button
               type="button"
@@ -563,6 +644,18 @@ function PreviewPanel({
               label={t(($) => $.image.next)}
               onClick={sequence.onNext}
             />
+            {/* Position lives with the navigation it describes, not in the
+                header's action cluster — same bottom-counter shape as the
+                mobile lightbox. */}
+            <span
+              className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 select-none rounded-full bg-background/80 px-2.5 py-1 text-caption tabular-nums text-foreground shadow-sm backdrop-blur-sm"
+              aria-live="polite"
+            >
+              {t(($) => $.image.sequence_position, {
+                index: sequence.index + 1,
+                total: sequence.total,
+              })}
+            </span>
           </>
         )}
       </div>
@@ -593,7 +686,12 @@ function SequenceButton({
       type="button"
       className={cn(
         "absolute top-1/2 z-10 -translate-y-1/2 rounded-full bg-background/80 p-2 text-foreground shadow-sm backdrop-blur-sm transition-opacity",
-        "hover:bg-background disabled:pointer-events-none disabled:opacity-30",
+        // No disabled:pointer-events-none (the shadcn default): this button
+        // floats over the zoom canvas, and letting a disabled boundary arrow
+        // pass pointer events through would show the canvas's grab cursor —
+        // "draggable here" — exactly where the UI means "nothing to click".
+        // The disabled attribute already blocks activation.
+        "enabled:hover:bg-background disabled:opacity-30",
         side === "prev" ? "left-3" : "right-3",
       )}
       title={label}
