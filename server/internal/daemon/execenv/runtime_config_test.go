@@ -338,13 +338,13 @@ func TestIssueWorkflowHonorsAgentIdentity(t *testing.T) {
 		// MUL-5442: the forbids-clause is stated once on the Ownership-mode
 		// header instead of once per status bullet.
 		"skip any status call below that your Agent Identity forbids",
-		"Before step 4, run `multica issue status " + issueID + " in_progress`.",
+		"Before step 4, run `multica issue status <issue-id> in_progress`.",
 		"Complete the task within your Agent Identity boundaries",
 		// Step 4 keeps only what the enumeration cannot express: a
 		// delegation-only role stops once the delegation is delivered.
 		"If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered",
-		"When done, run `multica issue status " + issueID + " in_review`.",
-		"If blocked, run `multica issue status " + issueID + " blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.",
+		"When done, run `multica issue status <issue-id> in_review`.",
+		"If blocked, run `multica issue status <issue-id> blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("issue brief missing identity-bound workflow text %q\n---\n%s", want, out)
@@ -373,9 +373,9 @@ func TestSquadLeaderIssueWorkflowKeepsParentInProgress(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Before step 4, run `multica issue status " + issueID + " in_progress`.",
+		"Before step 4, run `multica issue status <issue-id> in_progress`.",
 		"After this initial dispatch, leave the parent issue `in_progress`",
-		"do NOT run `multica issue status " + issueID + " in_review` or `done` on this turn",
+		"do NOT run `multica issue status <issue-id> in_review` or `done` on this turn",
 		"only then, if the overall goal is met, move the parent to `in_review`",
 	} {
 		if !strings.Contains(out, want) {
@@ -383,7 +383,7 @@ func TestSquadLeaderIssueWorkflowKeepsParentInProgress(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(out, "When done, run `multica issue status "+issueID+" in_review`") {
+	if strings.Contains(out, "When done, run `multica issue status <issue-id> in_review`") {
 		t.Errorf("squad-leader issue brief must not contain the ordinary-agent completion step\n---\n%s", out)
 	}
 }
@@ -1630,10 +1630,13 @@ func TestInjectRuntimeConfigByteIdenticalAcrossTriggers(t *testing.T) {
 
 	// Non-vacuity guard: the brief must still depend on its stable inputs, or
 	// this whole test would pass on a function that ignores ctx entirely.
-	otherIssue := base
-	otherIssue.IssueID = "99999999-8888-7777-6666-555555555555"
-	if buildMetaSkillContent("claude", base) == buildMetaSkillContent("claude", otherIssue) {
-		t.Fatal("brief does not vary with issue id — byte-identity assertions below would be vacuous")
+	// Since MUL-5442's cross-channel dedup the brief is deliberately
+	// issue-id-independent (the per-turn message carries the ids), so the
+	// guard now varies a different stable input: the agent identity.
+	otherAgent := base
+	otherAgent.AgentName = "Someone Else"
+	if buildMetaSkillContent("claude", base) == buildMetaSkillContent("claude", otherAgent) {
+		t.Fatal("brief does not vary with agent identity — byte-identity assertions below would be vacuous")
 	}
 
 	for _, provider := range []string{"claude", "codex"} {

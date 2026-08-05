@@ -1913,7 +1913,10 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 			// The workflow must contain an explicit `multica issue comment add`
 			// invocation for this issue — not just a prose mention of posting.
 			mustContain := []string{
-				"multica issue comment add issue-1",
+				// MUL-5442 cross-channel dedup: the brief states the loop shape; the
+				// ready-to-run commands with real ids live in the per-turn message.
+				// Pin the command NAME and the flag mnemonics, not full templates.
+				"post it with `multica issue comment add` using",
 				"mandatory",
 			}
 			for _, want := range mustContain {
@@ -5373,8 +5376,14 @@ func TestInjectRuntimeConfigBriefKeepsStaticCatchUpRead(t *testing.T) {
 	}
 	s := string(data)
 
-	if !strings.Contains(s, "multica issue comment list "+issueID+" --roots-only --summary --output json") {
-		t.Errorf("brief must keep the static catch-up read\n---\n%s", s)
+	// MUL-5442 cross-channel dedup: the full command with the real issue id
+	// moved to the per-turn message (every issue variant carries it); the
+	// brief keeps the doctrine and the flag mnemonics.
+	if !strings.Contains(s, "scan every thread cheaply (`--roots-only --summary`)") {
+		t.Errorf("brief must keep the bounded catch-up doctrine\n---\n%s", s)
+	}
+	if strings.Contains(s, issueID) {
+		t.Errorf("workflow steps must not embed the issue id anymore (MUL-5442)\n---\n%s", s)
 	}
 	if strings.Contains(s, "--recent 20") {
 		t.Errorf("brief still uses recent 20\n---\n%s", s)
@@ -5467,7 +5476,7 @@ func TestInjectRuntimeConfigAssignmentTriggerScansRootsFirst(t *testing.T) {
 	// Mandatory comment catch-up must stay, but the required first read is
 	// bounded to recent active threads instead of the full flat timeline.
 	for _, want := range []string{
-		"multica issue comment list issue-1 --roots-only --summary --output json",
+		"scan every thread cheaply (`--roots-only --summary`)",
 		"this is mandatory, not optional",
 		"Skipping this step is the most common cause",
 	} {
@@ -5531,10 +5540,12 @@ func TestInjectRuntimeConfigCatchUpScansRootsFirst(t *testing.T) {
 	s := string(data)
 
 	for _, want := range []string{
-		// The cheap scan is the first thing step 3 asks for.
-		"multica issue comment list issue-1 --roots-only --summary --output json",
+		// The cheap scan is the first thing step 3 asks for; the full
+		// command with real ids arrives in the per-turn message (MUL-5442
+		// cross-channel dedup), so the brief pins the flag mnemonics.
+		"scan every thread cheaply (`--roots-only --summary`)",
 		// ...followed by an explicit, bounded drill-down.
-		"multica issue comment list issue-1 --thread <thread-id> --tail 30 --output json",
+		"expand only the threads that matter (`--thread <id> --tail 30`)",
 		// The headline saturation warning stays in the flag reference; the
 		// deep semantics (per-thread cap, root-thread saturation) moved to the
 		// CLI's own --help (MUL-5442) and are pinned there
@@ -5661,7 +5672,7 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			provider: "claude",
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
-				"multica issue metadata list issue-md-1 --output json",
+				"Read the metadata bag (`multica issue metadata list`)",
 				// Platform failure semantics, not tool mechanics: a failed
 				// metadata read must never block the main task (MUL-5442
 				// stage-1 review).
@@ -5686,7 +5697,7 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			provider: "claude",
 			filename: "CLAUDE.md",
 			workflowStepPresent: []string{
-				"multica issue metadata list issue-md-2 --output json",
+				"Read the metadata bag (`multica issue metadata list`)",
 				"What to look for: `## Issue Metadata`",
 				"the bar in `## Issue Metadata`",
 				"multica issue metadata set",
@@ -5806,7 +5817,7 @@ func TestInjectRuntimeConfigIssueMetadataCodexFormattingUnchanged(t *testing.T) 
 		if !strings.Contains(s, "## Issue Metadata") {
 			t.Fatalf("Issue Metadata section missing\n---\n%s", s)
 		}
-		if !strings.Contains(s, "multica issue metadata list issue-md-codex --output json") {
+		if !strings.Contains(s, "Read the metadata bag (`multica issue metadata list`)") {
 			t.Fatalf("metadata list step missing\n---\n%s", s)
 		}
 		// ...AND the post-#4182 file-first rule is still emitted on Linux.
