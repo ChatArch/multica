@@ -15,7 +15,8 @@ import (
 //
 // Two flavors:
 //   - Output-side: agent "completed" with output that is actually a known
-//     fallback marker (gave up mid-thought, emitted a meta message). Detected
+//     fallback marker (gave up mid-thought, emitted a meta message) or the
+//     provider's context-window-exhausted notice (GH #6402). Detected
 //     via classifyPoisonedOutput.
 //   - Error-side: the LLM API itself rejected the request with a 400
 //     invalid_request_error (oversized payload, malformed image, etc.).
@@ -70,6 +71,22 @@ var poisonedMarkers = []struct {
 // turn, so anything beyond ~one paragraph is treated as a real result
 // even if it contains a marker substring.
 func classifyPoisonedOutput(output string) (string, bool) {
+	// GH #6402: the provider's "this session's context window is full" notice,
+	// reported as the run's successful answer. Same poisoning shape as the
+	// markers below — resuming reproduces it forever, since a session already
+	// over the limit cannot compact its way back under — but recognised by the
+	// shared classifier so the server's /complete boundary applies the identical
+	// rule to daemons too old to carry this check.
+	//
+	// Note what is NOT a condition here: how many tools the run executed. A
+	// context window fills up mid-task far more often than on the first turn, so
+	// gating on tools == 0 would miss the common case. The tool count governs
+	// only whether a run may be REPLAYED, and nothing here replays anything —
+	// agent_error.context_overflow is absent from retryableReasons, so the task
+	// fails once, its session is retired, and the next trigger starts fresh.
+	if taskfailure.ContextExhaustedCompletion(output) {
+		return string(taskfailure.ReasonAgentContextOverflow), true
+	}
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" || len(trimmed) > poisonedOutputMaxLen {
 		return "", false

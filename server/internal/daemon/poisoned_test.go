@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 func TestClassifyPoisonedOutput(t *testing.T) {
@@ -70,6 +71,34 @@ on long outputs.`,
 		{
 			name:   "marker buried inside a long agent conclusion",
 			output: strings.Repeat("All checks passed and the bug is fixed. ", 10) + "i reached the iteration limit while debugging earlier.",
+			wantOK: false,
+		},
+		{
+			// GH #6402: the provider's context-exhaustion notice arriving as
+			// the run's successful answer. Same poisoning shape as the markers
+			// above — a session already over the limit cannot compact its way
+			// back under, so every resume reproduces it — and the reason has to
+			// be the one the resume blacklist covers.
+			name:       "context exhaustion reported as a successful answer",
+			output:     "Prompt is too long",
+			wantOK:     true,
+			wantReason: string(taskfailure.ReasonAgentContextOverflow),
+		},
+		{
+			name:       "context exhaustion with the provider's full wording",
+			output:     "Prompt is too long · the request is ~274931 tokens (limit 200000) but this conversation is only ~1597 tokens — the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.",
+			wantOK:     true,
+			wantReason: string(taskfailure.ReasonAgentContextOverflow),
+		},
+		{
+			name:       "compaction exhausted",
+			output:     "Compaction failed · conversation could not be reduced below the context limit",
+			wantOK:     true,
+			wantReason: string(taskfailure.ReasonAgentContextOverflow),
+		},
+		{
+			name:   "an agent discussing /compact is a real answer",
+			output: "The session is getting long; run /compact before the next batch.",
 			wantOK: false,
 		},
 	}

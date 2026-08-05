@@ -22,6 +22,14 @@ type streamTerminalState struct {
 	sawResult         bool
 	resultIsError     bool
 	scanErr           error
+	// terminalReasonError, when non-empty, is a failure the backend read out of
+	// a STRUCTURED field on the terminal result event that the event's own
+	// is_error flag does not reflect. The two answer different questions and a
+	// CLI is free to disagree with itself: Claude Code derives is_error from
+	// whether the last message it rendered was an API error, while
+	// terminal_reason states why the turn ended (GH #6402). Backends that read
+	// no such field leave this empty and keep the pre-existing contract.
+	terminalReasonError string
 }
 
 // finalizeStreamResult applies the shared fail-closed terminal contract used by
@@ -40,12 +48,20 @@ func finalizeStreamResult(
 	completionGuardError string,
 ) (status, output, errMsg string) {
 	status = "completed"
-	if state.resultIsError {
+	switch {
+	case state.resultIsError:
 		status = "failed"
 		errMsg = state.finalResultText
 		if errMsg == "" {
 			errMsg = provider + " returned an error result without details"
 		}
+	case state.terminalReasonError != "":
+		// A structured terminal reason outranks a clean is_error: the flag is
+		// the CLI's summary of its last rendered message, the reason is why the
+		// turn stopped. Trusting the flag alone is what published a
+		// context-exhaustion notice as an agent's answer (GH #6402).
+		status = "failed"
+		errMsg = state.terminalReasonError
 	}
 
 	switch {
