@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, MessageSquare, MessagesSquare, Search } from "lucide-react";
 import type { TimelineEntry } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -129,10 +129,43 @@ export function mentionsUser(content: string | undefined, userId: string): boole
   return content.includes(`mention://member/${userId}`);
 }
 
+/**
+ * Split `text` on every case-insensitive occurrence of `query`, tinting the
+ * matches. Without this a filtered list asks the reader to re-find the term
+ * they just typed — the row that matched on its excerpt looks identical to the
+ * one that matched on its title. Uses the same `--find-match` tint as the
+ * in-page find bar so "this is your search term" reads the same everywhere.
+ */
+export function highlightMatches(text: string, query: string): ReactNode {
+  const needle = query.trim();
+  if (needle === "") return text;
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const out: ReactNode[] = [];
+  let from = 0;
+  let at = lowerText.indexOf(lowerNeedle);
+  while (at !== -1) {
+    if (at > from) out.push(text.slice(from, at));
+    out.push(
+      <mark
+        key={at}
+        className="rounded-[3px] bg-[var(--find-match)] px-px text-[var(--find-match-foreground)]"
+      >
+        {text.slice(at, at + needle.length)}
+      </mark>,
+    );
+    from = at + needle.length;
+    at = lowerText.indexOf(lowerNeedle, from);
+  }
+  if (from < text.length) out.push(text.slice(from));
+  return out;
+}
+
 function ThreadRow({
   prepared,
   isCurrent,
   isActive,
+  query,
   onJump,
   onHover,
 }: {
@@ -141,6 +174,8 @@ function ThreadRow({
   isCurrent: boolean;
   /** Keyboard cursor is on this row. */
   isActive: boolean;
+  /** Active search term, tinted inside the title and excerpt. */
+  query: string;
   onJump: () => void;
   onHover: (threadId: string | null) => void;
 }) {
@@ -184,7 +219,7 @@ function ThreadRow({
               thread.resolved ? "text-muted-foreground" : "font-medium text-foreground",
             )}
           >
-            {title}
+            {highlightMatches(title, query)}
           </span>
           {isCurrent && (
             <span className="shrink-0 text-micro font-medium text-brand">
@@ -210,7 +245,9 @@ function ThreadRow({
             </span>
           )}
           {excerpt && (
-            <span className="min-w-0 truncate text-faint-foreground">{excerpt}</span>
+            <span className="min-w-0 truncate text-faint-foreground">
+              {highlightMatches(excerpt, query)}
+            </span>
           )}
         </span>
       </span>
@@ -540,6 +577,7 @@ export function ThreadNavPanel({
                     prepared={row}
                     isCurrent={visibleIds.has(row.thread.id)}
                     isActive={i === activeIndex}
+                    query={query}
                     onJump={() => jump(row.thread.id)}
                     onHover={onHoverThread}
                   />

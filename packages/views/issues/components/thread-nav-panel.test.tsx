@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import {
   ThreadNavPanel,
+  highlightMatches,
   matchesFilter,
   mentionsUser,
   threadDayGroup,
@@ -206,6 +207,38 @@ describe("matchesFilter", () => {
   });
 });
 
+describe("highlightMatches", () => {
+  it("returns the text untouched when there is no query", () => {
+    expect(highlightMatches("Invite links", "")).toBe("Invite links");
+    expect(highlightMatches("Invite links", "   ")).toBe("Invite links");
+  });
+
+  it("splits on every occurrence, case-insensitively", () => {
+    const parts = highlightMatches("Workspace and workspace_id", "workspace");
+    expect(Array.isArray(parts)).toBe(true);
+    const marks = (parts as ReactNode[]).filter(
+      (p): p is ReactElement<{ children: string }> =>
+        typeof p === "object" && p !== null && "type" in p && p.type === "mark",
+    );
+    expect(marks).toHaveLength(2);
+    // Source casing survives — the reader sees their text, not their typing.
+    expect(marks[0]!.props.children).toBe("Workspace");
+    expect(marks[1]!.props.children).toBe("workspace");
+  });
+
+  it("does not drop text before, between, or after matches", () => {
+    const parts = highlightMatches("ab X cd X ef", "X") as ReactNode[];
+    const text = parts
+      .map((p) =>
+        typeof p === "string"
+          ? p
+          : (p as ReactElement<{ children: string }>).props.children,
+      )
+      .join("");
+    expect(text).toBe("ab X cd X ef");
+  });
+});
+
 describe("mentionsUser", () => {
   it("matches the markdown mention link form", () => {
     expect(mentionsUser("hey [@Jiayuan](mention://member/user-1) look", "user-1")).toBe(true);
@@ -328,14 +361,30 @@ describe("ThreadNavPanel", () => {
   });
 
   it("filters rows by the search query and reports the match count", () => {
-    renderWithI18n(<Harness />);
+    const { container } = renderWithI18n(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: /Comment threads/ }));
     fireEvent.change(screen.getByPlaceholderText("Search threads or authors"), {
       target: { value: "outlook" },
     });
-    expect(screen.getByText("Mail template CTA collapses in Outlook")).toBeTruthy();
-    expect(screen.queryByText("Invite links require a workspace first")).toBeNull();
+    // Assert on the row identity, not its text: highlighting splits the title
+    // across elements, so a whole-string text query would miss it.
+    const rows = [...container.querySelectorAll("[data-thread-id]")].map((el) =>
+      el.getAttribute("data-thread-id"),
+    );
+    expect(rows).toEqual(["t4"]);
     expect(screen.getByText("1 match")).toBeTruthy();
+  });
+
+  it("tints the matched term in the title and the excerpt", () => {
+    const { container } = renderWithI18n(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: /Comment threads/ }));
+    fireEvent.change(screen.getByPlaceholderText("Search threads or authors"), {
+      target: { value: "workspace" },
+    });
+    const marks = [...container.querySelectorAll("mark")];
+    expect(marks.length).toBeGreaterThan(0);
+    // Case-insensitive match keeps the source casing rather than the query's.
+    expect(marks.every((m) => m.textContent?.toLowerCase() === "workspace")).toBe(true);
   });
 
   it("matches on the author name as well as the content", () => {
