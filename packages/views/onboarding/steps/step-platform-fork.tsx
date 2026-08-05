@@ -18,7 +18,10 @@ import {
   StepFooter,
   StepHeading,
 } from "../components/step-shell";
-import { CompactRuntimeRow } from "../components/compact-runtime-row";
+import {
+  MikaRuntimeChoice,
+  type MikaRuntimeSelection,
+} from "../../runtimes/components/mika-runtime-choice";
 import { useRuntimePicker } from "../components/use-runtime-picker";
 import { useT } from "../../i18n";
 
@@ -62,7 +65,7 @@ export function StepPlatformFork({
    *  the workspace being set up rather than whichever one the app is currently
    *  showing. */
   wsSlug?: string;
-  onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
+  onNext: (runtime: AgentRuntime | null, model?: string) => void | Promise<void>;
   /** Platform-specific CLI install card, rendered inside the CLI dialog. */
   cliInstructions?: ReactNode;
 }) {
@@ -71,6 +74,7 @@ export function StepPlatformFork({
   const [dialog, setDialog] = useState<DialogState>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [model, setModel] = useState("");
 
   const picker = useRuntimePicker(wsId, wsSlug);
 
@@ -87,7 +91,7 @@ export function StepPlatformFork({
     if (!picker.selected || connecting) return;
     setConnecting(true);
     try {
-      await onNext(picker.selected);
+      await onNext(picker.selected, model || undefined);
       setDialog(null);
     } finally {
       setConnecting(false);
@@ -150,8 +154,13 @@ export function StepPlatformFork({
       onClose={() => setDialog(null)}
       onConnect={handleCliConnect}
       runtimes={picker.runtimes}
-      selectedId={picker.selectedId}
-      onSelect={picker.setSelectedId}
+      choice={{ runtimeId: picker.selectedId ?? "", model }}
+      onChoiceChange={(next) => {
+        if (next.runtimeId !== picker.selectedId) {
+          picker.setSelectedId(next.runtimeId);
+        }
+        setModel(next.model);
+      }}
       hasRuntimes={picker.hasRuntimes}
       canConnect={picker.selected !== null}
       selectedName={
@@ -275,8 +284,8 @@ function CliInstallDialog({
   onClose,
   onConnect,
   runtimes,
-  selectedId,
-  onSelect,
+  choice,
+  onChoiceChange,
   hasRuntimes,
   canConnect,
   selectedName,
@@ -287,8 +296,8 @@ function CliInstallDialog({
   onClose: () => void;
   onConnect: () => void | Promise<void>;
   runtimes: AgentRuntime[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  choice: MikaRuntimeSelection;
+  onChoiceChange: (next: MikaRuntimeSelection) => void;
   hasRuntimes: boolean;
   canConnect: boolean;
   selectedName: string | null;
@@ -320,16 +329,13 @@ function CliInstallDialog({
               {/* Cap the runtime list at ~4 rows visible, scroll the rest.
                   Keeps the commands above always reachable even when
                   a user has many machines registered. */}
-              <div className="flex max-h-[240px] flex-col gap-2 overflow-y-auto">
-                {runtimes.map((rt) => (
-                  <CompactRuntimeRow
-                    key={rt.id}
-                    runtime={rt}
-                    selected={rt.id === selectedId}
-                    onSelect={() => onSelect(rt.id)}
-                  />
-                ))}
-              </div>
+              <MikaRuntimeChoice
+                layout="list"
+                runtimes={runtimes}
+                value={choice}
+                onChange={onChoiceChange}
+                disabled={connecting}
+              />
             </>
           ) : (
             <CliWaitingStatus dialogOpen={open} />

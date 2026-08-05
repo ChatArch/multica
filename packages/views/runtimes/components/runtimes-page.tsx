@@ -31,8 +31,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
-import { RuntimePicker } from "../../agents/components/runtime-picker";
-import { ModelDropdown } from "../../agents/components/model-dropdown";
+import {
+  MikaRuntimeChoice,
+  type MikaRuntimeSelection,
+} from "./mika-runtime-choice";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   CollectionPageHeader,
@@ -241,11 +243,13 @@ function MikaSetupCard({
     runtimes.find((runtime) => runtime.status === "online")?.id ??
     runtimes[0]?.id ??
     "";
-  const [selectedId, setSelectedId] = useState("");
-  const [model, setModel] = useState("");
+  const [choice, setChoice] = useState<MikaRuntimeSelection | null>(null);
 
-  const runtimeId = selectedId || defaultRuntimeId;
-  const selected = runtimes.find((runtime) => runtime.id === runtimeId) ?? null;
+  const value: MikaRuntimeSelection = choice ?? {
+    runtimeId: defaultRuntimeId,
+    model: "",
+  };
+  const runtimeId = value.runtimeId;
 
   const handleStart = async () => {
     if (!runtimeId || bootstrapMika.isPending) return;
@@ -254,7 +258,7 @@ function MikaSetupCard({
       const result = await bootstrapMika.mutateAsync({
         workspaceSlug: wsSlug,
         runtimeId,
-        model: model || undefined,
+        model: value.model || undefined,
         ...getMikaOnboarding(lang),
       });
       setOpen(false);
@@ -298,29 +302,14 @@ function MikaSetupCard({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex flex-col gap-3">
-            <RuntimePicker
-              runtimes={runtimes}
-              runtimesLoading={runtimesLoading}
-              members={[]}
-              currentUserId={currentUserId}
-              selectedRuntimeId={runtimeId}
-              onSelect={(id) => {
-                // Models are per-runtime, so a value picked for the previous
-                // one may not exist on this one.
-                if (id !== runtimeId) setModel("");
-                setSelectedId(id);
-              }}
-              disabled={bootstrapMika.isPending}
-            />
-            <ModelDropdown
-              runtimeId={runtimeId || null}
-              runtimeOnline={selected?.status === "online"}
-              value={model}
-              onChange={setModel}
-              disabled={!runtimeId || bootstrapMika.isPending}
-            />
-          </div>
+          <MikaRuntimeChoice
+            runtimes={runtimes}
+            runtimesLoading={runtimesLoading}
+            currentUserId={currentUserId}
+            value={value}
+            onChange={setChoice}
+            disabled={bootstrapMika.isPending}
+          />
 
           <DialogFooter>
             <Button

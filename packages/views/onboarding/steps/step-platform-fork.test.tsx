@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentRuntime } from "@multica/core/types";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enOnboarding from "../../locales/en/onboarding.json";
@@ -49,7 +50,13 @@ function renderFork(
   overrides: Partial<React.ComponentProps<typeof StepPlatformFork>> = {},
 ) {
   const onNext = vi.fn();
+  // The CLI dialog now renders the shared runtime+model chooser, and the model
+  // dropdown queries the runtime's model list.
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   render(
+    <QueryClientProvider client={qc}>
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <StepPlatformFork
         wsId="ws_test"
@@ -57,7 +64,8 @@ function renderFork(
         cliInstructions={<div data-testid="cli-instructions">install me</div>}
         {...overrides}
       />
-    </I18nProvider>,
+    </I18nProvider>
+    </QueryClientProvider>,
   );
   return { onNext };
 }
@@ -174,7 +182,10 @@ describe("StepPlatformFork", () => {
     expect(connect).toBeEnabled();
     await user.click(connect);
     expect(onNext).toHaveBeenCalledTimes(1);
-    expect(onNext).toHaveBeenCalledWith(rt);
+    // The web CLI path now carries a model alongside the runtime, like the
+    // desktop step does. Nothing was picked here, so it stays undefined and
+    // the runtime's own default applies.
+    expect(onNext).toHaveBeenCalledWith(rt, undefined);
   });
 
 });

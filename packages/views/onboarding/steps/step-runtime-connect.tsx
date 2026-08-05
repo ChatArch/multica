@@ -14,13 +14,12 @@ import {
   runtimeDisplayLabel,
 } from "@multica/core/runtimes";
 import type { AgentRuntime } from "@multica/core/types";
-import { RuntimePicker } from "../../agents/components/runtime-picker";
-import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { MikaIntro } from "../components/mika-intro";
 import {
   StepFooter,
 } from "../components/step-shell";
 import { useRuntimePicker } from "../components/use-runtime-picker";
+import { MikaRuntimeChoice } from "../../runtimes/components/mika-runtime-choice";
 import { useT } from "../../i18n";
 
 /**
@@ -385,26 +384,14 @@ function FoundView({
       </div>
 
       <div className="mt-6 flex flex-col gap-4">
-        <RuntimePicker
-          runtimes={runtimes as unknown as Parameters<typeof RuntimePicker>[0]["runtimes"]}
-          members={[]}
+        <MikaRuntimeChoice
+          runtimes={runtimes}
           currentUserId={currentUserId}
-          selectedRuntimeId={selectedId ?? ""}
-          onSelect={(id) => {
-            // Models are per-runtime, so a value picked for the previous one
-            // may not exist here.
-            if (id !== selectedId) onModelChange("");
-            onSelect(id);
+          value={{ runtimeId: selectedId ?? "", model }}
+          onChange={(next) => {
+            if (next.runtimeId !== selectedId) onSelect(next.runtimeId);
+            if (next.model !== model) onModelChange(next.model);
           }}
-        />
-        <ModelDropdown
-          runtimeId={selectedId}
-          runtimeOnline={
-            runtimes.find((rt) => rt.id === selectedId)?.status === "online"
-          }
-          value={model}
-          onChange={onModelChange}
-          disabled={!selectedId}
         />
       </div>
     </div>
