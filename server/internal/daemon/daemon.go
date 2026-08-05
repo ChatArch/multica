@@ -5698,8 +5698,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// conversation permanently blocks the issue: every follow-up
 		// task resumes the same poisoned session and hits the same 400.
 		failureReason, _ := classifyPoisonedError(errMsg)
+		if failureReason == "" {
+			// A resume we could not read back leaves the same oversized thread
+			// recorded as this issue's resume pointer. Reaching here means the
+			// in-turn fresh-session retry did not save the run (it is gated on
+			// tools == 0, and can fail on its own), so classify it to keep the
+			// NEXT task off that thread rather than replaying the overflow
+			// forever (MUL-5722).
+			failureReason, _ = classifyResumeUnsafeTransport(provider, errMsg)
+		}
 		if failureReason != "" {
-			taskLog.Warn("agent failed with poisoned API error, classifying as blocked",
+			taskLog.Warn("agent failed with a resume-unsafe error, retiring the session",
 				"failure_reason", failureReason,
 			)
 		} else {

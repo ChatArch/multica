@@ -3806,7 +3806,10 @@ func resumeUnsafeFailureReason(reason string) bool {
 	// blacklists. (CreateRetryTask's fresh-session CASE WHEN only needs the
 	// subset of these that is also auto-retryable, currently
 	// codex_semantic_inactivity.)
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow":
+	// codex_resume_oversized is the strongest member of this set: a codex
+	// rollout only ever grows, so a thread whose resume response already
+	// overflowed the reader will overflow on every future attempt too.
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "agent_error.context_overflow", "codex_resume_oversized":
 		return true
 	default:
 		return false

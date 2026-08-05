@@ -152,6 +152,38 @@ const CodexFirstTurnNoProgressMarker = "codex app-server no progress timeout"
 // did not answer within the bounded handshake window.
 const CodexHandshakeTimeoutMarker = "codex app-server handshake timeout"
 
+// codexResumeMarker and codexLineOverflowMarker are the two halves of the
+// error text a resume-overflow produces: the method that failed (written by
+// startOrResumeThread) and bufio's own ErrTooLong wording, which reaches the
+// string through the reader goroutine.
+const (
+	codexResumeMarker       = "thread/resume failed"
+	codexLineOverflowMarker = "token too long"
+)
+
+// CodexResumeOverflowError reports whether an agent error string is the
+// resume-overflow failure — the thread/resume response did not fit in our
+// stdout line buffer, so the thread cannot be handed to us at all.
+//
+// This lives next to the code that writes both halves of the text so the two
+// cannot drift apart, and it is exported because the daemon has only the error
+// STRING at report time: by then the typed bufio.ErrTooLong that
+// isCodexResumeOverflow matches in-process is long gone. Both markers are
+// required — "thread/resume failed" alone covers ordinary rejections that a
+// plain retry handles, and "token too long" alone would also match an overflow
+// on some other RPC, where dropping the session pointer cures nothing.
+//
+// The session behind such a failure is unusable for resume until it shrinks,
+// which it never does — codex rollouts are append-only. Callers use this to
+// stop handing the same oversized thread to the next task (MUL-5722).
+func CodexResumeOverflowError(errText string) bool {
+	if errText == "" {
+		return false
+	}
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, codexResumeMarker) && strings.Contains(lower, codexLineOverflowMarker)
+}
+
 // codexModelCatalogRefreshFailureSignal matches the Codex models-manager error
 // emitted when the model catalog could not be refreshed. Codex reports several
 // distinct causes under this prefix ("timeout waiting for child process to
@@ -1094,7 +1126,12 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			c.handleLine(line)
 		}
 		if err := scanner.Err(); err != nil {
-			c.markProcessExited(fmt.Errorf("%w: %v", errCodexProcessExited, err))
+			// %w on BOTH: callers match errCodexProcessExited to decide the
+			// process is gone, and bufio.ErrTooLong to tell "we could not read
+			// the response" apart from "codex died". startOrResumeThread needs
+			// that distinction to report an oversized resume as a rejected
+			// resume rather than a crash (MUL-5722).
+			c.markProcessExited(fmt.Errorf("%w: %w", errCodexProcessExited, err))
 			return
 		}
 		c.markProcessExited(errCodexProcessExited)
@@ -1342,7 +1379,12 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					"stderr_bare_timeout_count", classification.bareTimeout,
 				)
 			}
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+			resCh <- Result{
+				Status:         finalStatus,
+				Error:          finalError,
+				DurationMs:     time.Since(startTime).Milliseconds(),
+				ResumeRejected: isCodexResumeOverflow(opts, err),
+			}
 			return
 		}
 		c.threadID = threadID
@@ -2328,6 +2370,29 @@ func (c *codexClient) getProcessErr() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.processErr
+}
+
+// isCodexResumeOverflow reports whether a failed startOrResumeThread failed
+// because the thread/resume RESPONSE did not fit in our stdout line buffer.
+//
+// Codex serializes the entire thread into that single response, so a long
+// enough thread overflows agentStreamMaxLineBytes and the reader goroutine
+// dies with bufio.ErrTooLong. Every other transport error means codex is
+// gone; this one means codex is fine and we cannot read it. The distinction
+// is what makes it a resume REJECTION: the thread cannot be handed to us at
+// all, so only starting over can cure it — exactly what Result.ResumeRejected
+// documents, and the evidence shouldRetryWithFreshSession looks for first.
+//
+// Recovery has to go through the daemon rather than a local thread/start
+// fallback. By the time we get here the reader goroutine has exited and codex
+// is blocked writing the rest of the oversized line into a pipe nobody drains,
+// so this process can no longer answer any RPC. The daemon's fresh-session
+// retry re-execs codex, which is the only way back (MUL-5722).
+//
+// Requires ResumeSessionID: an overflow on a thread/start response is a
+// different failure and nothing about the session pointer would fix it.
+func isCodexResumeOverflow(opts ExecOptions, err error) bool {
+	return opts.ResumeSessionID != "" && errors.Is(err, bufio.ErrTooLong)
 }
 
 func isCodexTransportError(err error) bool {

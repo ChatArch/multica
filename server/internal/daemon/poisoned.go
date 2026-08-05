@@ -25,6 +25,9 @@ import (
 //     stuck without agent progress. Resuming that Codex session can replay the
 //     same stuck state, while a fresh manual rerun may succeed. Detected via
 //     classifyResumeUnsafeTimeout.
+//   - Transport-side: a Codex thread/resume response too large to read back.
+//     The thread only grows, so every later resume overflows identically.
+//     Detected via classifyResumeUnsafeTransport.
 //
 // MUL-2946: ReasonIterationLimit and ReasonAPIInvalidRequest are aliased
 // to the canonical taskfailure values so the daemon and the in-flight
@@ -38,6 +41,7 @@ const (
 	FailureReasonAgentFallbackMsg        = "agent_fallback_message"
 	FailureReasonAPIInvalidRequest       = string(taskfailure.ReasonAPIInvalidRequest)
 	FailureReasonCodexSemanticInactivity = "codex_semantic_inactivity"
+	FailureReasonCodexResumeOversized    = "codex_resume_oversized"
 )
 
 // poisonedOutputMaxLen caps how long an output can be and still be
@@ -144,6 +148,37 @@ func classifyPoisonedError(errMsg string) (string, bool) {
 	// provider said it.
 	if taskfailure.UnresumableHistory(errMsg) {
 		return FailureReasonAPIInvalidRequest, true
+	}
+	return "", false
+}
+
+// classifyResumeUnsafeTransport reports whether a transport-level failure means
+// the recorded session must not be resumed again.
+//
+// The one case today is a Codex thread/resume whose response overflowed our
+// stdout line buffer. That session is not merely unlucky, it is finished: codex
+// serializes the whole thread into that one response and its rollout file only
+// ever grows, so every future resume of the same thread reproduces the same
+// overflow. Leaving it as the (agent, issue) resume pointer is what turned this
+// into a permanent stall (MUL-5722).
+//
+// This is the backstop for the in-turn recovery, not a replacement for it. The
+// codex backend reports the same failure as Result.ResumeRejected, which lets
+// the daemon retry the CURRENT turn on a fresh session (see
+// shouldRetryWithFreshSession) — the outcome users actually want. But that
+// retry is gated on tools == 0 and can itself fail, and either way the task
+// lands here with the oversized thread still recorded. Classifying it keeps the
+// NEXT task off that thread even when the current one could not be saved.
+//
+// Provider-specific on purpose, exactly like classifyResumeUnsafeTimeout below:
+// no other backend replays its entire history through a single line, so for
+// them an oversized line is a one-off event and the session is still good.
+func classifyResumeUnsafeTransport(provider, errMsg string) (string, bool) {
+	if strings.ToLower(strings.TrimSpace(provider)) != "codex" {
+		return "", false
+	}
+	if agent.CodexResumeOverflowError(errMsg) {
+		return FailureReasonCodexResumeOversized, true
 	}
 	return "", false
 }

@@ -3194,6 +3194,15 @@ func TestCodexExecuteCleansUpWhenScannerOverflowsOnResume(t *testing.T) {
 		t.Fatalf("expected empty SessionID so outer fallback retries fresh, got %q",
 			result.SessionID)
 	}
+	// MUL-5722 layer 2: an unreadable resume response is a rejected resume,
+	// and this flag is the positive evidence shouldRetryWithFreshSession
+	// requires. Without it #5715's gate stops the retry dead (codex is in
+	// neither the ResumeRejected-capable nor the undetectable set), and the
+	// next turn resumes the same oversized thread forever.
+	if !result.ResumeRejected {
+		t.Fatalf("expected ResumeRejected=true so the daemon retries on a fresh session; error=%q",
+			result.Error)
+	}
 	// With the shrunken 500 ms grace, two bounded phases plus the SIGKILL
 	// round-trip should complete in ~1-2 s. Pre-fix this test would block
 	// until the executeFakeCodex 10 s outer timeout and fail with "timeout
@@ -3202,6 +3211,50 @@ func TestCodexExecuteCleansUpWhenScannerOverflowsOnResume(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatalf("cleanup took %s, expected < 5s with shrunken grace (bug regressed?)",
 			elapsed)
+	}
+}
+
+func TestCodexExecuteDoesNotClaimResumeRejectedWhenOverflowIsNotAResume(t *testing.T) {
+	// Not t.Parallel(): mutates codexGracefulShutdownTimeoutNanos globally,
+	// same as its sibling above.
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	// The overflow guard is scoped to resumes on purpose. A run with no prior
+	// session that overflows on the thread/start response is a different
+	// failure: there is no session pointer to drop, so reporting a resume
+	// rejection would send the daemon looking for a cure that does not apply
+	// — and ResumeRejected is documented as positive evidence, not a generic
+	// "something went wrong" flag.
+	codexGracefulShutdownTimeoutNanos.Store(int64(500 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		// Same oversized single line, but answering thread/start rather than
+		// thread/resume because the caller passed no ResumeSessionID.
+		`printf '{"jsonrpc":"2.0","id":2,"result":{"big":"'`+"\n"+
+		fmt.Sprintf(`head -c %d /dev/zero | tr '\0' 'x'`, agentStreamMaxLineBytes+1024*1024)+"\n"+
+		`printf '"}}\n'`+"\n"+
+		`sleep 30`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Cwd:                       t.TempDir(),
+		Timeout:                   30 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+
+	if result.Status != "failed" {
+		t.Fatalf("expected status=failed, got %q (error=%q)", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "token too long") {
+		t.Fatalf("expected error to surface scanner overflow cause, got %q", result.Error)
+	}
+	if result.ResumeRejected {
+		t.Fatalf("expected ResumeRejected=false without a prior session, error=%q", result.Error)
 	}
 }
 
@@ -5350,5 +5403,86 @@ func TestCodexPatchApplyStillTruncatesNonSecretPayload(t *testing.T) {
 	// The caller's slice is deliberately left alone: redaction copies first.
 	if original, _ := changes[0].(map[string]any)["content"].(string); len(original) != len(body) {
 		t.Fatalf("codexPatchInput must not mutate its argument: %d != %d", len(original), len(body))
+	}
+}
+
+func TestCodexResumeOverflowError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		errText string
+		want    bool
+	}{
+		{
+			// The exact text executeOnce puts in Result.Error for this failure.
+			name:    "resume overflow",
+			errText: "codex thread/resume failed: codex process exited: bufio.Scanner: token too long",
+			want:    true,
+		},
+		{
+			// Both markers required: an overflow on another RPC leaves the
+			// stored thread perfectly resumable, so retiring it cures nothing.
+			name:    "overflow on thread/start",
+			errText: "codex thread/start failed: codex process exited: bufio.Scanner: token too long",
+			want:    false,
+		},
+		{
+			// An ordinary resume rejection already has a recovery path.
+			name:    "resume failure without overflow",
+			errText: "codex thread/resume failed: thread not found",
+			want:    false,
+		},
+		{
+			name:    "unrelated process failure",
+			errText: "codex process exited: exit status 2",
+			want:    false,
+		},
+		{name: "empty", errText: "", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := CodexResumeOverflowError(tc.errText); got != tc.want {
+				t.Fatalf("CodexResumeOverflowError(%q) = %v, want %v", tc.errText, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCodexResumeOverflowErrorMatchesLiveFailureText guards the seam between
+// the two halves of MUL-5722's layer 3: in-process the backend detects the
+// overflow from the typed bufio.ErrTooLong, but the daemon classifies it at
+// report time from the error STRING alone. If the wording produced by
+// startOrResumeThread ever drifts from what the predicate matches, the resume
+// pointer silently stops being retired and the permanent-stall bug returns
+// with every test above still green.
+func TestCodexResumeOverflowErrorMatchesLiveFailureText(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	codexGracefulShutdownTimeoutNanos.Store(int64(500 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(0) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`printf '{"jsonrpc":"2.0","id":2,"result":{"big":"'`+"\n"+
+		fmt.Sprintf(`head -c %d /dev/zero | tr '\0' 'x'`, agentStreamMaxLineBytes+1024*1024)+"\n"+
+		`printf '"}}\n'`+"\n"+
+		`sleep 30`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Cwd:                       t.TempDir(),
+		ResumeSessionID:           "thr_prior",
+		Timeout:                   30 * time.Second,
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+
+	if !CodexResumeOverflowError(result.Error) {
+		t.Fatalf("predicate missed the error the backend actually produced: %q", result.Error)
 	}
 }

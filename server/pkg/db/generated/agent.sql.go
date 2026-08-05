@@ -3032,9 +3032,10 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%image dimensions exceed max allowed size%' AND COALESCE(error, '') ILIKE '%image.source.base64.data%')
+      AND NOT (COALESCE(error, '') ILIKE '%thread/resume failed%' AND COALESCE(error, '') ILIKE '%token too long%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
     )
@@ -3085,12 +3086,14 @@ type GetLastTaskSessionRow struct {
 // Tasks that ended in a known "poisoned" terminal state are also excluded
 // here so even auto-retry does not inherit the bad session. The daemon
 // classifies these failures (iteration_limit, agent_fallback_message,
-// api_invalid_request, codex_semantic_inactivity, agent_error.context_overflow)
+// api_invalid_request, codex_semantic_inactivity, agent_error.context_overflow,
+// codex_resume_oversized)
 // when it detects either an agent fallback marker in the output, an upstream
 // API 400 that means the conversation history itself is unprocessable
 // (oversized image, malformed base64, etc.), a Codex semantic inactivity
-// timeout whose recorded session may replay the same stuck state, or a context
-// window overflow that would immediately overflow again on resume. Keep this
+// timeout whose recorded session may replay the same stuck state, a context
+// window overflow that would immediately overflow again on resume, or a Codex
+// thread/resume response too large to read back (MUL-5722). Keep this
 // list in sync with resumeUnsafeFailureReason and GetLastChatTaskSession.
 //
 // The error-text ILIKE clause is defense-in-depth for the api_invalid_request
@@ -3125,6 +3128,17 @@ type GetLastTaskSessionRow struct {
 // resuming the poisoned session. Both markers are required so the clause stays
 // exactly as narrow as classifyPoisonedError and the Kiro detector — an
 // unrelated error that only mentions image dimensions is NOT excluded.
+//
+// The thread/resume + "token too long" ILIKE pair does the same job for
+// MUL-5722, and it is the clause that unsticks issues that are ALREADY stuck:
+// every such row in the table today was written before the daemon could
+// classify this failure, so it carries 'agent_error.process_failure' — a
+// resume-SAFE reason — and the oversized thread stays selected as the resume
+// pointer until this clause filters it out. It also covers the installs where
+// that is a permanent condition rather than a deploy window, since daemons
+// upgrade on their own schedule. Both markers are required, matching
+// agent.CodexResumeOverflowError exactly: an overflow on some other RPC says
+// nothing about whether the session can be resumed.
 //
 // The final pair of regexes is the provider-agnostic version of the same
 // guard, and it matters most for self-hosted installs: daemons upgrade on

@@ -2400,6 +2400,41 @@ func TestShouldRetryWithFreshSession(t *testing.T) {
 			provider:       "kiro",
 			want:           false,
 		},
+		{
+			// MUL-5722: a codex thread/resume whose response overflowed the
+			// stdout line buffer. This is the case #5715 accidentally
+			// stranded — codex reported no rejection and is not in the
+			// undetectable set, so the gate returned false and the same
+			// oversized thread got resumed on every later turn. The backend
+			// now supplies the positive evidence; this asserts the gate
+			// actually acts on it.
+			name: "codex resume overflow retries on a fresh session",
+			result: agent.Result{
+				Status:         "failed",
+				Error:          "codex thread/resume failed: codex process exited: bufio.Scanner: token too long",
+				ResumeRejected: true,
+			},
+			priorSessionID: "thr_oversized",
+			tools:          0,
+			provider:       "codex",
+			want:           true,
+		},
+		{
+			// The tools gate is not weakened by the new evidence: a run that
+			// already acted is never replayed, poisoned resume or not. Such a
+			// task still gets its session retired — by the layer-3 classifier
+			// at report time rather than by an in-turn retry.
+			name: "codex resume overflow after tool use does not retry",
+			result: agent.Result{
+				Status:         "failed",
+				Error:          "codex thread/resume failed: codex process exited: bufio.Scanner: token too long",
+				ResumeRejected: true,
+			},
+			priorSessionID: "thr_oversized",
+			tools:          1,
+			provider:       "codex",
+			want:           false,
+		},
 	}
 
 	for _, tt := range tests {
