@@ -2060,6 +2060,60 @@ func (q *Queries) PromoteChannelChatTasksIfMediaReady(ctx context.Context, chatS
 	return items, nil
 }
 
+const reanchorClaimedDirectChatInput = `-- name: ReanchorClaimedDirectChatInput :exec
+UPDATE chat_message AS claimed_input
+SET created_at = GREATEST(
+    $1::timestamptz,
+    COALESCE((
+        SELECT prior.created_at + interval '1 microsecond'
+        FROM chat_message AS prior
+        WHERE prior.chat_session_id = claimed_input.chat_session_id
+          AND prior.id != claimed_input.id
+          AND NOT (
+            prior.role = 'user'
+            AND EXISTS (
+              SELECT 1
+              FROM agent_task_queue AS queued_task
+              WHERE queued_task.chat_session_id = prior.chat_session_id
+                AND queued_task.status = 'queued'
+                AND queued_task.id = prior.task_id
+            )
+          )
+        ORDER BY prior.created_at DESC, prior.id DESC
+        LIMIT 1
+    ), $1::timestamptz)
+)
+WHERE claimed_input.task_id = $2
+  AND claimed_input.role = 'user'
+  AND NOT claimed_input.channel_ingested
+`
+
+type ReanchorClaimedDirectChatInputParams struct {
+	DispatchedAt pgtype.Timestamptz `json:"dispatched_at"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+}
+
+// A direct follow-up is persisted at enqueue time but hidden from the settled
+// transcript while its task remains queued. When that task is claimed, move
+// the user row to the claim boundary so it becomes visible after the previous
+// assistant outcome instead of jumping back to its original enqueue time.
+//
+// The task's own created_at remains immutable and continues to drive queue
+// FIFO, wait duration, and elapsed time. Only the message timestamp changes,
+// preserving the existing public ordering/cursor contract for older clients.
+// Add one microsecond when the DB clock ties the latest visible row so UUID
+// ordering can never put the new user turn before the previous assistant row.
+//
+// channel_ingested excludes sealed Slack/Lark batches, which can own multiple
+// user rows and must preserve their original provider order. Retry children
+// are excluded by the caller because their chat_input_task_id names the root
+// task rather than themselves. Stale dispatched reclaim bypasses this query,
+// so re-delivery does not move an already-visible turn.
+func (q *Queries) ReanchorClaimedDirectChatInput(ctx context.Context, arg ReanchorClaimedDirectChatInputParams) error {
+	_, err := q.db.Exec(ctx, reanchorClaimedDirectChatInput, arg.DispatchedAt, arg.TaskID)
+	return err
+}
+
 const setChatMessageQuickActionsByTask = `-- name: SetChatMessageQuickActionsByTask :one
 UPDATE chat_message
 SET quick_actions = $2

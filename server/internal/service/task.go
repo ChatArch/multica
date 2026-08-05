@@ -2541,6 +2541,23 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		// A task-owned direct-chat user row is written when the user enqueues
+		// it, but stays hidden until this queued -> dispatched transition. Move
+		// its transcript timestamp inside the same transaction as the claim so
+		// every full-list and cursor reader observes either hidden+queued or
+		// visible+reanchored, never an intermediate state. Retry children keep
+		// the root input owner and stale-dispatch reclaim uses a separate query,
+		// so neither path can move an already-visible user turn again.
+		if task.ChatSessionID.Valid && task.ChatInputTaskID == task.ID {
+			if err := qtx.ReanchorClaimedDirectChatInput(ctx, db.ReanchorClaimedDirectChatInputParams{
+				DispatchedAt: task.DispatchedAt,
+				TaskID:       task.ID,
+			}); err != nil {
+				outcome = "error_reanchor_chat_input"
+				return fmt.Errorf("reanchor claimed direct chat input: %w", err)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
