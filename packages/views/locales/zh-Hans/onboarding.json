@@ -127,7 +127,7 @@
   },
   "cloud_waitlist": {
     "intro_main": "云运行时尚未上线。留下邮箱，上线时通过邮件通知你。",
-    "intro_warning": "提示：没有运行时，智能体无法执行 task——如果现在跳过，工作区会是只读状态，直到你回来安装一个。",
+    "intro_warning": "提示：没有运行时，智能体无法执行 task——如果现在跳过，在你回来装一个之前不会有任何 task 运行。",
     "email_label": "邮箱",
     "email_placeholder": "you@work.com",
     "reason_label": "为什么选择云？",
@@ -142,7 +142,7 @@
     "skip": {
       "loading": "正在为你准备工作区...",
       "title": "欢迎来到 Multica！",
-      "subtitle": "我们建了一个 task 帮你连接运行时。准备好后，在 \"运行时\" 页面就能开始使用 Mika。",
+      "subtitle": "我们建了一个 issue 帮你连接运行时。准备好后，在 \"运行时\" 页面就能开始使用 Mika。",
       "got_it": "知道了",
       "status_in_progress": "进行中",
       "cards": {
@@ -209,7 +209,7 @@
     "empty_lede_prefix": "agent 运行时就是我们要连接的 AI 编程工具，比如 ",
     "empty_lede_suffix": "。装好任意一个后点刷新，或从下面选择一种方式。",
     "empty_skip_title": "暂时跳过",
-    "empty_skip_subtitle": "进入工作区（只读模式）。在这台电脑上连接 agent 运行时之前，智能体无法执行 task——但你仍可以浏览、规划、邀请同事。",
+    "empty_skip_subtitle": "先进入工作区。在这台电脑上连接 agent 运行时之前，智能体无法执行 task——但你仍可以浏览、规划、邀请同事。",
     "empty_skip_action": "跳过",
     "empty_waitlist_title": "使用云电脑",
     "empty_waitlist_subtitle": "我们会在云上为你运行一台电脑。尚未上线。",
