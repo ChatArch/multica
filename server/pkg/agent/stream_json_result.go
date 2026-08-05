@@ -49,19 +49,32 @@ func finalizeStreamResult(
 ) (status, output, errMsg string) {
 	status = "completed"
 	switch {
+	case state.terminalReasonError != "":
+		// A recognised structured terminal reason wins outright — including
+		// over is_error, which is the ordering that matters in practice.
+		//
+		// On the shape actually captured from Claude Code 2.1.220/2.1.221, a
+		// context-exhausted turn arrives as is_error:true AND
+		// terminal_reason:prompt_too_long together. Letting is_error go first
+		// makes the structured branch dead code on the only frame we have, and
+		// hands the failure whatever prose the CLI happened to put in `result`:
+		// today that string classifies correctly by luck, but an empty or
+		// reworded `result` degrades to "returned an error result without
+		// details" → agent_error.unknown, which no resume blacklist covers, so
+		// the saturated session stays pinned and the stall returns (GH #6402).
+		//
+		// Ordering it first costs nothing: the branch only fires for a reason
+		// the backend positively recognised, and the message it builds carries
+		// the CLI's own `result` text along as detail, so nothing is lost for
+		// diagnosis.
+		status = "failed"
+		errMsg = state.terminalReasonError
 	case state.resultIsError:
 		status = "failed"
 		errMsg = state.finalResultText
 		if errMsg == "" {
 			errMsg = provider + " returned an error result without details"
 		}
-	case state.terminalReasonError != "":
-		// A structured terminal reason outranks a clean is_error: the flag is
-		// the CLI's summary of its last rendered message, the reason is why the
-		// turn stopped. Trusting the flag alone is what published a
-		// context-exhaustion notice as an agent's answer (GH #6402).
-		status = "failed"
-		errMsg = state.terminalReasonError
 	}
 
 	switch {

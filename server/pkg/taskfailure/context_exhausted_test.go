@@ -19,16 +19,6 @@ func TestContextExhaustedCompletion(t *testing.T) {
 	}{
 		// ── the real thing ──
 		{
-			name:   "captured: bare result when compaction is exhausted",
-			output: "Prompt is too long",
-			want:   true,
-		},
-		{
-			name:   "captured: bare result with surrounding whitespace",
-			output: "\n  Prompt is too long \n",
-			want:   true,
-		},
-		{
 			name:   "captured: single-exchange variant with token counts",
 			output: "Prompt is too long · the request is ~274931 tokens (limit 200000) but this conversation is only ~1597 tokens — the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.",
 			want:   true,
@@ -50,6 +40,20 @@ func TestContextExhaustedCompletion(t *testing.T) {
 		},
 
 		// ── near misses: each holds ONE half of a composite fingerprint ──
+		{
+			// The CLI's own bare terminal result, and still not a match here.
+			// An agent asked "is my prompt too long?" can answer exactly this
+			// sentence, and this predicate only ever sees output someone
+			// believed was a success — so declaring it a failure would fail a
+			// real task and retire a healthy session. Nothing is lost: the bare
+			// form always arrives with is_error set (see the fixture in
+			// pkg/agent/testdata), which routes it through the failure path
+			// where Classify already handles it — pinned by
+			// TestBarePromptTooLongIsCoveredByTheFailurePath below.
+			name:   "bare provider sentence is left to the failure path",
+			output: "Prompt is too long",
+			want:   false,
+		},
 		{
 			name: "the issue report's paraphrase is not a fingerprint",
 			// GH #6402 wrote "a message like 'context too long, please run
@@ -100,6 +104,24 @@ func TestContextExhaustedCompletion(t *testing.T) {
 				t.Errorf("ContextExhaustedCompletion(%q) = %v, want %v", tc.output, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestBarePromptTooLongIsCoveredByTheFailurePath is the other half of the
+// argument for leaving the CLI's bare sentence out of the completed-output
+// predicate: on the captured frames it always arrives with is_error set, so it
+// reaches the server as a FAILURE, where Classify has routed it to
+// context_overflow since long before GH #6402. Leaving it out of the
+// success-path predicate therefore costs no coverage — it only removes the
+// chance of failing a task whose entire answer was that one English sentence.
+func TestBarePromptTooLongIsCoveredByTheFailurePath(t *testing.T) {
+	for _, raw := range []string{
+		"Prompt is too long",
+		"prompt is too long: 274931 tokens > 200000 maximum",
+	} {
+		if got := Classify(raw); got != ReasonAgentContextOverflow {
+			t.Errorf("Classify(%q) = %q, want %q", raw, got, ReasonAgentContextOverflow)
+		}
 	}
 }
 

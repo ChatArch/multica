@@ -9,26 +9,38 @@ import "strings"
 // get it back under.
 //
 // It is a structured enum value, not prose: the CLI carries it alongside
-// image_error / model_error / max_turns / completed and friends, and it is
-// emitted on the SUCCESS-subtype result frame. That matters because the frame's
-// `is_error` flag answers a different question — the CLI derives it from
-// whether the LAST message it rendered was an API-error message, while
-// terminal_reason reports why the turn ended. The two are independent, and
-// GH #6402 is what happens when only is_error is consulted: on Claude Code
-// 2.1.220 a context-exhausted resume reported a clean success, so the platform
-// published the CLI's "your context is full" copy as the agent's answer and
-// kept the dead session pinned as the resume pointer.
+// image_error / model_error / max_turns / completed and friends, on the
+// SUCCESS-subtype result frame. It is the only field on that frame that states
+// why the turn ended. `is_error` answers a different question — the CLI sets it
+// from whether the LAST message it rendered was an API-error message — and the
+// two are computed independently, so a run's real terminal condition must be
+// read from this field rather than inferred from that flag.
 //
-// Verified against Claude Code 2.1.221 by resuming a saturated transcript
-// against an endpoint returning the provider's 400 prompt-too-long shape. The
-// captured terminal frame:
+// Captured from Claude Code 2.1.220 (the version GH #6402 reports) by resuming
+// a saturated transcript against an endpoint returning the provider's 400
+// prompt-too-long shape; the frames are fixtured verbatim in
+// pkg/agent/testdata/claude-code-2.1.220-context-exhausted-resume.jsonl. Auto-
+// compaction runs, reports compact_result=failed / compact_error=exhausted, and
+// the turn ends:
 //
 //	{"type":"result","subtype":"success","is_error":true,
 //	 "terminal_reason":"prompt_too_long","api_error_status":400,
 //	 "result":"Prompt is too long"}
 //
-// preceded by system/status frames reporting compact_result=failed,
-// compact_error=exhausted.
+// 2.1.221 produces the same shape. Two things follow, and the second is the
+// reason this constant exists:
+//
+//   - The field is present on the reported version, so keying on it reaches the
+//     hosts that hit the bug rather than only future ones.
+//   - On this frame is_error and terminal_reason BOTH fire. Whichever the
+//     runtime reads first decides the failure's label, and only terminal_reason
+//     is guaranteed to name the condition — the `result` prose is empty in some
+//     shapes and rewords between releases.
+//
+// Note what the capture does not show: is_error false. The exact escape that
+// produced a `completed` task on the reporter's host is not reproduced here, so
+// the text-side predicate below stays a bounded backstop rather than the
+// load-bearing part of the fix.
 const TerminalReasonPromptTooLong = "prompt_too_long"
 
 // contextExhaustedOutputMaxLen caps how long a reported-successful output can
@@ -55,20 +67,25 @@ const contextExhaustedOutputMaxLen = 320
 //     issue) pair, not just a mislabelled row (same argument as
 //     NormalizeDaemonReason, MUL-5370).
 //
-// Matching is deliberately composite. The GitHub report paraphrased the CLI as
-// "context too long, please run /compact", and neither half of that is safe on
-// its own: "/compact" appears in ordinary Claude Code advice and "context too
-// long" is a phrase an agent can legitimately write about its own run. Each
-// clause below therefore pins a full, distinctive wording taken from the
-// Claude Code binary itself rather than from the report:
+// EVERY clause is composite, and none is a bare natural-language sentence. The
+// GitHub report paraphrased the CLI as "context too long, please run /compact",
+// and neither half of that is safe alone: "/compact" appears in ordinary Claude
+// Code advice and "context too long" is a phrase an agent can legitimately
+// write about its own run. Each clause below pins a full, distinctive wording
+// taken from the Claude Code binary itself rather than from the report:
 //
-//	"Prompt is too long"                                                    (bare, emitted when compaction fails)
 //	"Prompt is too long · … A single-exchange conversation cannot be compacted; …"   (3 variants, all carrying "cannot be compacted")
 //	"Conversation too long. Press esc twice to go up a few messages and try again."
 //	"Compaction failed · conversation could not be reduced below the context limit"
 //
-// The bare form is matched by full-string equality, not substring, so a real
-// answer that happens to quote the phrase cannot trip it.
+// The CLI's bare "Prompt is too long" is deliberately NOT matched here, even
+// though it is a real terminal result — matching it would mean declaring a
+// task failed because its whole answer was one common English sentence, which
+// an agent asked "is my prompt too long?" can legitimately produce. Nothing is
+// lost by leaving it out: the captured frames show the bare form always arrives
+// with is_error set, so it reaches the server through /fail, where Classify's
+// rule 1 already routes "prompt is too long" to context_overflow. This
+// predicate only ever sees output a caller believed was a SUCCESS.
 func ContextExhaustedCompletion(output string) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" || len(trimmed) > contextExhaustedOutputMaxLen {
@@ -76,8 +93,6 @@ func ContextExhaustedCompletion(output string) bool {
 	}
 	lowered := strings.ToLower(trimmed)
 	switch {
-	case lowered == "prompt is too long":
-		return true
 	case strings.Contains(lowered, "prompt is too long") &&
 		strings.Contains(lowered, "cannot be compacted"):
 		return true

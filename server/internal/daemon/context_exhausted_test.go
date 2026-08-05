@@ -43,7 +43,9 @@ func TestContextExhaustionClassifiesRegardlessOfToolUse(t *testing.T) {
 	// The daemon's completed branch calls this with the run's output and no
 	// other state; a mid-task overflow reaches it identically to a first-turn
 	// one.
-	reason, ok := classifyPoisonedOutput("Prompt is too long")
+	reason, ok := classifyPoisonedOutput(
+		"Prompt is too long · this conversation is a single exchange and cannot be compacted — " +
+			"the request size comes mostly from system prompt, tool definitions, or attachments.")
 	if !ok {
 		t.Fatal("expected the context-exhaustion notice to be classified as poisoned output")
 	}

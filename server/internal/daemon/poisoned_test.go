@@ -79,12 +79,6 @@ on long outputs.`,
 			// above — a session already over the limit cannot compact its way
 			// back under, so every resume reproduces it — and the reason has to
 			// be the one the resume blacklist covers.
-			name:       "context exhaustion reported as a successful answer",
-			output:     "Prompt is too long",
-			wantOK:     true,
-			wantReason: string(taskfailure.ReasonAgentContextOverflow),
-		},
-		{
 			name:       "context exhaustion with the provider's full wording",
 			output:     "Prompt is too long · the request is ~274931 tokens (limit 200000) but this conversation is only ~1597 tokens — the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.",
 			wantOK:     true,
@@ -99,6 +93,15 @@ on long outputs.`,
 		{
 			name:   "an agent discussing /compact is a real answer",
 			output: "The session is getting long; run /compact before the next batch.",
+			wantOK: false,
+		},
+		{
+			// The CLI's bare sentence is not matched on the success path: an
+			// agent asked about prompt length can answer exactly this, and the
+			// real provider frame always carries is_error, so it reaches the
+			// failure path where Classify already handles it.
+			name:   "bare provider sentence is left to the failure path",
+			output: "Prompt is too long",
 			wantOK: false,
 		},
 	}

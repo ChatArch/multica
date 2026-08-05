@@ -68,7 +68,9 @@ func TestCompleteTask_ContextExhaustionFromOlderDaemonIsRecordedAsFailed(t *test
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{
-			"output":     "Prompt is too long",
+			"output": "Prompt is too long · the request is ~274931 tokens (limit 200000) but this conversation is only ~1597 tokens — " +
+				"the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be " +
+				"compacted; reduce attached files/tools or start with less context.",
 			"session_id": "sess-saturated-6402",
 			"work_dir":   "/tmp/gh6402",
 		},
@@ -123,8 +125,16 @@ func TestCompleteTask_ContextExhaustionFromOlderDaemonIsRecordedAsFailed(t *test
 	}
 }
 
-// TestCompleteTask_RealAnswerStillCompletes is the companion guard: a normal
-// output goes through the completion path untouched.
+// TestCompleteTask_RealAnswerStillCompletes is the companion guard: outputs a
+// real agent can legitimately produce go through the completion path untouched.
+//
+// The second case is the one that shaped the classifier. "Prompt is too long"
+// IS a wording the CLI emits, but it is also a complete, ordinary English
+// answer to "is my prompt too long?" — so the success-path predicate must not
+// claim it. Matching it would fail a task that succeeded and retire a healthy
+// session, which is strictly worse than the miss: the real provider frame
+// carries is_error, so that shape reaches the server through /fail, where
+// Classify routes it to context_overflow anyway.
 func TestCompleteTask_RealAnswerStillCompletes(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -139,48 +149,79 @@ func TestCompleteTask_RealAnswerStillCompletes(t *testing.T) {
 		t.Fatalf("setup: get agent: %v", err)
 	}
 
-	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
-		VALUES ($1, 'gh-6402 control fixture', 'in_progress', 'none', $2, 'member', 6403, 0)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("setup: create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
-
-	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
-		VALUES ($1, $2, $3, 'running', 0, now())
-		RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-		t.Fatalf("setup: create task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
-
-	w := httptest.NewRecorder()
-	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
-		map[string]any{
-			"output": "Ran /compact first because the session was getting long, then fixed the redirect and pushed.",
+	tests := []struct {
+		name   string
+		number int32
+		output string
+	}{
+		{
+			name:   "an answer that mentions compacting",
+			number: 6403,
+			output: "Ran /compact first because the session was getting long, then fixed the redirect and pushed.",
 		},
-		testWorkspaceID, "legit-daemon")
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("taskId", taskID)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+		{
+			name:   "an answer that IS the provider's bare sentence",
+			number: 6404,
+			output: "Prompt is too long",
+		},
 	}
 
-	var status string
-	if err := testPool.QueryRow(ctx, `
-		SELECT status FROM agent_task_queue WHERE id = $1
-	`, taskID).Scan(&status); err != nil {
-		t.Fatalf("read task: %v", err)
-	}
-	if status != "completed" {
-		t.Fatalf("task status = %q, want completed", status)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var issueID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
+				VALUES ($1, 'gh-6402 control fixture', 'in_progress', 'none', $2, 'member', $3, 0)
+				RETURNING id
+			`, testWorkspaceID, testUserID, tc.number).Scan(&issueID); err != nil {
+				t.Fatalf("setup: create issue: %v", err)
+			}
+			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+
+			var taskID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
+				VALUES ($1, $2, $3, 'running', 0, now())
+				RETURNING id
+			`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+				t.Fatalf("setup: create task: %v", err)
+			}
+			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+			w := httptest.NewRecorder()
+			req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
+				map[string]any{"output": tc.output, "session_id": "sess-healthy"},
+				testWorkspaceID, "legit-daemon")
+			rctx := chi.NewRouteContext()
+			rctx.URLParams.Add("taskId", taskID)
+			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+			testHandler.CompleteTask(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			var status string
+			if err := testPool.QueryRow(ctx, `
+				SELECT status FROM agent_task_queue WHERE id = $1
+			`, taskID).Scan(&status); err != nil {
+				t.Fatalf("read task: %v", err)
+			}
+			if status != "completed" {
+				t.Fatalf("task status = %q, want completed", status)
+			}
+
+			// And the healthy session stays available to the next task.
+			got, err := testHandler.Queries.GetLastTaskSession(ctx, db.GetLastTaskSessionParams{
+				AgentID: parseUUID(agentID),
+				IssueID: parseUUID(issueID),
+			})
+			if err != nil {
+				t.Fatalf("GetLastTaskSession: %v", err)
+			}
+			if got.SessionID.String != "sess-healthy" {
+				t.Fatalf("expected the healthy session to remain resumable, got %q", got.SessionID.String)
+			}
+		})
 	}
 }
