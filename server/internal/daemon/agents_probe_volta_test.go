@@ -245,6 +245,17 @@ func unsetEnvForTest(t *testing.T, name string) {
 	}
 }
 
+// entryFor turns a resolution into the AgentEntry shape the daemon caches.
+func entryFor(resolved resolvedExecutable) AgentEntry {
+	return AgentEntry{
+		Path:         resolved.Path,
+		Env:          resolved.Env,
+		EnvStampPath: resolved.StampPath,
+		EnvStampHash: resolved.StampHash,
+		Command:      "claude",
+	}
+}
+
 func resetVoltaResolveCache(t *testing.T) {
 	t.Helper()
 	clear := func() {
@@ -463,11 +474,17 @@ func TestVoltaResolve_BudgetResetsAfterCooldown(t *testing.T) {
 	resetVoltaResolveCache(t)
 
 	origRun, origCooldown, origBudget := runVolta, voltaFailureCooldown, voltaResolveBudget
+	origMiss := voltaCommandMissCooldown
 	t.Cleanup(func() {
 		runVolta, voltaFailureCooldown, voltaResolveBudget = origRun, origCooldown, origBudget
+		voltaCommandMissCooldown = origMiss
 	})
 	voltaFailureCooldown = 20 * time.Millisecond
 	voltaResolveBudget = 60 * time.Millisecond
+	// Shortened so the PER-COMMAND negative cache is not what suppresses the
+	// retries: this test is about the installation budget resetting, and the
+	// per-command gate would otherwise mask it.
+	voltaCommandMissCooldown = 5 * time.Millisecond
 
 	var mu sync.Mutex
 	calls := 0
@@ -508,11 +525,18 @@ func TestVoltaResolve_BoundsTotalCostWhenVoltaHangs(t *testing.T) {
 	resetVoltaResolveCache(t)
 
 	origRun, origTimeout, origWait := runVolta, voltaResolveTimeout, voltaResolveWaitDelay
+	origBudget := voltaResolveBudget
 	t.Cleanup(func() {
 		runVolta, voltaResolveTimeout, voltaResolveWaitDelay = origRun, origTimeout, origWait
+		voltaResolveBudget = origBudget
 	})
 	voltaResolveTimeout = 100 * time.Millisecond
 	voltaResolveWaitDelay = 50 * time.Millisecond
+	// Scaled to the production ratio: one timed-out query costs
+	// timeout+waitDelay, and the budget admits a second attempt before tripping
+	// the installation cooldown (real values: ~6s per failure against an 8s
+	// budget). So a hung install costs at most two timeouts, never one per command.
+	voltaResolveBudget = 200 * time.Millisecond
 
 	var mu sync.Mutex
 	calls := 0
@@ -539,9 +563,10 @@ func TestVoltaResolve_BoundsTotalCostWhenVoltaHangs(t *testing.T) {
 	mu.Lock()
 	got := calls
 	mu.Unlock()
-	if got != 1 {
-		t.Errorf("`volta` was invoked %d times for %d commands, want 1; a broken install must "+
-			"be asked once per cooldown, not once per command", got, len(commands))
+	if got > 2 {
+		t.Errorf("`volta` was invoked %d times for %d commands, want at most 2; a hung install "+
+			"must trip the installation cooldown once the budget is spent, not pay a timeout "+
+			"per command", got, len(commands))
 	}
 	singleCall := voltaResolveTimeout + voltaResolveWaitDelay
 	if additive := time.Duration(len(commands)) * singleCall; elapsed >= additive {
@@ -965,7 +990,7 @@ func TestVoltaPlatformDirs_RestoresFullPlatform(t *testing.T) {
 	managers := map[string]string{"npm": "10.2.0", "pnpm": "9.1.0", "yarn": "4.1.0"}
 	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}, managers: managers})
 
-	dirs, ok := voltaPlatformDirs(f.home, "claude")
+	dirs, _, ok := voltaPlatformDirs(f.home, "claude")
 	if !ok {
 		t.Fatal("voltaPlatformDirs failed")
 	}
@@ -991,7 +1016,7 @@ func TestVoltaPlatformDirs_NodeOnlyWhenNoManagersPinned(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
 
-	dirs, ok := voltaPlatformDirs(f.home, "claude")
+	dirs, _, ok := voltaPlatformDirs(f.home, "claude")
 	if !ok {
 		t.Fatal("voltaPlatformDirs failed")
 	}
@@ -1080,9 +1105,14 @@ func TestVoltaResolve_InstallationLevelBudget(t *testing.T) {
 	skipIfNoPOSIXShell(t)
 	resetVoltaResolveCache(t)
 
-	origRun, origTimeout := runVolta, voltaResolveTimeout
-	t.Cleanup(func() { runVolta, voltaResolveTimeout = origRun, origTimeout })
+	origRun, origTimeout, origBudget := runVolta, voltaResolveTimeout, voltaResolveBudget
+	t.Cleanup(func() {
+		runVolta, voltaResolveTimeout, voltaResolveBudget = origRun, origTimeout, origBudget
+	})
 	voltaResolveTimeout = 80 * time.Millisecond
+	// One timed-out query already spends the budget, so the installation cooldown
+	// opens immediately and the other commands must not query at all.
+	voltaResolveBudget = 50 * time.Millisecond
 
 	var mu sync.Mutex
 	calls := 0
@@ -1132,7 +1162,7 @@ func TestAgentEntryLaunchable_RequiresEnvironmentDirs(t *testing.T) {
 	if !ok {
 		t.Fatal("resolution failed")
 	}
-	if !agentEntryLaunchable(resolved.Path, resolved.Env) {
+	if !agentEntryLaunchable(entryFor(resolved)) {
 		t.Fatal("fresh resolution reported not launchable")
 	}
 
@@ -1143,7 +1173,7 @@ func TestAgentEntryLaunchable_RequiresEnvironmentDirs(t *testing.T) {
 	if !agentExecutablePresent(resolved.Path) {
 		t.Fatal("fixture removed the CLI too; the test would not prove anything")
 	}
-	if agentEntryLaunchable(resolved.Path, resolved.Env) {
+	if agentEntryLaunchable(entryFor(resolved)) {
 		t.Error("entry still considered launchable after its bound Node image was pruned; " +
 			"tasks would keep launching with a PATH that points nowhere")
 	}
@@ -1209,5 +1239,217 @@ func TestLayerTaskEnvironment_ResolvedEnvSurvivesCustomEnv(t *testing.T) {
 	wantPath := "/volta/tools/image/node/20.11.0/bin" + sep + "/usr/bin"
 	if agentEnv["PATH"] != wantPath {
 		t.Errorf("PATH = %q, want %q", agentEnv["PATH"], wantPath)
+	}
+}
+
+// rebindFixture rewrites a command's bin config to point at a different Node,
+// modelling `volta install <pkg>` against a newer default while the previous Node
+// image stays on disk for other tools.
+func rebindFixture(t *testing.T, f voltaFixture, command, newNode string) {
+	t.Helper()
+	mkdirs(t, f.nodeDir(newNode))
+	writeScript(t, filepath.Join(f.nodeDir(newNode), "node"), "#!/bin/sh\nexit 0\n")
+	writeVoltaConfigFile(t, voltaBinConfigPath(f.home, command),
+		voltaBinConfigJSON(command, newNode, nil))
+}
+
+// TestVoltaResolve_DetectsRebindToDifferentNode covers the rebind case: nothing is
+// missing after `volta install` picks a new Node — the old image is still there for
+// other tools — so only the bin config's contents reveal the change.
+func TestVoltaResolve_DetectsRebindToDifferentNode(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	first, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("initial resolution failed")
+	}
+	if got := first.Env.PrefixPaths["PATH"][0]; got != f.boundNodeDir() {
+		t.Fatalf("initial PATH dir = %q, want %q", got, f.boundNodeDir())
+	}
+
+	const newNode = "22.5.0"
+	rebindFixture(t, f, "claude", newNode)
+	// The previously bound image is deliberately left in place: every directory the
+	// cached resolution refers to still exists.
+	if !dirExists(f.boundNodeDir()) {
+		t.Fatal("fixture removed the old node image; the test would not prove anything")
+	}
+
+	second, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("resolution after rebind failed")
+	}
+	if want := f.nodeDir(newNode); second.Env.PrefixPaths["PATH"][0] != want {
+		t.Errorf("PATH dir after rebind = %q, want %q; the cache only checked that "+
+			"directories exist, so a rebind was invisible and the superseded toolchain "+
+			"was served forever", second.Env.PrefixPaths["PATH"][0], want)
+	}
+}
+
+// TestAgentEntryLaunchable_DetectsRebind is the daemon-cache half of the same
+// problem: a pinned AgentEntry must stop being launchable when its inputs change.
+func TestAgentEntryLaunchable_DetectsRebind(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	resolved, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("resolution failed")
+	}
+	entry := entryFor(resolved)
+	if !agentEntryLaunchable(entry) {
+		t.Fatal("fresh entry reported not launchable")
+	}
+
+	rebindFixture(t, f, "claude", "22.5.0")
+	if !agentExecutablePresent(entry.Path) || !execEnvDirsPresent(entry.Env) {
+		t.Fatal("fixture invalidated the path or dirs; the test must isolate the rebind")
+	}
+	if agentEntryLaunchable(entry) {
+		t.Error("entry still launchable after a rebind; nothing is missing on disk, so only " +
+			"the config fingerprint can reveal it and tasks would keep the old toolchain")
+	}
+}
+
+// TestVoltaResolve_CommandMissDoesNotFreezeInstallation covers the breaker split. A
+// command with no bin config fails fast and cheaply; that says nothing about the
+// installation, so healthy commands must keep resolving. Previously ANY failure set
+// one shared flag and froze every command for the full cooldown — which also made
+// the spend budget unreachable.
+func TestVoltaResolve_CommandMissDoesNotFreezeInstallation(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude", "codex"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+
+	// claude is not resolvable: no bound platform.
+	if err := os.Remove(voltaBinConfigPath(f.home, "claude")); err != nil {
+		t.Fatalf("remove bin config: %v", err)
+	}
+	if _, ok := voltaResolve(f.alias("claude"), f.shim(), "claude"); ok {
+		t.Fatal("claude unexpectedly resolved without a bin config")
+	}
+
+	// codex is perfectly healthy and must not be collateral damage.
+	resolved, ok := voltaResolve(f.alias("codex"), f.shim(), "codex")
+	if !ok {
+		t.Fatal("codex was refused after an unrelated command's fast failure; a " +
+			"command-specific miss must not open an installation-wide cooldown")
+	}
+	if want := f.concrete("codex"); resolved.Path != want {
+		t.Errorf("codex path = %q, want %q", resolved.Path, want)
+	}
+}
+
+// TestVoltaResolve_CommandMissIsNegativelyCached keeps the other half honest: the
+// failing command itself must not be retried on every single call.
+func TestVoltaResolve_CommandMissIsNegativelyCached(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	origRun := runVolta
+	t.Cleanup(func() { runVolta = origRun })
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+	if err := os.Remove(voltaBinConfigPath(f.home, "claude")); err != nil {
+		t.Fatalf("remove bin config: %v", err)
+	}
+
+	var mu sync.Mutex
+	calls := 0
+	runVolta = func(voltaBin, voltaHome string, args ...string) (string, bool) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return origRun(voltaBin, voltaHome, args...)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, ok := voltaResolve(f.alias("claude"), f.shim(), "claude"); ok {
+			t.Fatalf("attempt %d unexpectedly resolved", i+1)
+		}
+	}
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("`volta` was invoked %d times for 3 attempts at one unresolvable command, "+
+			"want 1; the per-command negative cache is not working", got)
+	}
+}
+
+// TestCustomProfileEntry_DoesNotInheritBuiltinEnvironment covers the custom runtime
+// leak: swapping only Path left the built-in provider's resolved environment in
+// place, so a custom Codex-family script ran under Volta's Node platform for the
+// BUILT-IN codex — wrong PATH and NODE_PATH.
+func TestCustomProfileEntry_DoesNotInheritBuiltinEnvironment(t *testing.T) {
+	builtin := AgentEntry{
+		Path:         "/volta/tools/image/packages/codex/bin/codex",
+		Command:      "codex",
+		Model:        "gpt-5-codex",
+		Env:          agent.ExecEnv{PrefixPaths: map[string][]string{"PATH": {"/volta/node/24/bin"}}},
+		EnvStampPath: "/volta/tools/user/bins/codex.json",
+		EnvStampHash: "deadbeef",
+	}
+	custom := customProfileAgentEntry(builtin, "/opt/custom/my-codex")
+
+	if custom.Path != "/opt/custom/my-codex" {
+		t.Errorf("Path = %q, want the custom command", custom.Path)
+	}
+	if !custom.Env.IsZero() {
+		t.Errorf("custom profile inherited the built-in environment %v; its script would run "+
+			"under the wrong Node/PATH/NODE_PATH", custom.Env.PrefixPaths)
+	}
+	if custom.EnvStampPath != "" || custom.EnvStampHash != "" {
+		t.Error("custom profile inherited the built-in resolution stamp")
+	}
+	if custom.Model != builtin.Model {
+		t.Errorf("Model = %q, want it preserved (%q)", custom.Model, builtin.Model)
+	}
+}
+
+// TestResolveAgentEntry_ReplacesEntryAfterRebind is the plumbing half of the rebind
+// fix: a pinned entry whose binding changed must be re-resolved and replaced, not
+// handed back because its files happen to still exist.
+func TestResolveAgentEntry_ReplacesEntryAfterRebind(t *testing.T) {
+	skipIfNoPOSIXShell(t)
+	resetVoltaResolveCache(t)
+
+	f := newVoltaFixture(t, voltaFixtureOpts{commands: []string{"claude"}})
+	t.Setenv("PATH", systemPath(f.binDir()))
+	origDetect := detectAgentVersion
+	t.Cleanup(func() { detectAgentVersion = origDetect })
+	detectAgentVersion = func(_ context.Context, _ string, _ agent.ExecEnv) (string, error) {
+		return "2.1.0", nil
+	}
+
+	resolved, ok := voltaResolve(f.alias("claude"), f.shim(), "claude")
+	if !ok {
+		t.Fatal("initial resolution failed")
+	}
+	pinned := entryFor(resolved)
+
+	const newNode = "22.5.0"
+	rebindFixture(t, f, "claude", newNode)
+
+	d := freshDaemon("")
+	got, _ := d.resolveAgentEntry(context.Background(), "claude", pinned)
+
+	dirs := got.Env.PrefixPaths["PATH"]
+	if len(dirs) == 0 {
+		t.Fatal("re-resolved entry carries no PATH dirs")
+	}
+	if want := f.nodeDir(newNode); dirs[0] != want {
+		t.Errorf("entry PATH dir = %q, want the rebound Node %q; resolveAgentEntry kept the "+
+			"superseded binding", dirs[0], want)
 	}
 }

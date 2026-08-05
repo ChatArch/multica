@@ -28,6 +28,12 @@ type AgentEntry struct {
 	// discovery, the service-tier/thinking validators and the task launch — applies
 	// it, so the gated version is the executed version. Zero for the ordinary case.
 	Env agent.ExecEnv
+	// EnvStampPath / EnvStampHash fingerprint the file whose contents produced Env
+	// (Volta's bin config). They let a cached entry notice a REBIND — a package
+	// reinstalled against a different Node — which no existence check can see
+	// because the previous toolchain image usually remains on disk.
+	EnvStampPath string
+	EnvStampHash string
 }
 
 // Runtime represents a registered daemon runtime.

@@ -111,10 +111,12 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 		cmd := envOrDefault(envVar, defaultCmd)
 		if resolved, err := resolveAgentExecutable(cmd); err == nil {
 			return AgentEntry{
-				Path:    resolved.Path,
-				Env:     resolved.Env,
-				Command: cmd,
-				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:         resolved.Path,
+				Env:          resolved.Env,
+				EnvStampPath: resolved.StampPath,
+				EnvStampHash: resolved.StampHash,
+				Command:      cmd,
+				Model:        strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		// The shell fallback only rescues bare command names. An operator
@@ -133,10 +135,12 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 			// hold — the inconsistency #6183's fix is supposed to remove.
 			resolved := canonicalExecutable(path)
 			return AgentEntry{
-				Path:    resolved.Path,
-				Env:     resolved.Env,
-				Command: cmd,
-				Model:   strings.TrimSpace(os.Getenv(modelEnv)),
+				Path:         resolved.Path,
+				Env:          resolved.Env,
+				EnvStampPath: resolved.StampPath,
+				EnvStampHash: resolved.StampHash,
+				Command:      cmd,
+				Model:        strings.TrimSpace(os.Getenv(modelEnv)),
 			}, true
 		}
 		if defaultCmd == "codex" && cmd == defaultCmd {

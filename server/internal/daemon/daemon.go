@@ -505,8 +505,11 @@ type healedAgent struct {
 	path    string
 	version string
 	// env travels with path/version so a reader that adopts the healed path also
-	// gets the environment that path was verified under.
-	env agent.ExecEnv
+	// gets the environment that path was verified under, and the stamp lets a later
+	// reader notice that the inputs behind that environment have changed.
+	env       agent.ExecEnv
+	stampPath string
+	stampHash string
 }
 
 // resolveAgentEntry returns entry with a usable executable path plus the CLI
@@ -553,13 +556,17 @@ func (d *Daemon) resolveAgentEntry(ctx context.Context, provider string, entry A
 	d.resolvedPathsMu.RLock()
 	healed, ok := d.resolvedPaths[provider]
 	d.resolvedPathsMu.RUnlock()
-	if ok && agentEntryLaunchable(healed.path, healed.env) {
-		entry.Path = healed.path
-		entry.Env = healed.env
-		return entry, healed.version
+	if ok {
+		healedEntry := entry
+		healedEntry.Path = healed.path
+		healedEntry.Env = healed.env
+		healedEntry.EnvStampPath, healedEntry.EnvStampHash = healed.stampPath, healed.stampHash
+		if agentEntryLaunchable(healedEntry) {
+			return healedEntry, healed.version
+		}
 	}
 
-	if agentEntryLaunchable(entry.Path, entry.Env) {
+	if agentEntryLaunchable(entry) {
 		return entry, d.agentVersion(provider)
 	}
 
@@ -624,7 +631,8 @@ func (d *Daemon) healAgentPath(ctx context.Context, provider, command string) he
 		return healedAgent{}
 	}
 
-	adopted := healedAgent{path: newPath.Path, version: version, env: newPath.Env}
+	adopted := healedAgent{path: newPath.Path, version: version, env: newPath.Env,
+		stampPath: newPath.StampPath, stampHash: newPath.StampHash}
 	// Publish path + version atomically: any reader that sees the new path in
 	// resolveAgentEntry gets the matching version out of the same struct value.
 	d.resolvedPathsMu.Lock()
@@ -4772,7 +4780,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// codex is never launched under the previous version's policy (MUL-4486).
 	var resolvedVersion string
 	if customSpec, isCustom := d.customProfileLaunchForRuntime(task.RuntimeID); isCustom {
-		entry.Path = customSpec.path
+		entry = customProfileAgentEntry(entry, customSpec.path)
 		resolvedVersion = customSpec.version
 		profileFixedArgs = customSpec.fixedArgs
 		ok = true
@@ -6607,6 +6615,23 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	return false
+}
+
+// customProfileAgentEntry builds the entry a custom runtime profile launches with,
+// from the built-in provider entry it replaces.
+//
+// Only Path used to be swapped, which left the built-in provider's resolved
+// execution environment attached. On a host running both a Volta-managed codex and
+// a Codex-family custom profile, the custom script was then launched under Volta's
+// Node platform for the BUILT-IN codex — wrong PATH and NODE_PATH. A custom command
+// is an unrelated executable, so it starts with no resolved environment; Command is
+// cleared too, since the built-in command name must never drive a re-resolve of a
+// custom path.
+func customProfileAgentEntry(builtin AgentEntry, path string) AgentEntry {
+	return AgentEntry{
+		Path:  path,
+		Model: builtin.Model,
+	}
 }
 
 // layerTaskEnvironment assembles the task environment: the agent's custom_env

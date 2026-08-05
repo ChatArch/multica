@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -651,11 +653,18 @@ func agentExecutablePresent(path string) bool {
 // old Node image leaves the CLI file in place, so a cached entry stayed
 // "present" while its PATH pointed at a directory that no longer existed —
 // every task then launched with a broken toolchain and nothing ever re-resolved.
-func agentEntryLaunchable(path string, env agent.ExecEnv) bool {
-	if !agentExecutablePresent(path) {
+// A rebind to a different Node is the same class of problem with nothing missing
+// at all, which is why the resolution inputs are fingerprinted too.
+func agentEntryLaunchable(entry AgentEntry) bool {
+	if !agentExecutablePresent(entry.Path) {
 		return false
 	}
-	return execEnvDirsPresent(env)
+	if !execEnvDirsPresent(entry.Env) {
+		return false
+	}
+	// Same reason as voltaResolutionUsable: a Volta rebind leaves every directory
+	// in place, so only the config fingerprint reveals it.
+	return resolutionStampValid(entry.EnvStampPath, entry.EnvStampHash)
 }
 
 // execEnvDirsPresent reports whether the PATH directories an ExecEnv depends on
@@ -768,6 +777,14 @@ func samePathDir(a, b string) bool {
 type resolvedExecutable struct {
 	Path string
 	Env  agent.ExecEnv
+	// StampPath / StampHash fingerprint the file whose CONTENTS determined the
+	// environment — Volta's bin config for this command. Existence checks alone
+	// cannot see a rebind: `volta install pkg` against a newer Node rewrites the
+	// config while the previous Node image often stays on disk for other tools, so
+	// every directory still exists and a path-only validity check keeps serving the
+	// superseded toolchain forever.
+	StampPath string
+	StampHash string
 }
 
 // voltaShimName is the basename of the single trampoline binary Volta installs
@@ -789,7 +806,11 @@ var (
 	// breaker window. Without it, N alias lookups against a wedged install each
 	// paid the per-call timeout and the startup probe stalled for N × timeout.
 	voltaResolveBudget = 8 * time.Second
-	// voltaFailureCooldown is how long a failing install is left alone. It turns
+	// voltaCommandMissCooldown is how long a single command's failure suppresses
+	// retries of THAT command. Short, because such a miss is cheap to retest and a
+	// user who installs the tool should be picked up promptly.
+	voltaCommandMissCooldown = time.Minute
+	// voltaFailureCooldown is how long an EXPENSIVE-failing install is left alone. It turns
 	// "every command pays the timeout, every discovery tick" into "one command
 	// pays it, once per cooldown". When it expires the budget resets too, so a
 	// transient outage can never latch the breaker open permanently.
@@ -926,18 +947,19 @@ type voltaBinConfig struct {
 // image is missing is skipped rather than failing the whole resolution — an absent
 // directory on PATH has no effect on execution, and skipping it keeps validity
 // checks honest about what actually has to exist.
-func voltaPlatformDirs(voltaHome, command string) ([]string, bool) {
-	raw, err := os.ReadFile(filepath.Join(voltaHome, "tools", "user", "bins", command+".json"))
+func voltaPlatformDirs(voltaHome, command string) ([]string, string, bool) {
+	configPath := voltaBinConfigPath(voltaHome, command)
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	var cfg voltaBinConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	nodeVersion := strings.TrimSpace(cfg.Platform.Node)
 	if nodeVersion == "" {
-		return nil, false
+		return nil, "", false
 	}
 
 	var dirs []string
@@ -958,9 +980,32 @@ func voltaPlatformDirs(voltaHome, command string) ([]string, bool) {
 	}
 	nodeDir, ok := voltaImageBinDir(voltaHome, "node", nodeVersion)
 	if !ok {
-		return nil, false
+		return nil, "", false
 	}
-	return append(dirs, nodeDir), true
+	return append(dirs, nodeDir), hashBytes(raw), true
+}
+
+// voltaBinConfigPath is where Volta records the platform bound to a command.
+func voltaBinConfigPath(voltaHome, command string) string {
+	return filepath.Join(voltaHome, "tools", "user", "bins", command+".json")
+}
+
+func hashBytes(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// resolutionStampValid reports whether the file that determined an environment
+// still has the same contents. A missing stamp means "nothing to check".
+func resolutionStampValid(stampPath, stampHash string) bool {
+	if stampPath == "" {
+		return true
+	}
+	raw, err := os.ReadFile(stampPath)
+	if err != nil {
+		return false
+	}
+	return hashBytes(raw) == stampHash
 }
 
 // voltaImageBinDir locates the executables for one toolchain image. Unix keeps
@@ -990,16 +1035,20 @@ func dirExists(path string) bool {
 
 type voltaInstallState struct {
 	tools map[string]resolvedExecutable // command -> resolution
-	// failureSpend accumulates ONLY failed or timed-out query time, inside the
-	// current breaker window. Counting successful queries too let a couple of slow
-	// but WORKING resolutions exhaust the budget; since success also clears
-	// failedAt, no cooldown could then fire and every later uncached command was
-	// refused for the life of the process.
+	// misses is a per-COMMAND negative cache. A command that simply is not
+	// Volta-managed (no bin config) fails fast and cheaply, and must only stop
+	// retries of ITSELF — it says nothing about the installation's health.
+	misses map[string]time.Time
+	// failureSpend is how much time failures have burned in the current window.
+	// Only when it reaches voltaResolveBudget does the whole installation go into
+	// cooldown, because that is the signal that querying Volta is EXPENSIVE (hung
+	// or timing out), not merely unsuccessful.
 	failureSpend time.Duration
-	failedAt     time.Time
+	// installCooldownUntil suppresses every command for this installation. Set
+	// only by an exhausted budget.
+	installCooldownUntil time.Time
 	// queryMu serializes this installation's queries so the budget is enforced per
-	// installation rather than per command: without it several commands pass the
-	// budget check concurrently and each pays a full timeout.
+	// installation rather than per command.
 	queryMu sync.Mutex
 }
 
@@ -1030,7 +1079,10 @@ func voltaInstallStateFor(key string) *voltaInstallState {
 	defer voltaMu.Unlock()
 	state := voltaStates[key]
 	if state == nil {
-		state = &voltaInstallState{tools: map[string]resolvedExecutable{}}
+		state = &voltaInstallState{
+			tools:  map[string]resolvedExecutable{},
+			misses: map[string]time.Time{},
+		}
 		voltaStates[key] = state
 	}
 	return state
@@ -1089,11 +1141,11 @@ func voltaResolve(aliasPath, shimPath, command string) (resolvedExecutable, bool
 	if cached, ok := voltaCachedTool(state, command); ok {
 		return cached, true
 	}
-	if !voltaBreakerAllows(state) {
+	if !voltaBreakerAllows(state, command) {
 		return resolvedExecutable{}, false
 	}
 	if !isExecutableFile(voltaBin) {
-		voltaNoteFailure(state, 0)
+		voltaNoteFailure(state, command, 0)
 		return resolvedExecutable{}, false
 	}
 
@@ -1108,14 +1160,14 @@ func voltaResolve(aliasPath, shimPath, command string) (resolvedExecutable, bool
 		if cached, ok := voltaCachedTool(state, command); ok {
 			return cached, nil
 		}
-		if !voltaBreakerAllows(state) {
+		if !voltaBreakerAllows(state, command) {
 			return resolvedExecutable{}, nil
 		}
 
 		started := time.Now()
 		resolved, ok := voltaResolveUncached(voltaBin, voltaHome, command)
 		if !ok {
-			voltaNoteFailure(state, time.Since(started))
+			voltaNoteFailure(state, command, time.Since(started))
 			return resolvedExecutable{}, nil
 		}
 		voltaNoteSuccess(state, command, resolved)
@@ -1140,29 +1192,48 @@ func voltaCachedTool(state *voltaInstallState, command string) (resolvedExecutab
 	return resolvedExecutable{}, false
 }
 
-// voltaBreakerAllows reports whether this installation may be queried now.
+// voltaBreakerAllows reports whether command may be queried now.
 //
-// The budget bounds ONE cooldown window and counts only failures, so neither a
-// run of slow-but-working resolutions nor a transient outage can latch the
-// breaker permanently: an expired cooldown clears both halves.
-func voltaBreakerAllows(state *voltaInstallState) bool {
+// Two independent gates, deliberately:
+//
+//   - A per-command negative cache. Most failures are command-specific and cheap
+//     (the command is simply not Volta-managed, so there is no bin config). Those
+//     must not stop other commands: previously any failure set one shared flag and
+//     a single fast miss froze every healthy command on the installation for the
+//     full cooldown, which also made the spend budget unreachable dead code.
+//   - An installation-wide cooldown, entered only when failures have actually
+//     burned the time budget. That is the case worth suppressing globally, because
+//     it means each further query costs a timeout.
+func voltaBreakerAllows(state *voltaInstallState, command string) bool {
 	voltaMu.Lock()
 	defer voltaMu.Unlock()
-	if !state.failedAt.IsZero() {
-		if time.Since(state.failedAt) < voltaFailureCooldown {
+	if !state.installCooldownUntil.IsZero() {
+		if time.Now().Before(state.installCooldownUntil) {
 			return false
 		}
-		state.failedAt = time.Time{}
+		// Cooldown served: start a fresh window.
+		state.installCooldownUntil = time.Time{}
 		state.failureSpend = 0
 	}
-	return state.failureSpend < voltaResolveBudget
+	if last, ok := state.misses[command]; ok {
+		if time.Since(last) < voltaCommandMissCooldown {
+			return false
+		}
+		delete(state.misses, command)
+	}
+	return true
 }
 
-func voltaNoteFailure(state *voltaInstallState, elapsed time.Duration) {
+func voltaNoteFailure(state *voltaInstallState, command string, elapsed time.Duration) {
 	voltaMu.Lock()
 	defer voltaMu.Unlock()
+	state.misses[command] = time.Now()
 	state.failureSpend += elapsed
-	state.failedAt = time.Now()
+	if state.failureSpend >= voltaResolveBudget {
+		// Expensive failures: suppress the whole installation for a cooldown so N
+		// commands cannot each pay a timeout.
+		state.installCooldownUntil = time.Now().Add(voltaFailureCooldown)
+	}
 }
 
 // voltaNoteSuccess records a working resolution. A success proves the install is
@@ -1171,8 +1242,9 @@ func voltaNoteFailure(state *voltaInstallState, elapsed time.Duration) {
 func voltaNoteSuccess(state *voltaInstallState, command string, resolved resolvedExecutable) {
 	voltaMu.Lock()
 	defer voltaMu.Unlock()
-	state.failedAt = time.Time{}
+	delete(state.misses, command)
 	state.failureSpend = 0
+	state.installCooldownUntil = time.Time{}
 	state.tools[command] = resolved
 }
 
@@ -1182,7 +1254,7 @@ func voltaResolveUncached(voltaBin, voltaHome, command string) (resolvedExecutab
 	if !ok {
 		return resolvedExecutable{}, false
 	}
-	platformDirs, ok := voltaPlatformDirs(voltaHome, command)
+	platformDirs, stampHash, ok := voltaPlatformDirs(voltaHome, command)
 	if !ok {
 		// Fail closed: without the bound platform we cannot reproduce the
 		// environment Volta itself would use, so the version we verify would not
@@ -1195,6 +1267,8 @@ func voltaResolveUncached(voltaBin, voltaHome, command string) (resolvedExecutab
 			"PATH":      platformDirs,
 			"NODE_PATH": {voltaSharedLibDir(voltaHome)},
 		}},
+		StampPath: voltaBinConfigPath(voltaHome, command),
+		StampHash: stampHash,
 	}, true
 }
 
@@ -1202,6 +1276,11 @@ func voltaResolveUncached(voltaBin, voltaHome, command string) (resolvedExecutab
 // the tool AND every directory its environment depends on.
 func voltaResolutionUsable(resolved resolvedExecutable) bool {
 	if !isExecutableFile(resolved.Path) {
+		return false
+	}
+	// A rebind rewrites the bin config; without this the old binding survives for
+	// as long as its image happens to stay on disk.
+	if !resolutionStampValid(resolved.StampPath, resolved.StampHash) {
 		return false
 	}
 	for name, dirs := range resolved.Env.PrefixPaths {
