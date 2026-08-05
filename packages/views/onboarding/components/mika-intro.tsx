@@ -1,6 +1,5 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
 import {
   Item,
   ItemContent,
@@ -9,6 +8,11 @@ import {
   ItemTitle,
 } from "@multica/ui/components/ui/item";
 import { useT } from "../../i18n";
+
+/** Mirrors `mikaAgentAvatarURL` in server/internal/handler/mika_agent.go.
+ *  Placeholder until Mika has real artwork — these two must move together or
+ *  onboarding shows one face and the created agent another. */
+export const MIKA_PLACEHOLDER_EMOJI = "🦄";
 import { StepHeading } from "./step-shell";
 
 /**
@@ -33,8 +37,12 @@ export function MikaIntro() {
       <StepHeading title={t(($) => $.mika_intro.headline)} />
       <Item variant="outline">
         <ItemMedia>
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
-            <Sparkles aria-hidden className="size-4" />
+          <span
+            role="img"
+            aria-label={t(($) => $.mika_intro.name)}
+            className="flex size-9 shrink-0 select-none items-center justify-center rounded-full bg-muted text-title leading-none"
+          >
+            {MIKA_PLACEHOLDER_EMOJI}
           </span>
         </ItemMedia>
         <ItemContent>

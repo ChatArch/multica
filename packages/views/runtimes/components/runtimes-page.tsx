@@ -8,13 +8,13 @@ import {
   Monitor,
   Plus,
   Server,
-  Sparkles,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useBootstrapMika } from "@multica/core/onboarding";
+import { MIKA_PLACEHOLDER_EMOJI } from "../../onboarding/components/mika-intro";
 import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import { runtimeProfileListOptions } from "@multica/core/runtimes";
@@ -229,8 +229,12 @@ function MikaSetupCard({
 
   return (
     <div className="mb-6 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center">
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-foreground text-background">
-        <Sparkles aria-hidden className="size-4" />
+      <span
+        role="img"
+        aria-label={t(($) => $.mika_setup.title)}
+        className="flex size-10 shrink-0 select-none items-center justify-center rounded-full bg-muted text-title-lg leading-none"
+      >
+        {MIKA_PLACEHOLDER_EMOJI}
       </span>
       <div className="min-w-0 flex-1">
         <h2 className="text-sm font-semibold">
