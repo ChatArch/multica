@@ -565,10 +565,13 @@ function PreviewPanel({
           </span>
         </div>
         <div className="ml-auto flex items-center gap-1">
-          {/* Mounted disabled until the image is measured — appearing on load
-              (and vanishing for the un-measured frame during a sequence swap)
-              would shift the buttons to its right every navigation. */}
-          {kind === "image" && (
+          {/* Standalone preview keeps the original gate — no controls until
+              the image is measured, and none at all for content that has no
+              intrinsic size to drive. In a sequence they stay mounted
+              (disabled while un-measured) instead: `natural` passes through
+              null on every swap, and controls that vanish and reappear shift
+              the buttons to their right on every navigation. */}
+          {kind === "image" && (natural || sequence) && (
             <ZoomControls canvas={canvas} disabled={!natural} />
           )}
           {onOpenInNewTab && (
