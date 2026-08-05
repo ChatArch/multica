@@ -1073,11 +1073,33 @@ WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: CancelQueuedAgentTasksForSession :many
-UPDATE agent_task_queue
+-- Clear only positional follow-ups. The first visible task is current even
+-- when it has not been claimed yet, so an all-queued session must preserve its
+-- priority/FIFO head. Keep this selector in lockstep with the visible-head
+-- invariant documented above ListChatMessages in chat.sql.
+WITH head AS MATERIALIZED (
+  SELECT candidate.id
+  FROM agent_task_queue AS candidate
+  WHERE candidate.chat_session_id = $1
+    AND candidate.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+    AND candidate.regenerate_quick_actions_for IS NULL
+  ORDER BY
+    CASE
+      WHEN candidate.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+      WHEN candidate.status = 'deferred' THEN 1
+      ELSE 2
+    END,
+    candidate.priority DESC,
+    candidate.created_at ASC,
+    candidate.id ASC
+  LIMIT 1
+)
+UPDATE agent_task_queue AS queued
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
-WHERE chat_session_id = $1
-  AND status = 'queued'
-RETURNING *;
+WHERE queued.chat_session_id = $1
+  AND queued.status = 'queued'
+  AND queued.id IS DISTINCT FROM (SELECT id FROM head)
+RETURNING queued.*;
 
 -- name: MarkChatFinalizeDeferred :one
 -- Arms the deferred chat-finalize marker for a cancelled chat task whose

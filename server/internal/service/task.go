@@ -1783,13 +1783,14 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 		// The database status of every newly-created task is "queued" until a
 		// daemon claims it. Product queue semantics are positional instead: this
 		// send is a follow-up only when another visible task in the same session
-		// is already ahead of it. The session + agent locks serialize sibling
-		// sends and claims around this read.
-		if _, err := qtx.GetPendingChatTask(ctx, session.ID); err == nil {
-			out.Queued = true
-		} else if !errors.Is(err, pgx.ErrNoRows) {
+		// is already ahead of it. Deferred retries count because they resume an
+		// older turn before this one. The session + agent locks serialize sibling
+		// sends, retries, terminal writes, and claims around this read.
+		queued, err := qtx.HasPendingChatTurnForSession(ctx, session.ID)
+		if err != nil {
 			return fmt.Errorf("check direct chat queue position: %w", err)
 		}
+		out.Queued = queued
 
 		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
 			AgentID:              session.AgentID,

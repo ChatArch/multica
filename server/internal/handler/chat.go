@@ -1570,7 +1570,7 @@ func (h *Handler) PrioritizeQueuedChatTask(w http.ResponseWriter, r *http.Reques
 }
 
 // ClearQueuedChatTasks cancels every queued follow-up without touching the
-// task already running for the session.
+// session's current positional head, even when that head is not claimed yet.
 func (h *Handler) ClearQueuedChatTasks(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {

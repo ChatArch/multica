@@ -493,6 +493,49 @@ func TestPrioritizeQueuedChatTask_StaleTargetPreservesExistingPriority(t *testin
 	}
 }
 
+func TestPrioritizeQueuedChatTask_RejectsWhileVisibleHeadIsUnclaimed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "UnclaimedPrioritizeQueueAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+	headID := insertPendingChatTask(t, agentID, sessionID, "queued")
+	targetID := insertPendingChatTask(t, agentID, sessionID, "queued")
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET created_at = CASE id WHEN $1 THEN '2026-07-29T01:00:00Z'::timestamptz ELSE '2026-07-29T01:00:01Z'::timestamptz END
+		WHERE id IN ($1, $2)
+	`, headID, targetID); err != nil {
+		t.Fatalf("order unclaimed queue: %v", err)
+	}
+
+	req := withURLParams(
+		newRequestAs(
+			testUserID,
+			http.MethodPost,
+			"/api/chat/sessions/"+sessionID+"/queued-tasks/"+targetID+"/prioritize",
+			nil,
+		),
+		"sessionId", sessionID,
+		"taskId", targetID,
+	)
+	w := httptest.NewRecorder()
+	testHandler.PrioritizeQueuedChatTask(w, chatPendingCtxAs(t, req, testUserID))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	pending, err := testHandler.Queries.ListPendingChatTasksForSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("list preserved queue: %v", err)
+	}
+	if len(pending) != 2 || uuidToString(pending[0].ID) != headID || uuidToString(pending[1].ID) != targetID {
+		t.Fatalf("rejected prioritize changed queue order: %+v", pending)
+	}
+}
+
 func TestPrioritizeQueuedChatTask_BroadcastsQueueInvalidation(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -500,6 +543,7 @@ func TestPrioritizeQueuedChatTask_BroadcastsQueueInvalidation(t *testing.T) {
 
 	agentID := createHandlerTestAgent(t, "PrioritizeQueueBroadcastAgent", []byte("[]"))
 	sessionID := createHandlerTestChatSession(t, agentID)
+	insertPendingChatTask(t, agentID, sessionID, "running")
 	taskID := insertPendingChatTask(t, agentID, sessionID, "queued")
 	got := make(chan events.Event, 1)
 	testHandler.Bus.Subscribe(protocol.EventTaskQueued, func(event events.Event) {
@@ -536,23 +580,31 @@ func TestPrioritizeQueuedChatTask_BroadcastsQueueInvalidation(t *testing.T) {
 	}
 }
 
-func TestClearQueuedChatTasks_CancelsWholeQueueAndDeletesInputs(t *testing.T) {
+func TestClearQueuedChatTasks_PreservesUnclaimedHeadAndDeletesFollowUps(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 
 	agentID := createHandlerTestAgent(t, "ClearPendingQueueAgent", []byte("[]"))
 	sessionID := createHandlerTestChatSession(t, agentID)
-	var taskIDs, attachmentIDs []string
+	var taskIDs, messageIDs, attachmentIDs []string
 	for _, content := range []string{"queued prompt A", "queued prompt B"} {
-		taskID, _, attachmentID := insertQueuedChatInputWithAttachment(
+		taskID, messageID, attachmentID := insertQueuedChatInputWithAttachment(
 			t,
 			agentID,
 			sessionID,
 			content,
 		)
 		taskIDs = append(taskIDs, taskID)
+		messageIDs = append(messageIDs, messageID)
 		attachmentIDs = append(attachmentIDs, attachmentID)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE agent_task_queue
+		SET created_at = CASE id WHEN $1 THEN '2026-07-29T01:00:00Z'::timestamptz ELSE '2026-07-29T01:00:01Z'::timestamptz END
+		WHERE id IN ($1, $2)
+	`, taskIDs[0], taskIDs[1]); err != nil {
+		t.Fatalf("order queued tasks: %v", err)
 	}
 
 	req := withURLParam(
@@ -571,28 +623,33 @@ func TestClearQueuedChatTasks_CancelsWholeQueueAndDeletesInputs(t *testing.T) {
 		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
 	}
 
-	for _, taskID := range taskIDs {
-		if got := taskStatus(t, taskID); got != "cancelled" {
-			t.Fatalf("queued task %s status = %q, want cancelled", taskID, got)
-		}
+	if got := taskStatus(t, taskIDs[0]); got != "queued" {
+		t.Fatalf("unclaimed head status = %q, want queued", got)
 	}
-	var inputCount int
+	if got := taskStatus(t, taskIDs[1]); got != "cancelled" {
+		t.Fatalf("queued follow-up status = %q, want cancelled", got)
+	}
+	var headInputExists, followUpInputExists bool
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT count(*) FROM chat_message WHERE task_id = $1 OR task_id = $2
-	`, taskIDs[0], taskIDs[1]).Scan(&inputCount); err != nil {
-		t.Fatalf("count queued inputs after clear: %v", err)
+		SELECT
+			EXISTS (SELECT 1 FROM chat_message WHERE id = $1),
+			EXISTS (SELECT 1 FROM chat_message WHERE id = $2)
+	`, messageIDs[0], messageIDs[1]).Scan(&headInputExists, &followUpInputExists); err != nil {
+		t.Fatalf("read queued inputs after clear: %v", err)
 	}
-	if inputCount != 0 {
-		t.Fatalf("clear left %d queued input messages", inputCount)
+	if !headInputExists || followUpInputExists {
+		t.Fatalf("queued inputs after clear: head=%t follow_up=%t, want true/false", headInputExists, followUpInputExists)
 	}
-	var attachmentCount int
+	var headAttachmentExists, followUpAttachmentExists bool
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT count(*) FROM attachment WHERE id = $1 OR id = $2
-	`, attachmentIDs[0], attachmentIDs[1]).Scan(&attachmentCount); err != nil {
-		t.Fatalf("count queued attachments after clear: %v", err)
+		SELECT
+			EXISTS (SELECT 1 FROM attachment WHERE id = $1),
+			EXISTS (SELECT 1 FROM attachment WHERE id = $2)
+	`, attachmentIDs[0], attachmentIDs[1]).Scan(&headAttachmentExists, &followUpAttachmentExists); err != nil {
+		t.Fatalf("read queued attachments after clear: %v", err)
 	}
-	if attachmentCount != 0 {
-		t.Fatalf("clear left %d discarded attachment rows", attachmentCount)
+	if !headAttachmentExists || followUpAttachmentExists {
+		t.Fatalf("queued attachments after clear: head=%t follow_up=%t, want true/false", headAttachmentExists, followUpAttachmentExists)
 	}
 }
 
