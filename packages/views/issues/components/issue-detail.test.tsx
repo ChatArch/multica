@@ -849,6 +849,46 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Properties")).not.toBeInTheDocument();
   });
 
+  it("pins the comment composer to the scroll viewport on a wide screen", async () => {
+    const { container } = renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    // `bottom-0` is unique to the composer wrapper — the sticky affordances
+    // inside the timeline (comment headers, resolve bars) all pin to `top-0`.
+    expect(container.querySelector(".sticky.bottom-0")).not.toBeNull();
+  });
+
+  it("lets the composer ride the end of the timeline on mobile", async () => {
+    // A pinned composer on a phone sits on the chat launcher's corner at every
+    // scroll position, and the part it covers is its own send button.
+    mockViewport.isMobile = true;
+
+    const { container } = renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    expect(container.querySelector(".sticky.bottom-0")).toBeNull();
+  });
+
+  it("reserves the chat launcher's corner at the end of the mobile scroll", async () => {
+    mockViewport.isMobile = true;
+
+    const { container } = renderIssueDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+
+    // Unpinned, the composer lands in that corner once the reader reaches the
+    // bottom, so the column has to end above the launcher rather than under it.
+    expect(container.querySelector(".max-md\\:pb-chat-launcher")).not.toBeNull();
+  });
+
   it("hides metadata content from the sidebar and shows a button when the bag has keys", async () => {
     // Metadata is agent-facing; the sidebar only exposes a button that opens
     // the raw JSON on demand. Keys are NOT rendered inline anywhere.

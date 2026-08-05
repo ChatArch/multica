@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
@@ -91,7 +91,6 @@ import { propertyListOptions } from "@multica/core/properties";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import {
   selectExpandedResolved,
-  useCommentComposerStore,
   useRecentIssuesStore,
   useResolvedExpandStore,
   useSubIssueDisplayStore,
@@ -114,6 +113,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useInPageFind } from "../hooks/use-in-page-find";
+import { useStickyComposer } from "../hooks/use-sticky-composer";
 import { FindBar } from "./find-bar";
 import {
   AnimatedRightSidebar,
@@ -920,6 +920,14 @@ interface IssueDetailProps {
   layoutId?: string;
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
   highlightCommentId?: string;
+  /**
+   * Far-left header slot, replacing the mobile sidebar trigger. A host that
+   * embeds this detail one level deep (the inbox, on a phone) passes its own
+   * "back" control here instead of stacking a second 48px bar above us — the
+   * breadcrumb this header already renders names the issue's container, not
+   * the surface the reader arrived from, so only the host can spell that trip.
+   */
+  leadingAction?: ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -932,20 +940,37 @@ interface IssueDetailProps {
  * so mounts a second observer on the already-failed query, which refetches it
  * and restarts the resolve/remount cycle indefinitely.
  */
-export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean }) {
+export function IssueNotFound({
+  showBackLink = true,
+  leading,
+}: {
+  showBackLink?: boolean;
+  /**
+   * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
+   * host that hands its whole screen to this component (the inbox, on a phone)
+   * has no bar of its own left, so this state has to carry the trip back or
+   * there is none.
+   */
+  leading?: ReactNode;
+}) {
   const { t } = useT("issues");
   const backOrReplace = useBackOrReplace();
   const paths = useWorkspacePaths();
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-      <p>{t(($) => $.detail.not_found)}</p>
-      {showBackLink && (
-        <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-          {t(($) => $.detail.back)}
-        </Button>
+    <div className="flex flex-1 min-h-0 flex-col">
+      {leading && (
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">{leading}</div>
       )}
+      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
+        <p>{t(($) => $.detail.not_found)}</p>
+        {showBackLink && (
+          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+            {t(($) => $.detail.back)}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -959,19 +984,28 @@ export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean 
  * an identifier URL to its issue — the two waits are indistinguishable to the
  * user, and rendering the same skeleton keeps them that way.
  */
-export function IssueDetailSkeleton() {
+export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
   return (
     <div className="flex flex-1 min-h-0 flex-col">
+      {/* The way back is real from the first frame, not once the issue lands:
+          a host that gave up its own bar for `leadingAction` has nothing else
+          to offer while this skeleton owns the screen. */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Skeleton className="h-4 w-16" />
-        <Skeleton className="h-4 w-4" />
-        <Skeleton className="h-4 w-24" />
+        {leading ?? (
+          <>
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-4" />
+            <Skeleton className="h-4 w-24" />
+          </>
+        )}
       </div>
       <div className="flex flex-1 min-h-0">
         {/* Same scrollbar-gutter as the loaded scroller below, so the skeleton
             column doesn't shift sideways when real content mounts. */}
         <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
-          <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
+          {/* Gutters match the loaded column exactly (see its comment), so the
+              skeleton doesn't reflow sideways when real content mounts. */}
+          <div className="mx-auto w-full max-w-4xl px-4 py-6 space-y-6 md:px-8 md:py-8">
             <Skeleton className="h-8 w-3/4" />
             <div className="space-y-2">
               <Skeleton className="h-4 w-full" />
@@ -1015,7 +1049,7 @@ export function IssueDetailSkeleton() {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const id = issueId;
@@ -1113,8 +1147,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     [restoreScrollRef],
   );
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
-  // User preference: pin the bottom comment bar to the scroll viewport.
-  const stickyComposer = useCommentComposerStore((s) => s.sticky);
+  // User preference: pin the bottom comment bar to the scroll viewport. Off
+  // below `md` regardless of the preference — see the hook.
+  const stickyComposer = useStickyComposer();
 
   // Per-session: which resolved threads the user has temporarily expanded.
   // Not persisted (matches Linear) — reload collapses everything back to bars.
@@ -1840,11 +1875,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
 
   if (loading) {
-    return <IssueDetailSkeleton />;
+    return <IssueDetailSkeleton leading={leadingAction} />;
   }
 
   if (!issue) {
-    return <IssueNotFound showBackLink={!onDelete} />;
+    return <IssueNotFound showBackLink={!onDelete} leading={leadingAction} />;
   }
 
   const sidebarContent = (
@@ -2305,6 +2340,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           />
         )}
         <BreadcrumbHeader
+          leading={leadingAction}
           segments={breadcrumbSegments}
           leaf={
             <AppLink
@@ -2414,7 +2450,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           data-tab-scroll-root
           className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
         >
-        <div className="mx-auto w-full max-w-4xl px-8 py-8">
+        {/* Gutters: 32px is a comfortable reading margin on a desktop column
+            but eats 16% of a 393px phone, so below `md` they drop to 16px.
+            `max-md:pb-chat-launcher` reserves the launcher's corner at the end
+            of the scroll: below `md` the composer is not pinned (see
+            `useStickyComposer`), so it lands here — right where the launcher
+            floats — once the reader scrolls to the bottom. */}
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 max-md:pb-chat-launcher md:px-8 md:py-8">
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
               <TitleEditor
