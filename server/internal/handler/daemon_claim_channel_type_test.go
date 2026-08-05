@@ -35,7 +35,7 @@ func seedChannelBinding(t *testing.T, ctx context.Context, agentID, sessionID, c
 
 // seedChannelBindingOfChatType is seedChannelBinding with the room shape
 // (p2p / group) chosen by the caller — the column the claim must report so the
-// runtime brief can tell the agent whether anyone else is reading.
+// per-turn prompt can tell the agent whether anyone else is reading.
 func seedChannelBindingOfChatType(t *testing.T, ctx context.Context, agentID, sessionID, channelType, chatType, lastMessageID, lastThreadID string) {
 	t.Helper()
 	var installationID string

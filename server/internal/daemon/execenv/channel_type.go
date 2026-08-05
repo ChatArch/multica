@@ -9,8 +9,9 @@ package execenv
 // server already serialized to JSON, and must not pull the server-side
 // integration packages (integrations/slack, integrations/lark) into its own
 // build just to read one discriminator. The canonical definitions live with
-// their adapters — slack.TypeSlack, channel.TypeFeishu, wecom.TypeWecom — and
-// both sides agree on the wire strings below.
+// their adapters — slack.TypeSlack and channel.TypeFeishu — and both sides
+// agree on the wire strings below. WeCom keeps its reserved wire discriminator
+// here until its adapter lands.
 const (
 	ChannelTypeSlack  = "slack"
 	ChannelTypeFeishu = "feishu"
@@ -33,21 +34,19 @@ const (
 // the server did not report could be a room of any size, and the one thing the
 // copy must not then do is promise a privacy the conversation may not have.
 //
-// Both the brief's chat-mode line and the per-turn chat prompt open by naming
-// the audience, and they must not contradict each other or `## Conversation
-// Channel`. Routing all three through this keeps them from drifting.
+// The per-turn chat prompt names the audience once. Keeping classification in
+// one function prevents group, direct, and compatibility paths from drifting.
 type ChatAudience int
 
 const (
+	// ChatAudienceUnknown is deliberately the zero value: uninitialized room
+	// context must never turn into a privacy claim.
+	ChatAudienceUnknown ChatAudience = iota
 	// ChatAudienceDirect — one reader, provably: an explicit p2p binding, or a
 	// web chat that has no channel behind it.
-	ChatAudienceDirect ChatAudience = iota
+	ChatAudienceDirect
 	// ChatAudienceGroup — a room shared by people the run has not been shown.
 	ChatAudienceGroup
-	// ChatAudienceUnknown — an IM channel whose shape did not arrive: a daemon
-	// newer than the server it claims from, or a binding deleted between
-	// enqueue and claim. Assert nothing about the audience.
-	ChatAudienceUnknown
 )
 
 // AudienceOf classifies a claim's (chat_channel_type, chat_type) pair.

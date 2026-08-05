@@ -489,52 +489,64 @@ func TestBuildChatPromptFeishuIgnoresChatInThread(t *testing.T) {
 	}
 }
 
-// The per-turn chat prompt's opening line said "A user is chatting with you
-// directly" for every chat run, the same claim the runtime brief made. In a
-// Feishu / Slack / WeCom group room one chat_session serves everyone in it, so
-// on a group turn the prompt asserted a private 1:1 that does not exist.
-func TestBuildChatPromptGroupTurnIsNotCalledDirect(t *testing.T) {
-	for _, channelType := range []string{execenv.ChannelTypeSlack, execenv.ChannelTypeFeishu, execenv.ChannelTypeWecom} {
-		out := buildChatPrompt(Task{
-			ChatSessionID:   "sess-1",
-			ChatChannelType: channelType,
-			ChatType:        execenv.ChatTypeGroup,
-			ChatMessage:     "hi",
+// Audience is a per-turn platform fact. Semantic anchors pin the group privacy
+// boundary without pinning a full sentence, and the count guard prevents a
+// second copy from creeping into another prompt section.
+func TestBuildChatPromptAudience(t *testing.T) {
+	cases := []struct {
+		name string
+		task Task
+		want []string
+		deny []string
+	}{
+		{
+			name: "group",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeSlack, ChatType: execenv.ChatTypeGroup, ChatMessage: "hi"},
+			want: []string{"Audience: group room", "not private", "unseen members"},
+			deny: []string{"Audience: direct", "do not share", "never mention", "avoid discussing"},
+		},
+		{
+			name: "direct channel",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeFeishu, ChatType: execenv.ChatTypeP2P, ChatMessage: "hi"},
+			want: []string{"Audience: direct room"},
+			deny: []string{"Audience: group", "not private", "unseen members"},
+		},
+		{
+			name: "direct web chat",
+			task: Task{ChatSessionID: "s", ChatMessage: "hi"},
+			want: []string{"Audience: direct room"},
+			deny: []string{"Audience: group", "Audience: unknown"},
+		},
+		{
+			name: "channel from an older server",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeWecom, ChatMessage: "hi"},
+			want: []string{"Audience: unknown"},
+			deny: []string{"Audience: group", "Audience: direct", "not private"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := BuildPrompt(tc.task, "claude")
+			if got := strings.Count(out, "Audience:"); got != 1 {
+				t.Fatalf("audience fact count = %d, want 1\n--- output ---\n%s", got, out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("prompt missing audience anchor %q\n--- output ---\n%s", want, out)
+				}
+			}
+			deny := append([]string{}, tc.deny...)
+			deny = append(deny, "chatting with you directly")
+			for _, deny := range deny {
+				if strings.Contains(out, deny) {
+					t.Errorf("prompt contains retired/contradictory audience text %q\n--- output ---\n%s", deny, out)
+				}
+			}
+			if !strings.Contains(out, "User message:\nhi") {
+				t.Errorf("prompt must still carry the user message\n--- output ---\n%s", out)
+			}
 		})
-		if strings.Contains(out, "chatting with you directly") {
-			t.Errorf("channel=%s: a group turn must not be framed as a direct chat\n--- output ---\n%s", channelType, out)
-		}
-		if !strings.Contains(out, "Respond to their message") {
-			t.Errorf("channel=%s: the prompt must still say what to do this turn", channelType)
-		}
-	}
-
-	// A 1:1 — and a web chat, which reports no room shape and is 1:1 by
-	// construction — keeps the original framing.
-	for name, task := range map[string]Task{
-		"direct": {ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeFeishu, ChatType: execenv.ChatTypeP2P, ChatMessage: "hi"},
-		"web":    {ChatSessionID: "s", ChatMessage: "hi"},
-	} {
-		if out := buildChatPrompt(task); !strings.Contains(out, "chatting with you directly") {
-			t.Errorf("%s: a 1:1 conversation should still read as one\n--- output ---\n%s", name, out)
-		}
-	}
-
-	// A channel whose room shape did not arrive is neither of the two above:
-	// the brief has just declined to name an audience for it, and this line
-	// must not put the claim back. Reachable whenever the daemon is newer than
-	// the server it claims from, or the binding was deleted between enqueue and
-	// claim.
-	shapeless := buildChatPrompt(Task{
-		ChatSessionID:   "s",
-		ChatChannelType: execenv.ChannelTypeWecom,
-		ChatMessage:     "hi",
-	})
-	if strings.Contains(shapeless, "chatting with you directly") {
-		t.Errorf("an unreported room shape must not be framed as a direct chat\n--- output ---\n%s", shapeless)
-	}
-	if !strings.Contains(shapeless, "Respond to their message") {
-		t.Errorf("the prompt must still say what to do this turn\n--- output ---\n%s", shapeless)
 	}
 }
 
