@@ -3,13 +3,19 @@ import { describe, expect, it } from "vitest";
 import { ProviderLogo } from "./provider-logo";
 
 describe("ProviderLogo", () => {
-  it("renders the dedicated Reasonix mark", () => {
+  it("renders the official Reasonix logo", () => {
     const { container } = render(
       <ProviderLogo provider="reasonix" className="runtime-logo" />,
     );
 
-    const logo = container.querySelector('svg[aria-label="Reasonix"]');
-    expect(logo?.querySelector('path[fill="#0153E5"]')).not.toBeNull();
+    const logo = container.querySelector('img[alt="Reasonix"]');
+    const logoSrc = logo?.getAttribute("src") ?? "";
+    const logoSvg = atob(logoSrc.split(",")[1] ?? "");
+
+    expect(logoSrc).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(logoSvg).toContain('viewBox="0 0 64 64"');
+    expect(logoSvg).toContain('stop-color="#4f9dff"');
+    expect(logoSvg).toContain('stop-color="#c46bff"');
     expect(logo?.classList.contains("runtime-logo")).toBe(true);
   });
 
