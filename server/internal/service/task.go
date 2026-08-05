@@ -2173,6 +2173,27 @@ func chatInputOwnerID(task db.AgentTaskQueue) pgtype.UUID {
 	return task.ID
 }
 
+// createAssistantChatMessage writes an assistant outcome and reanchors the
+// newly-visible queued direct head in the caller's transaction. Keeping the two
+// statements together is the transcript-order boundary: readers must not see
+// the reply commit while the next head still carries its older enqueue time.
+func createAssistantChatMessage(ctx context.Context, qtx *db.Queries, params db.CreateChatMessageParams) (db.ChatMessage, error) {
+	if params.Role != "assistant" {
+		return db.ChatMessage{}, fmt.Errorf("create assistant chat message: invalid role %q", params.Role)
+	}
+	row, err := qtx.CreateChatMessage(ctx, params)
+	if err != nil {
+		return db.ChatMessage{}, err
+	}
+	if err := qtx.ReanchorNextQueuedDirectChatInput(ctx, db.ReanchorNextQueuedDirectChatInputParams{
+		AssistantCreatedAt: row.CreatedAt,
+		ChatSessionID:      row.ChatSessionID,
+	}); err != nil {
+		return db.ChatMessage{}, fmt.Errorf("reanchor next queued direct chat input: %w", err)
+	}
+	return row, nil
+}
+
 func (s *TaskService) settleQueuedChatInput(
 	ctx context.Context,
 	qtx *db.Queries,
@@ -2188,7 +2209,7 @@ func (s *TaskService) settleQueuedChatInput(
 		return nil, fmt.Errorf("check queued chat channel provenance: %w", err)
 	}
 	if channelIngested {
-		if _, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 			ChatSessionID: task.ChatSessionID,
 			Role:          "assistant",
 			Content:       "Stopped.",
@@ -2320,7 +2341,7 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 			}
 			return nil
 		}
-		if _, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 			ChatSessionID: task.ChatSessionID,
 			Role:          "assistant",
 			Content:       "Stopped.",
@@ -2454,7 +2475,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			payload.MessageID = util.UUIDToString(deleted.ID)
 			return nil
 		}
-		row, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 			ChatSessionID: claimed.ChatSessionID,
 			Role:          "assistant",
 			Content:       "Stopped.",
@@ -2507,13 +2528,11 @@ func (s *TaskService) broadcastChatCancelFinalized(ctx context.Context, task db.
 // respecting max_concurrent_tasks.
 func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.AgentTaskQueue, error) {
 	start := time.Now()
-	var (
-		outcome                                                              = "unknown"
-		getAgentMs, countRunningMs, claimAgentMs, updateStatusMs, dispatchMs int64
-		claimed                                                              *db.AgentTaskQueue
-	)
+	outcome := "unknown"
+	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
+	var claimed *db.AgentTaskQueue
 	defer func() {
-		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, updateStatusMs, dispatchMs)
+		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
 	}()
 
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -2554,21 +2573,25 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 			return fmt.Errorf("claim task: %w", err)
 		}
 
-		// A task-owned direct-chat user row is written when the user enqueues
-		// it, but stays hidden until this queued -> dispatched transition. Move
-		// its transcript timestamp inside the same transaction as the claim so
-		// every full-list and cursor reader observes either hidden+queued or
-		// visible+reanchored, never an intermediate state. Retry children keep
-		// the root input owner and stale-dispatch reclaim uses a separate query,
-		// so neither path can move an already-visible user turn again.
-		if task.ChatSessionID.Valid && task.ChatInputTaskID == task.ID {
+		// An idle task-owned direct-chat row may already be visible as the
+		// positional queue head. Normal completion reanchors a successor beside
+		// the assistant outcome before commit; this claim-time query is the
+		// compatibility fallback for an older or otherwise out-of-order row.
+		// It only moves that row inside the claim transaction, so full-list and
+		// cursor readers see the corrected boundary once it is dispatched. Retry
+		// children keep the root input owner and stale-dispatch reclaim uses a
+		// separate query, so neither path moves an already-visible turn again.
+		if task.ChatSessionID.Valid && task.ChatInputTaskID.Valid && task.ChatInputTaskID == task.ID {
+			t0 = time.Now()
 			if err := qtx.ReanchorClaimedDirectChatInput(ctx, db.ReanchorClaimedDirectChatInputParams{
 				DispatchedAt: task.DispatchedAt,
 				TaskID:       task.ID,
 			}); err != nil {
+				reanchorMs = time.Since(t0).Milliseconds()
 				outcome = "error_reanchor_chat_input"
 				return fmt.Errorf("reanchor claimed direct chat input: %w", err)
 			}
+			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
 		claimedTask := task
@@ -2993,7 +3016,7 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 // logs at normal poll rates. Called via defer so it captures the full path
 // including post-claim updateAgentStatus / broadcastTaskDispatch (both of
 // which can hit the DB) and any error exit.
-func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, start time.Time, getAgentMs, countRunningMs, claimAgentMs, updateStatusMs, dispatchMs int64) {
+func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, start time.Time, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64) {
 	totalMs := time.Since(start).Milliseconds()
 	if totalMs < 300 {
 		return
@@ -3005,6 +3028,7 @@ func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, sta
 		"get_agent_ms", getAgentMs,
 		"count_running_ms", countRunningMs,
 		"claim_agent_ms", claimAgentMs,
+		"reanchor_chat_input_ms", reanchorMs,
 		"update_status_ms", updateStatusMs,
 		"dispatch_ms", dispatchMs,
 	)
@@ -3423,7 +3447,7 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		params.Content = chatNoResponseFallback
 		params.MessageKind = pgtype.Text{String: protocol.ChatMessageKindNoResponse, Valid: true}
 	}
-	row, err := qtx.CreateChatMessage(ctx, params)
+	row, err := createAssistantChatMessage(ctx, qtx, params)
 	if err != nil {
 		return nil, err
 	}
@@ -3659,6 +3683,24 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			}
 			retried = &child
 		}
+
+		// A terminal non-retried chat failure is a visible assistant outcome.
+		// Persist it while the session lock and failure transaction are still
+		// held, then reanchor the next direct head. Otherwise the successor could
+		// be claimed between the status flip and this row, placing its user input
+		// before the failure it follows.
+		if t.ChatSessionID.Valid && retried == nil {
+			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+				ChatSessionID: t.ChatSessionID,
+				Role:          "assistant",
+				Content:       redact.Text(errMsg),
+				TaskID:        t.ID,
+				FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
+				ElapsedMs:     computeChatElapsedMs(t),
+			}); err != nil {
+				return fmt.Errorf("write chat failure outcome: %w", err)
+			}
+		}
 		return nil
 	}); err != nil {
 		if existing, lookupErr := s.Queries.GetAgentTask(ctx, taskID); lookupErr == nil {
@@ -3717,27 +3759,6 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// daemon hiccup.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
-	}
-
-	// Mirror the issue fallback for chat tasks: write an assistant
-	// chat_message tagged with the daemon-reported failure_reason so the
-	// conversation history shows what happened. Skip when auto-retry is
-	// pending (the new attempt will write its own outcome) — same guard as
-	// the issue path above.
-	if task.ChatSessionID.Valid && retried == nil {
-		if _, err := s.Queries.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ChatSessionID: task.ChatSessionID,
-			Role:          "assistant",
-			Content:       redact.Text(errMsg),
-			TaskID:        pgtype.UUID{Bytes: task.ID.Bytes, Valid: true},
-			FailureReason: pgtype.Text{String: failureReason, Valid: failureReason != ""},
-			ElapsedMs:     computeChatElapsedMs(task),
-		}); err != nil {
-			slog.Error("failed to save failure chat message",
-				"task_id", util.UUIDToString(task.ID),
-				"chat_session_id", util.UUIDToString(task.ChatSessionID),
-				"error", err)
-		}
 	}
 
 	// Quick-create tasks: push a failure inbox notification to the
