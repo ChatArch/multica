@@ -121,7 +121,11 @@ describe("StepPlatformFork", () => {
     expect(onNext).toHaveBeenCalledWith(null);
   });
 
-  it("opens the download page and flips the card to a post-click state", async () => {
+  it("opens the download page and claims nothing about the outcome", async () => {
+    // mockReturnValue(null) is the honest simulation: with `noopener`,
+    // window.open returns null by spec whether the tab opened or a popup
+    // blocker ate it. The card used to flip to "Opened in a new tab." on
+    // this exact path, which it had no way to know.
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     const user = userEvent.setup();
     renderFork();
@@ -135,9 +139,11 @@ describe("StepPlatformFork", () => {
       "_blank",
       "noopener,noreferrer",
     );
-    expect(
-      screen.getByText(/opening the download page/i),
-    ).toBeInTheDocument();
+    // The card states its intent up front and does not change afterwards, so
+    // there is no post-click claim to be wrong and no stuck "Opening…" state.
+    expect(screen.getByText(/^use this computer$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/opening the download page/i)).toBeNull();
+    expect(screen.queryByText(/opened in a new tab/i)).toBeNull();
   });
 
   it("CLI dialog: opens with instructions + 'waiting' and a disabled Connect button", async () => {

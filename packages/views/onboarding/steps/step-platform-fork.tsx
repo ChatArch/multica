@@ -72,15 +72,18 @@ export function StepPlatformFork({
   const { t } = useT("onboarding");
 
   const [dialog, setDialog] = useState<DialogState>(null);
-  const [downloaded, setDownloaded] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [model, setModel] = useState("");
 
   const picker = useRuntimePicker(wsId, wsSlug);
 
   const pickDesktop = () => {
+    // No post-click state. `noopener` makes window.open return null by spec
+    // whether it opened or was blocked, so this cannot know which happened —
+    // and the copy it used to flip to ("Opened in a new tab.") was a claim we
+    // had no way to stand behind. The card states the intent up front
+    // instead, which is true either way.
     window.open(DOWNLOAD_PAGE_URL, "_blank", "noopener,noreferrer");
-    setDownloaded(true);
   };
 
   const handleOpenCli = () => {
@@ -98,12 +101,7 @@ export function StepPlatformFork({
     }
   };
 
-  const footerHint = (() => {
-    if (downloaded) {
-      return t(($) => $.step_platform.hint_downloaded);
-    }
-    return t(($) => $.step_platform.hint_default);
-  })();
+  const footerHint = t(($) => $.step_platform.hint_default);
 
   return (
     <>
@@ -117,7 +115,7 @@ export function StepPlatformFork({
         />
 
         <div className="flex flex-col gap-2">
-          <ForkPrimary onClick={pickDesktop} downloaded={downloaded} />
+          <ForkPrimary onClick={pickDesktop} />
 
           <ForkAlt
             title={t(($) => $.step_platform.cli_title)}
@@ -177,13 +175,7 @@ export function StepPlatformFork({
 // Fork cards
 // ------------------------------------------------------------
 
-function ForkPrimary({
-  onClick,
-  downloaded,
-}: {
-  onClick: () => void;
-  downloaded: boolean;
-}) {
+function ForkPrimary({ onClick }: { onClick: () => void }) {
   const { t } = useT("onboarding");
   return (
     <button
@@ -197,14 +189,10 @@ function ForkPrimary({
       <div className="min-w-0">
         <div className="flex items-center gap-2 text-title font-medium tracking-tight">
           <Download className="h-4 w-4" aria-hidden />
-          {downloaded
-            ? t(($) => $.step_platform.download_title_after)
-            : t(($) => $.step_platform.download_title)}
+          {t(($) => $.step_platform.download_title)}
         </div>
         <div className="mt-1 text-label text-background/60">
-          {downloaded
-            ? t(($) => $.step_platform.download_subtitle_after)
-            : t(($) => $.step_platform.download_subtitle)}
+          {t(($) => $.step_platform.download_subtitle)}
         </div>
       </div>
       <span
