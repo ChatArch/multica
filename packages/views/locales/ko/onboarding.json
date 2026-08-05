@@ -12,7 +12,7 @@
     },
     "runtime": {
       "label": "Mika 소개",
-      "description": "참모장과 실행 환경."
+      "description": "첫 번째 에이전트 팀원과 실행 환경."
     }
   },
   "welcome": {
@@ -261,7 +261,7 @@
     "mika_setup_failed": "Mika 워크스페이스를 시작하지 못했습니다"
   },
   "mika_intro": {
-    "headline": "참모장 Mika를 소개합니다.",
+    "headline": "첫 번째 에이전트 팀원 Mika를 소개합니다.",
     "name": "Mika",
     "role": "참모장",
     "blurb": "하고 싶은 일을 Mika에게 알려주면 이슈가 되고, 알맞은 에이전트가 맡습니다."

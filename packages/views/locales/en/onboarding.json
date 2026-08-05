@@ -12,7 +12,7 @@
     },
     "runtime": {
       "label": "Meet Mika",
-      "description": "Your Chief of Staff, and where it runs."
+      "description": "Your first agent teammate, and where it runs."
     }
   },
   "welcome": {
@@ -263,7 +263,7 @@
     "mika_setup_failed": "Couldn't start your Mika workspace"
   },
   "mika_intro": {
-    "headline": "Meet Mika, your Chief of Staff.",
+    "headline": "Meet Mika, your first agent teammate.",
     "name": "Mika",
     "role": "Chief of Staff",
     "blurb": "Tell Mika what you want done. It becomes an issue, with the right agent on it."

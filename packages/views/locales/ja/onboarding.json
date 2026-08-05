@@ -12,7 +12,7 @@
     },
     "runtime": {
       "label": "Mika を知る",
-      "description": "参謀長と、その実行環境。"
+      "description": "最初のエージェント仲間と、その実行環境。"
     }
   },
   "welcome": {
@@ -261,7 +261,7 @@
     "mika_setup_failed": "Mika ワークスペースを開始できませんでした"
   },
   "mika_intro": {
-    "headline": "参謀長の Mika を紹介します。",
+    "headline": "最初のエージェント仲間、Mika を紹介します。",
     "name": "Mika",
     "role": "参謀長",
     "blurb": "やりたいことを Mika に伝えると、issue になり、適したエージェントが担当します。"
