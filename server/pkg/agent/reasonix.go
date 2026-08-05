@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os/exec"
 	"strings"
@@ -30,12 +31,14 @@ var reasonixBlockedArgs = map[string]blockedArgMode{
 }
 
 func reasonixACPLaunchArgs() []string {
+	// Let Reasonix enforce bash sandboxing where the host supports it and
+	// degrade according to its host configuration where it does not.
 	return []string{
 		"acp",
 		"--profile", "balanced",
 		"--planner", "auto",
 		"--sandbox-network", "auto",
-		"--sandbox-bash", "enforce",
+		"--sandbox-bash", "auto",
 		"--workspace-only",
 	}
 }
@@ -161,6 +164,9 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			return streamingCurrentTurn.Load()
 		},
 		selectPermission: func(params json.RawMessage) (string, bool, bool) {
+			if reasonixPermissionMetadataMissing(params) {
+				b.cfg.Logger.Warn("reasonix permission request is missing trusted metadata; protected-decision detection may be degraded")
+			}
 			optionID, grant, ok, question := selectReasonixPermissionOption(params)
 			if question != "" {
 				blockedQuestion.Store(question)
@@ -256,6 +262,7 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
+		warnReasonixCapabilityGaps(b.cfg.Logger, initResult)
 
 		// Drop MCP entries whose remote transport the runtime didn't
 		// advertise. See the matching comment in hermes.go for the why —
@@ -547,23 +554,25 @@ var reasonixProtectedPermissionTools = map[string]bool{
 	"plan_mode_read_only_command": true,
 }
 
+type reasonixPermissionRequest struct {
+	ToolCall struct {
+		ToolCallID string                     `json:"toolCallId"`
+		Title      string                     `json:"title"`
+		Meta       map[string]json.RawMessage `json:"_meta"`
+	} `json:"toolCall"`
+	Options []acpPermissionOption `json:"options"`
+}
+
+type reasonixPermissionMetadata struct {
+	Tool  string `json:"tool"`
+	Fresh bool   `json:"fresh"`
+}
+
 // selectReasonixPermissionOption prevents two Reasonix-specific request
 // classes from falling through the shared "allow_once is safe" rule: user
 // questions and decisions that Reasonix explicitly marks fresh-human-only.
 func selectReasonixPermissionOption(params json.RawMessage) (optionID string, grant bool, ok bool, blockedQuestion string) {
-	var p struct {
-		ToolCall struct {
-			ToolCallID string `json:"toolCallId"`
-			Title      string `json:"title"`
-			Meta       struct {
-				Reasonix struct {
-					Tool  string `json:"tool"`
-					Fresh bool   `json:"fresh"`
-				} `json:"reasonix.io"`
-			} `json:"_meta"`
-		} `json:"toolCall"`
-		Options []acpPermissionOption `json:"options"`
-	}
+	var p reasonixPermissionRequest
 	if err := json.Unmarshal(params, &p); err != nil {
 		return "", false, false, ""
 	}
@@ -577,16 +586,7 @@ func selectReasonixPermissionOption(params json.RawMessage) (optionID string, gr
 		return "", false
 	}
 
-	isQuestion := strings.HasPrefix(p.ToolCall.ToolCallID, "ask-")
-	if !isQuestion {
-		for _, opt := range p.Options {
-			if strings.HasSuffix(opt.OptionID, ":cancel") {
-				isQuestion = true
-				break
-			}
-		}
-	}
-	if isQuestion {
+	if reasonixPermissionIsQuestion(p) {
 		reason := "Reasonix requested interactive user input, which is unavailable in an unattended Multica task"
 		if title := strings.TrimSpace(p.ToolCall.Title); title != "" {
 			reason += ": " + clipReasonixPermissionTitle(title)
@@ -594,11 +594,13 @@ func selectReasonixPermissionOption(params json.RawMessage) (optionID string, gr
 		if id, found := rejectOnce(); found {
 			return id, false, true, reason
 		}
+		// A protocol error is fail-closed here: current Reasonix treats a
+		// failed ask response as unanswered/cancelled instead of proceeding.
 		return "", false, false, reason
 	}
 
-	tool := strings.TrimSpace(p.ToolCall.Meta.Reasonix.Tool)
-	if p.ToolCall.Meta.Reasonix.Fresh || reasonixProtectedPermissionTools[tool] {
+	meta, _ := reasonixPermissionMeta(p)
+	if meta.Fresh || reasonixProtectedPermissionTools[meta.Tool] {
 		if id, found := rejectOnce(); found {
 			return id, false, true, ""
 		}
@@ -607,6 +609,70 @@ func selectReasonixPermissionOption(params json.RawMessage) (optionID string, gr
 
 	id, allowed, selectable := selectACPPermissionOption(params)
 	return id, allowed, selectable, ""
+}
+
+func reasonixPermissionIsQuestion(p reasonixPermissionRequest) bool {
+	if strings.HasPrefix(p.ToolCall.ToolCallID, "ask-") {
+		return true
+	}
+	for _, opt := range p.Options {
+		if strings.HasSuffix(opt.OptionID, ":cancel") {
+			return true
+		}
+	}
+	return false
+}
+
+func reasonixPermissionMeta(p reasonixPermissionRequest) (reasonixPermissionMetadata, bool) {
+	var meta reasonixPermissionMetadata
+	raw, ok := p.ToolCall.Meta["reasonix.io"]
+	if !ok || json.Unmarshal(raw, &meta) != nil {
+		return reasonixPermissionMetadata{}, false
+	}
+	meta.Tool = strings.TrimSpace(meta.Tool)
+	return meta, meta.Tool != ""
+}
+
+func reasonixPermissionMetadataMissing(params json.RawMessage) bool {
+	var p reasonixPermissionRequest
+	if json.Unmarshal(params, &p) != nil || reasonixPermissionIsQuestion(p) {
+		return false
+	}
+	_, ok := reasonixPermissionMeta(p)
+	return !ok
+}
+
+func warnReasonixCapabilityGaps(logger *slog.Logger, result json.RawMessage) {
+	statusVersion, updateVersion := reasonixStatusCapabilitySchemas(result)
+	if statusVersion == 1 && updateVersion == 1 {
+		return
+	}
+	logger.Warn(
+		"reasonix ACP status capabilities are unavailable or incompatible; usage and cost reporting may be incomplete",
+		"session_status_schema_version", statusVersion,
+		"status_update_schema_version", updateVersion,
+	)
+}
+
+func reasonixStatusCapabilitySchemas(result json.RawMessage) (statusVersion, updateVersion int) {
+	var initialized struct {
+		AgentCapabilities struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"agentCapabilities"`
+	}
+	if json.Unmarshal(result, &initialized) != nil {
+		return 0, 0
+	}
+	readVersion := func(key string) int {
+		var capability struct {
+			SchemaVersion int `json:"schemaVersion"`
+		}
+		if json.Unmarshal(initialized.AgentCapabilities.Meta[key], &capability) != nil {
+			return 0
+		}
+		return capability.SchemaVersion
+	}
+	return readVersion("_reasonix.io/session/status"), readVersion("_reasonix.io/session/status_update")
 }
 
 func clipReasonixPermissionTitle(title string) string {

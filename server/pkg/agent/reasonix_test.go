@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -67,6 +69,58 @@ func TestReasonixPermissionPolicy(t *testing.T) {
 				t.Fatalf("question = %q, want present=%v", question, tt.wantQuestion)
 			}
 		})
+	}
+}
+
+func TestReasonixPermissionMetadataWarningDetection(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		params string
+		want   bool
+	}{
+		{
+			name:   "ordinary request without metadata warns",
+			params: `{"toolCall":{"toolCallId":"gate-1"},"options":[{"optionId":"allow_once","kind":"allow_once"}]}`,
+			want:   true,
+		},
+		{
+			name:   "ordinary request with metadata does not warn",
+			params: `{"toolCall":{"toolCallId":"gate-1","_meta":{"reasonix.io":{"tool":"write_file"}}},"options":[]}`,
+		},
+		{
+			name:   "question without metadata does not warn",
+			params: `{"toolCall":{"toolCallId":"ask-a-q1"},"options":[{"optionId":"q1:cancel","kind":"reject_once"}]}`,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := reasonixPermissionMetadataMissing(json.RawMessage(tt.params)); got != tt.want {
+				t.Fatalf("reasonixPermissionMetadataMissing() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReasonixCapabilityGapWarning(t *testing.T) {
+	t.Parallel()
+	compatible := json.RawMessage(`{"agentCapabilities":{"_meta":{"_reasonix.io/session/status":{"schemaVersion":1},"_reasonix.io/session/status_update":{"schemaVersion":1}}}}`)
+	statusVersion, updateVersion := reasonixStatusCapabilitySchemas(compatible)
+	if statusVersion != 1 || updateVersion != 1 {
+		t.Fatalf("capability versions = (%d, %d), want (1, 1)", statusVersion, updateVersion)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	warnReasonixCapabilityGaps(logger, compatible)
+	if logs.Len() != 0 {
+		t.Fatalf("compatible capabilities logged warning: %s", logs.String())
+	}
+	warnReasonixCapabilityGaps(logger, json.RawMessage(`{"agentCapabilities":{}}`))
+	if !strings.Contains(logs.String(), "usage and cost reporting may be incomplete") {
+		t.Fatalf("missing capabilities warning not logged: %s", logs.String())
 	}
 }
 

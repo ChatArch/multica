@@ -22,7 +22,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"_meta":{"_reasonix.io/session/status":{"schemaVersion":1},"_reasonix.io/session/status_update":{"schemaVersion":1}}}}}\n' "$id"
       ;;
     *'"method":"session/new"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"reasonix-session"}}\n' "$id"
@@ -59,7 +59,7 @@ func TestReasonixBackendExecutesACPWithStateUsage(t *testing.T) {
 			"--profile", "delivery",
 			"--planner", "off",
 			"--sandbox-network", "on",
-			"--sandbox-bash", "auto",
+			"--sandbox-bash", "enforce",
 			"--workspace-only",
 			"--model", "other",
 		},
@@ -83,7 +83,7 @@ func TestReasonixBackendExecutesACPWithStateUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read args: %v", err)
 	}
-	wantArgs := []string{"acp", "--profile", "balanced", "--planner", "auto", "--sandbox-network", "auto", "--sandbox-bash", "enforce", "--workspace-only"}
+	wantArgs := []string{"acp", "--profile", "balanced", "--planner", "auto", "--sandbox-network", "auto", "--sandbox-bash", "auto", "--workspace-only"}
 	if got := strings.Fields(string(rawArgs)); strings.Join(got, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("args = %q, want %q", got, wantArgs)
 	}
