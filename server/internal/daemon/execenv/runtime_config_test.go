@@ -375,7 +375,10 @@ func TestSquadLeaderIssueWorkflowKeepsParentInProgress(t *testing.T) {
 	for _, want := range []string{
 		"Before step 4, run `multica issue status <issue-id> in_progress`.",
 		"After this initial dispatch, leave the parent issue `in_progress`",
-		"do NOT run `multica issue status <issue-id> in_review` or `done` on this turn",
+		// The guest-leader contract test (handler side) bans any runnable
+		// in_review command shape from reaching a guest — the dispatch rule
+		// therefore states the prohibition without a command form.
+		"do NOT move it to `in_review` or `done` on this turn",
 		"only then, if the overall goal is met, move the parent to `in_review`",
 	} {
 		if !strings.Contains(out, want) {
@@ -1637,6 +1640,20 @@ func TestInjectRuntimeConfigByteIdenticalAcrossTriggers(t *testing.T) {
 	otherAgent.AgentName = "Someone Else"
 	if buildMetaSkillContent("claude", base) == buildMetaSkillContent("claude", otherAgent) {
 		t.Fatal("brief does not vary with agent identity — byte-identity assertions below would be vacuous")
+	}
+
+	// The stronger MUL-5442 invariant this PR claims as a design benefit:
+	// with identical stable inputs, two DIFFERENT issue ids must render the
+	// byte-identical brief — this is what makes a cross-issue shared cache
+	// prefix possible. Asserted directly, per provider, so a truncated,
+	// transformed, or id-conditional use of the issue id cannot slip past
+	// the Contains-based negative check.
+	for _, provider := range []string{"claude", "codex"} {
+		otherIssue := base
+		otherIssue.IssueID = "99999999-8888-7777-6666-555555555555"
+		if buildMetaSkillContent(provider, base) != buildMetaSkillContent(provider, otherIssue) {
+			t.Fatalf("%s brief differs across issue ids — the cross-issue cache invariant is broken", provider)
+		}
 	}
 
 	for _, provider := range []string{"claude", "codex"} {
