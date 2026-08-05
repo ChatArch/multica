@@ -40,7 +40,7 @@
  * `startRenderingFromBottom` (initial paint at bottom, no setTimeout
  * hacks). Cell recycling also keeps scroll-up smooth.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
@@ -55,6 +55,7 @@ import type { AgentAvailability } from "@multica/core/agents";
 import { taskMessagesOptions } from "@/data/queries/chat";
 import { Text } from "@/components/ui/text";
 import { Markdown } from "@/lib/markdown";
+import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { failureReasonLabel } from "@/lib/failure-reason-label";
 import { formatElapsedMs } from "@/lib/format-elapsed";
 import { cn } from "@/lib/utils";
@@ -151,6 +152,22 @@ export function ChatMessageList({
   const showLiveTimeline =
     showLiveSection && (liveTaskMessages?.length ?? 0) > 0;
 
+  // Every image in this session, in message order (MUL-5752), so tapping one
+  // opens the lightbox at its position and a swipe walks the rest.
+  //
+  // Persisted messages only — same boundary web draws: a task transcript's
+  // images live behind a separate cache and inside a folded section, so they
+  // keep opening on their own rather than joining a sequence the reader
+  // cannot see the rest of.
+  const imageBlocks = useMemo(
+    () =>
+      messages.map((message) => ({
+        content: message.content,
+        attachments: message.attachments,
+      })),
+    [messages],
+  );
+
   return (
     // Outer Pressable owns the "tap anywhere outside the selected bubble
     // to exit text-selection mode" gesture. Disabled when no message is
@@ -161,6 +178,7 @@ export function ChatMessageList({
     // `if (isSelecting) return body;`), so taps on the selected bubble
     // also dismiss, matching iOS Notes / iMessage behaviour. Scroll
     // gestures are unaffected (Pressable only intercepts non-drag taps).
+    <ImageSequenceProvider blocks={imageBlocks}>
     <Pressable
       onPress={
         selectingId
@@ -232,6 +250,7 @@ export function ChatMessageList({
       keyboardShouldPersistTaps="handled"
     />
     </Pressable>
+    </ImageSequenceProvider>
   );
 }
 

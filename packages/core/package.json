@@ -13,6 +13,8 @@
     "./markdown": "./markdown/index.ts",
     "./types": "./types/index.ts",
     "./types/*": "./types/*.ts",
+    "./attachments": "./attachments/index.ts",
+    "./attachments/image-sequence": "./attachments/image-sequence.ts",
     "./api": "./api/index.ts",
     "./api/client": "./api/client.ts",
     "./api/schema": "./api/schema.ts",

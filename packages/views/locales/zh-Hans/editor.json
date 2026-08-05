@@ -35,7 +35,11 @@
     "delete": "删除",
     "link_copied": "已复制链接",
     "copy_link_failed": "复制链接失败",
-    "canvas_label": "图片画布,拖动可平移,滚动可缩放,双击可切换实际大小。"
+    "canvas_label": "图片画布,拖动可平移,滚动可缩放,双击可切换实际大小。",
+    "previous": "上一张",
+    "next": "下一张",
+    "sequence_position": "第 {{index}} / {{total}} 张",
+    "unavailable": "这张图片已失效,已跳过。"
   },
   "canvas": {
     "zoom_in": "放大",

@@ -30,7 +30,8 @@ import { Button } from "@multica/ui/components/ui/button";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
-import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload } from "../../editor";
+import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload, ImageSequenceProvider } from "../../editor";
+import { collectImageSequence, type ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
   Tooltip,
@@ -1716,9 +1717,44 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // so text/code attachments show an Eye before the bind round-trips.
   const [descPendingAttachments, setDescPendingAttachments] = useState<Attachment[]>([]);
   const descPendingAttachmentsRef = useRef<Attachment[]>([]);
-  const descEditorAttachments = descPendingAttachments.length > 0
-    ? [...(issueAttachments ?? []), ...descPendingAttachments]
-    : issueAttachments;
+  // Memoized because the image sequence below keys off this array: without it
+  // the concat branch hands a fresh reference to every render and rebuilds the
+  // whole issue's sequence on each one.
+  const descEditorAttachments = useMemo(
+    () =>
+      descPendingAttachments.length > 0
+        ? [...(issueAttachments ?? []), ...descPendingAttachments]
+        : issueAttachments,
+    [issueAttachments, descPendingAttachments],
+  );
+
+  // Every image in this issue, in the order the page renders them: the
+  // description first, then each timeline comment with its thread replies
+  // nested under it (MUL-5752). Built from `items` rather than the flat
+  // timeline so a reply sits next to the root it renders under, and from data
+  // rather than the DOM because Virtuoso only mounts the visible window.
+  //
+  // A resolved thread that is currently collapsed still contributes its
+  // images: they belong to the issue and are one click from being on screen,
+  // so leaving them out would make the counter change depending on which
+  // threads happen to be folded.
+  const imageSequence = useMemo(() => {
+    const blocks: ImageSequenceBlock[] = [
+      { content: issue?.description, attachments: descEditorAttachments },
+    ];
+    for (const item of items) {
+      if (item.kind === "activity-group") continue;
+      blocks.push({
+        content: item.entry.content,
+        attachments: item.entry.attachments,
+      });
+      for (const reply of timelineView.threadReplies.get(item.entry.id) ?? []) {
+        blocks.push({ content: reply.content, attachments: reply.attachments });
+      }
+    }
+    return collectImageSequence(blocks);
+  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies]);
+
   const handleDescriptionUpload = useCallback(
     async (file: File) => {
       const result = await uploadWithToast(file);
@@ -2323,6 +2359,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       : [];
 
   const detailContent = (
+    // Hosts the one image viewer this issue's images page through — see
+    // ImageSequenceProvider. Wraps the whole column so the description
+    // editor's images and the timeline's images share one sequence.
+    <ImageSequenceProvider items={imageSequence}>
     <div className="relative flex h-full min-w-0 flex-1 flex-col">
         {/* In-page find bar — floats over the top-right of the content column
             (below the breadcrumb header), outside the scroll container so it
@@ -2943,6 +2983,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           />
         )}
       </div>
+    </ImageSequenceProvider>
   );
 
   if (isMobile) {
