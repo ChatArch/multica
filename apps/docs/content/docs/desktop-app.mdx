@@ -78,6 +78,8 @@ Desktop connects to Multica Cloud by default. To connect to a self-hosted instan
 | Linux | `/home/<you>/.multica/desktop.json` |
 | Windows | `C:\Users\<you>\.multica\desktop.json` |
 
+These are the default locations — if your home directory has been moved or redirected, use its actual path.
+
 ```json
 {
   "schemaVersion": 1,
@@ -124,7 +126,7 @@ Desktop can only connect to addresses reachable from both the browser and the ex
 
 Two Windows editor defaults silently produce a file Desktop can't use:
 
-- **Notepad appends `.txt`.** Saving as `desktop.json` can produce `desktop.json.txt`, which Desktop treats as not found. Turn on file name extensions in Explorer, or pick *All files* in the save dialog. Verify with `dir %USERPROFILE%\.multica` — it should list exactly `desktop.json`.
+- **Notepad appends `.txt`.** Saving as `desktop.json` can produce `desktop.json.txt`, which Desktop treats as not found. Turn on file name extensions in Explorer, or pick *All files* in the save dialog. To see the real filename, run `Get-ChildItem "$env:USERPROFILE\.multica" -Filter "desktop.json*"` in PowerShell — the `Name` column must read exactly `desktop.json`.
 - **PowerShell redirection writes UTF-16 or a BOM.** `> desktop.json` and `Out-File` can produce an encoding that fails to parse, which surfaces as a configuration error.
 
 To avoid both, create the file from PowerShell in one step:

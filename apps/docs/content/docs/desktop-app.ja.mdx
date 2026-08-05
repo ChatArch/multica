@@ -78,6 +78,8 @@ Desktop はデフォルトで Multica Cloud に接続します。セルフホス
 | Linux | `/home/<you>/.multica/desktop.json` |
 | Windows | `C:\Users\<you>\.multica\desktop.json` |
 
+これらはデフォルトの場所です。ホームディレクトリを移動またはリダイレクトしている場合は、実際のパスを使ってください。
+
 ```json
 {
   "schemaVersion": 1,
@@ -124,7 +126,7 @@ Desktop が接続できるのは、ブラウザと実行マシンの両方から
 
 Windows では、エディタの 2 つのデフォルト動作が Desktop の読めないファイルを気づかないうちに作ってしまいます:
 
-- **メモ帳は `.txt` を付け足します。** `desktop.json` として保存したつもりでも実際には `desktop.json.txt` になることがあり、Desktop はファイルが見つからないものとして扱います。エクスプローラーでファイル名拡張子の表示を有効にするか、保存ダイアログで*すべてのファイル*を選んでください。`dir %USERPROFILE%\.multica` で確認すると、ちょうど `desktop.json` だけが表示されるはずです。
+- **メモ帳は `.txt` を付け足します。** `desktop.json` として保存したつもりでも実際には `desktop.json.txt` になることがあり、Desktop はファイルが見つからないものとして扱います。エクスプローラーでファイル名拡張子の表示を有効にするか、保存ダイアログで*すべてのファイル*を選んでください。実際のファイル名を確認するには、PowerShell で `Get-ChildItem "$env:USERPROFILE\.multica" -Filter "desktop.json*"` を実行します。`Name` 列がちょうど `desktop.json` になっている必要があります。
 - **PowerShell のリダイレクトは UTF-16 や BOM 付きで書き込みます。** `> desktop.json` や `Out-File` はパースできないエンコーディングを生成することがあり、設定エラーとして現れます。
 
 どちらも避けるには、PowerShell で一度に作成します:

@@ -78,6 +78,8 @@ Desktop은 기본적으로 Multica Cloud에 연결됩니다. 자체 호스팅 �
 | Linux | `/home/<사용자>/.multica/desktop.json` |
 | Windows | `C:\Users\<사용자>\.multica\desktop.json` |
 
+위 경로는 기본 위치입니다. 홈 디렉터리를 옮겼거나 리디렉션한 경우에는 실제 경로를 사용하세요.
+
 ```json
 {
   "schemaVersion": 1,
@@ -124,7 +126,7 @@ Desktop은 브라우저와 실행 컴퓨터에서 모두 접근할 수 있는 �
 
 Windows에서는 편집기의 두 가지 기본 동작 때문에 Desktop이 사용할 수 없는 파일이 조용히 만들어집니다.
 
-- **메모장이 `.txt`를 덧붙입니다.** `desktop.json`으로 저장해도 실제로는 `desktop.json.txt`가 될 수 있으며, Desktop은 이를 파일이 없는 것으로 처리합니다. 파일 탐색기에서 파일 확장명 표시를 켜거나 저장 대화 상자에서 *모든 파일*을 선택하세요. `dir %USERPROFILE%\.multica`로 확인하면 정확히 `desktop.json`만 표시되어야 합니다.
+- **메모장이 `.txt`를 덧붙입니다.** `desktop.json`으로 저장해도 실제로는 `desktop.json.txt`가 될 수 있으며, Desktop은 이를 파일이 없는 것으로 처리합니다. 파일 탐색기에서 파일 확장명 표시를 켜거나 저장 대화 상자에서 *모든 파일*을 선택하세요. 실제 파일 이름을 확인하려면 PowerShell에서 `Get-ChildItem "$env:USERPROFILE\.multica" -Filter "desktop.json*"`를 실행하세요. `Name` 열이 정확히 `desktop.json`이어야 합니다.
 - **PowerShell 리디렉션은 UTF-16이나 BOM을 씁니다.** `> desktop.json`과 `Out-File`은 파싱할 수 없는 인코딩을 만들 수 있으며, 설정 오류로 나타납니다.
 
 두 가지를 모두 피하려면 PowerShell에서 한 번에 파일을 만듭니다.
