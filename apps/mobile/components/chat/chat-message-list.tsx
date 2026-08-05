@@ -118,6 +118,25 @@ export function ChatMessageList({
   // passes through to the list cells / bubble long-press wrappers normally.
   const selectingId = useChatSelectStore((s) => s.selectingId);
 
+  // Every image in this session, in message order (MUL-5752), so tapping one
+  // opens the lightbox at its position and a swipe walks the rest.
+  //
+  // Above the loading / empty early returns because hooks must run on every
+  // render — an empty `messages` just yields an empty block list.
+  //
+  // Persisted messages only — same boundary web draws: a task transcript's
+  // images live behind a separate cache and inside a folded section, so they
+  // keep opening on their own rather than joining a sequence the reader
+  // cannot see the rest of.
+  const imageBlocks = useMemo(
+    () =>
+      messages.map((message) => ({
+        content: message.content,
+        attachments: message.attachments,
+      })),
+    [messages],
+  );
+
   if (loading && messages.length === 0) {
     return (
       <View className="flex-1 items-center justify-center">
@@ -151,22 +170,6 @@ export function ChatMessageList({
   const showLiveSection = !!pendingTaskId && !pendingAlreadyPersisted;
   const showLiveTimeline =
     showLiveSection && (liveTaskMessages?.length ?? 0) > 0;
-
-  // Every image in this session, in message order (MUL-5752), so tapping one
-  // opens the lightbox at its position and a swipe walks the rest.
-  //
-  // Persisted messages only — same boundary web draws: a task transcript's
-  // images live behind a separate cache and inside a folded section, so they
-  // keep opening on their own rather than joining a sequence the reader
-  // cannot see the rest of.
-  const imageBlocks = useMemo(
-    () =>
-      messages.map((message) => ({
-        content: message.content,
-        attachments: message.attachments,
-      })),
-    [messages],
-  );
 
   return (
     // Outer Pressable owns the "tap anywhere outside the selected bubble
