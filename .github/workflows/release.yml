@@ -1,13 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      skip_vulnerability_scan:
-        description: "Emergency only: skip govulncheck after documented maintainer review"
-        required: false
-        type: boolean
-        default: false
   push:
     tags:
       # GitHub Actions uses glob patterns here, not regex. Match versioned
@@ -71,13 +64,15 @@ jobs:
         run: bash scripts/test-go.sh --race
 
       - name: Scan Go vulnerabilities
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.skip_vulnerability_scan }}
+        # Fail closed unless an administrator scopes the documented emergency
+        # override to this exact tag. See .github/RELEASING.md.
+        if: ${{ vars.ALLOW_VULN_BYPASS_FOR_TAG != github.ref_name }}
         working-directory: server
         run: go tool govulncheck ./...
 
       - name: Record emergency vulnerability-scan bypass
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_vulnerability_scan }}
-        run: echo "::warning::govulncheck was explicitly skipped for this manual release"
+        if: ${{ vars.ALLOW_VULN_BYPASS_FOR_TAG == github.ref_name }}
+        run: echo "::warning::govulncheck was explicitly skipped for ${GITHUB_REF_NAME}; see .github/RELEASING.md"
 
   release:
     needs: verify
