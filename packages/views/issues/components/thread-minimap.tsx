@@ -4,6 +4,7 @@ import type { TimelineEntry } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
+import { useVisibleThreadIds } from "./use-visible-threads";
 
 // ---------------------------------------------------------------------------
 // ThreadMinimap — Linear-style quick-jump rail for comment threads
@@ -126,65 +127,14 @@ interface ThreadMinimapProps {
   /** The issue detail scroll container; null until its callback ref populates. */
   scrollContainerEl: HTMLElement | null;
   onJump: (threadId: string) => void;
+  /**
+   * Thread the header panel's pointer is currently resting on. The rail lights
+   * that tick in the brand colour so the two navigators read as one coordinate
+   * system rather than two competing lists (MUL-5755).
+   */
+  highlightedThreadId?: string | null;
   /** Positioning within the page (e.g. `absolute right-3 top-12 bottom-0`) — owned by the caller, like FindBar. */
   className?: string;
-}
-
-function sameIdSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
-  return true;
-}
-
-/**
- * Which threads currently intersect the scroll viewport. Computed from DOM
- * rects on scroll/resize instead of an IntersectionObserver because Virtuoso
- * mounts/unmounts rows while scrolling — an observer would lose its targets.
- * Unmounted rows are by definition outside the (overscanned) viewport, so
- * "no element" correctly counts as not visible.
- */
-function useVisibleThreadIds(
-  threads: ThreadMinimapThread[],
-  scrollContainerEl: HTMLElement | null,
-): Set<string> {
-  const [visibleIds, setVisibleIds] = useState<Set<string>>(() => new Set());
-
-  useEffect(() => {
-    const container = scrollContainerEl;
-    if (!container) return;
-
-    let raf = 0;
-    const compute = () => {
-      raf = 0;
-      const rect = container.getBoundingClientRect();
-      const next = new Set<string>();
-      for (const t of threads) {
-        const el = document.getElementById(`comment-${t.id}`);
-        if (!el) continue;
-        const r = el.getBoundingClientRect();
-        if (r.bottom > rect.top && r.top < rect.bottom) next.add(t.id);
-      }
-      setVisibleIds((prev) => (sameIdSet(prev, next) ? prev : next));
-    };
-    const schedule = () => {
-      if (!raf) raf = requestAnimationFrame(compute);
-    };
-
-    compute();
-    container.addEventListener("scroll", schedule, { passive: true });
-    // Content height changes without scroll events: Virtuoso mounting rows
-    // after first paint, streamed agent replies growing, window resizes.
-    const ro = new ResizeObserver(schedule);
-    ro.observe(container);
-    if (container.firstElementChild) ro.observe(container.firstElementChild);
-    return () => {
-      container.removeEventListener("scroll", schedule);
-      ro.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [threads, scrollContainerEl]);
-
-  return visibleIds;
 }
 
 /** The rail-owned preview card's target: which tick, anchored at which shim-relative Y. */
@@ -197,12 +147,15 @@ function MinimapTick({
   label,
   inViewport,
   isPreviewOpen,
+  isHighlighted,
   onClick,
 }: {
   label: string;
   inViewport: boolean;
   /** This tick's preview is the open card — hold the grown state even when the pointer is on the card. */
   isPreviewOpen: boolean;
+  /** The header panel is hovering this thread's row. */
+  isHighlighted: boolean;
   onClick: () => void;
 }) {
   return (
@@ -232,6 +185,12 @@ function MinimapTick({
           // card, keyboard focus grows without a pointer, and reduced-motion
           // swaps the wave for a plain hover grow.
           isPreviewOpen && "scale-x-[1.7] bg-foreground",
+          // Panel-driven highlight. Brand colour, not foreground: it marks
+          // "the panel is pointing here", which is a different statement from
+          // the rail's own hover/viewport greys and must stay distinguishable
+          // from both. Wins over `inViewport` because it is the more specific,
+          // user-driven state.
+          isHighlighted && "scale-x-[1.7] bg-brand",
           "group-focus-visible/tick:scale-x-[1.7] group-focus-visible/tick:bg-foreground",
           "motion-reduce:group-hover/tick:scale-x-[1.7]",
         )}
@@ -240,10 +199,17 @@ function MinimapTick({
   );
 }
 
-export function ThreadMinimap({ threads, scrollContainerEl, onJump, className }: ThreadMinimapProps) {
+export function ThreadMinimap({
+  threads,
+  scrollContainerEl,
+  onJump,
+  highlightedThreadId,
+  className,
+}: ThreadMinimapProps) {
   const { t } = useT("issues");
   const { getActorName } = useActorName();
-  const visibleIds = useVisibleThreadIds(threads, scrollContainerEl);
+  const threadIds = useMemo(() => threads.map((th) => th.id), [threads]);
+  const visibleIds = useVisibleThreadIds(threadIds, scrollContainerEl);
 
   // Flattened previews, cached per thread by content so an unrelated timeline
   // update (reaction, new reply elsewhere) doesn't re-flatten every comment.
@@ -451,6 +417,7 @@ export function ThreadMinimap({ threads, scrollContainerEl, onJump, className }:
               }
               inViewport={visibleIds.has(thread.id)}
               isPreviewOpen={preview?.index === i}
+              isHighlighted={highlightedThreadId === thread.id}
               onClick={() => onJump(thread.id)}
             />
           );

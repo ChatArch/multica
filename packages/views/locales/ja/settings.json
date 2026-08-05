@@ -118,6 +118,7 @@
       "toggleSidebar": { "label": "サイドバーを切り替え", "description": "メインサイドバーの表示を切り替えます。" },
       "toggleChat": { "label": "チャットウィンドウを切り替え", "description": "フローティングチャットを開閉します。開いたときは入力欄にフォーカスします。" },
       "findInIssue": { "label": "Issue内を検索", "description": "開いているissueの詳細を検索します。" },
+      "openThreadNav": { "label": "スレッドナビゲーターを開く", "description": "開いているissueのコメントスレッドを一覧・検索して移動します。" },
       "send": { "label": "送信", "description": "チャット、コメント、返信、フィードバック、プロンプトを送信し、作成ダイアログで issue を作成します。" },
       "goInbox": { "label": "受信トレイへ移動", "description": "ワークスペースの受信トレイを開きます。" },
       "goChat": { "label": "チャットへ移動", "description": "ワークスペースのチャットを開きます。" },
