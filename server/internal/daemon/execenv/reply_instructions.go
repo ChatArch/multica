@@ -187,9 +187,7 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 		return fmt.Sprintf(
 			"If you decide to reply, post it as a comment — always use the trigger comment ID below, "+
 				"do NOT reuse --parent values from previous turns in this session.\n\n"+
-				"On Windows, write the reply body to a UTF-8 file with your file-write tool first, then post with `--content-file`. "+
-				"Do NOT pipe via `--content-stdin` — PowerShell 5.1's `$OutputEncoding` defaults to ASCIIEncoding when piping to native commands and silently drops non-ASCII (Chinese, Japanese, Cyrillic, accents, emoji) as `?` before bytes reach `multica.exe`. "+
-				"See ## Comment Formatting above for the full rule:\n\n"+
+				"Write the body file first — never pipe via `--content-stdin` (PowerShell drops non-ASCII; full rules: ## Comment Formatting above):\n\n"+
 				"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+
 				"    Remove-Item ./reply.md\n\n"+
 				"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n",
@@ -199,8 +197,7 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 	return fmt.Sprintf(
 		"If you decide to reply, post it as a comment — always use the trigger comment ID below, "+
 			"do NOT reuse --parent values from previous turns in this session.\n\n"+
-			"Write the reply body to a UTF-8 file with your file-write tool first, then post it with `--content-file` "+
-			"(see ## Comment Formatting above for why inline `--content` and `--content-stdin` HEREDOCs are unsafe — MUL-2904 / #4182):\n\n"+
+			"Write the body file first (rules: ## Comment Formatting above — MUL-2904 / #4182):\n\n"+
 			"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+
 			"    rm ./reply.md\n\n"+
 			"Do NOT write literal `\\n` escapes to simulate line breaks; the file preserves real newlines.\n",

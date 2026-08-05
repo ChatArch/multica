@@ -30,8 +30,8 @@ func TestBuildCommentReplyInstructionsCodexLinux(t *testing.T) {
 
 	for _, want := range []string{
 		"multica issue comment add " + issueID + " --parent " + triggerID + " --content-file ./reply.md",
-		"Write the reply body to a UTF-8 file",
-		"`--content-file`",
+		"Write the body file first",
+		"--content-file ./reply.md",
 		"#4182",
 		"rm ./reply.md",
 		"Do NOT write literal `\\n` escapes to simulate line breaks",
@@ -86,8 +86,11 @@ func TestBuildCommentReplyInstructionsNonCodexLinux(t *testing.T) {
 
 				for _, want := range []string{
 					"multica issue comment add " + issueID + " --parent " + triggerID + " --content-file ./reply.md",
-					"Write the reply body to a UTF-8 file",
-					"`--content-file`",
+					// MUL-5442 cross-channel dedup: shell-hazard mechanics live in
+					// the brief's Comment Formatting; the cookbook keeps the
+					// file-first order, the command, and the pointer.
+					"Write the body file first",
+					"## Comment Formatting",
 					"#4182",
 					"rm ./reply.md",
 					"do NOT reuse --parent values from previous turns",
@@ -138,10 +141,14 @@ func TestBuildCommentReplyInstructionsWindowsUsesContentFile(t *testing.T) {
 			got := BuildCommentReplyInstructions(provider, issueID, triggerID)
 			for _, want := range []string{
 				"multica issue comment add " + issueID + " --parent " + triggerID + " --content-file",
-				"On Windows, write the reply body to a UTF-8 file",
-				"Do NOT pipe via `--content-stdin`",
-				"silently drops non-ASCII",
-				"$OutputEncoding",
+				// MUL-5442 cross-channel dedup: the $OutputEncoding trap's
+				// full mechanics live once, in the brief's Windows Comment
+				// Formatting variant; the per-turn cookbook keeps the ban,
+				// the one-line consequence, and the pointer.
+				"Write the body file first",
+				"never pipe via `--content-stdin`",
+				"PowerShell drops non-ASCII",
+				"## Comment Formatting",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("%s reply instructions missing %q\n---\n%s", provider, want, got)
