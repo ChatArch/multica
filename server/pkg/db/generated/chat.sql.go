@@ -746,6 +746,10 @@ WITH retired_sessions AS (
     WHERE r.chat_session_id = $1
       AND r.retired_session_id IS NOT NULL
 ), resume_overflow_at AS (
+    -- completed_at alone, where the issue-side twin coalesces four columns:
+    -- this query already selects and orders by bare completed_at throughout,
+    -- so the cutoff has to be measured on the same clock as the values it is
+    -- compared against. Change both halves together if that ever moves.
     SELECT MAX(t.completed_at) AS at
     FROM agent_task_queue t
     WHERE t.chat_session_id = $1

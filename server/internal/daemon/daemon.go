@@ -5715,6 +5715,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				// one channel that does not depend on the failed row carrying
 				// the session, and it is what the resume lookups and the chat
 				// pointer cleanup both key off.
+				//
+				// Belt-and-braces, not the live path: an overflowed resume
+				// fails before any tool runs, so shouldRetryWithFreshSession's
+				// tools == 0 gate is always satisfied and the retry above has
+				// already recorded the same id. This covers the case where a
+				// future condition stops the retry from firing, so the session
+				// is still retired rather than silently kept.
 				retiredSessionID = task.PriorSessionID
 			}
 		}
