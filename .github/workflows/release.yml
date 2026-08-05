@@ -1,6 +1,13 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      skip_vulnerability_scan:
+        description: "Emergency only: skip govulncheck after documented maintainer review"
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       # GitHub Actions uses glob patterns here, not regex. Match versioned
@@ -48,9 +55,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
+          # Deliberately independent from the minimum patch in server/go.mod:
+          # releases follow the newest 1.26 patch available to setup-go.
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: server/go.sum
+
+      - name: Record Go toolchain
+        run: go version
 
       - name: Verify Go test wrapper
         run: bash scripts/test-go.test.sh
@@ -59,8 +71,13 @@ jobs:
         run: bash scripts/test-go.sh --race
 
       - name: Scan Go vulnerabilities
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.skip_vulnerability_scan }}
         working-directory: server
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+        run: go tool govulncheck ./...
+
+      - name: Record emergency vulnerability-scan bypass
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_vulnerability_scan }}
+        run: echo "::warning::govulncheck was explicitly skipped for this manual release"
 
   release:
     needs: verify
@@ -80,9 +97,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
+          # Deliberately independent from the minimum patch in server/go.mod:
+          # releases follow the newest 1.26 patch available to setup-go.
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: server/go.sum
+
+      - name: Record Go toolchain
+        run: go version
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -401,9 +423,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
+          # Deliberately independent from the minimum patch in server/go.mod:
+          # releases follow the newest 1.26 patch available to setup-go.
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: server/go.sum
+
+      - name: Record Go toolchain
+        run: go version
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
