@@ -23,6 +23,16 @@ import { useWSEvent } from "@multica/core/realtime";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import type { AgentRuntime } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@multica/ui/components/ui/dialog";
+import { RuntimePicker } from "../../agents/components/runtime-picker";
+import { ModelDropdown } from "../../agents/components/model-dropdown";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   CollectionPageHeader,
@@ -163,10 +173,9 @@ export function RuntimesPage({
             {!agentsLoading && agents.length === 0 && runtimes.length > 0 && (
               <MikaSetupCard
                 workspaceId={wsId}
-                runtime={
-                  runtimes.find((runtime) => runtime.status === "online") ??
-                  runtimes[0]!
-                }
+                runtimes={runtimes}
+                runtimesLoading={runtimesLoading}
+                currentUserId={currentUserId ?? null}
               />
             )}
             {(machines.length > 0 || bootstrapping) && (
@@ -196,12 +205,28 @@ export function RuntimesPage({
   );
 }
 
+/**
+ * Entry point for creating Mika once a runtime exists.
+ *
+ * The action opens a picker rather than provisioning straight away. It used to
+ * take `runtimes.find(online) ?? runtimes[0]` and create Mika on it silently —
+ * but one machine commonly exposes every agent CLI it has installed (nine, on
+ * the box this was reported from), so "the first online one" is arbitrary and
+ * could well be a CLI the member never intended to run their Chief of Staff
+ * on. Onboarding already makes this an explicit choice; this is the same
+ * decision reached from a different entry point, so it asks the same way and
+ * reuses the same two controls.
+ */
 function MikaSetupCard({
   workspaceId,
-  runtime,
+  runtimes,
+  runtimesLoading,
+  currentUserId,
 }: {
   workspaceId: string;
-  runtime: AgentRuntime;
+  runtimes: AgentRuntime[];
+  runtimesLoading?: boolean;
+  currentUserId: string | null;
 }) {
   const { t, i18n } = useT("runtimes");
   const navigation = useNavigation();
@@ -209,52 +234,115 @@ function MikaSetupCard({
   const wsSlug = useRequiredWorkspaceSlug();
   const bootstrapMika = useBootstrapMika(workspaceId);
 
+  const [open, setOpen] = useState(false);
+  // Seeded with the old heuristic so the dialog opens on a sensible default;
+  // the point is that it is now visible and changeable, not that it is unset.
+  const defaultRuntimeId =
+    runtimes.find((runtime) => runtime.status === "online")?.id ??
+    runtimes[0]?.id ??
+    "";
+  const [selectedId, setSelectedId] = useState("");
+  const [model, setModel] = useState("");
+
+  const runtimeId = selectedId || defaultRuntimeId;
+  const selected = runtimes.find((runtime) => runtime.id === runtimeId) ?? null;
+
   const handleStart = async () => {
+    if (!runtimeId || bootstrapMika.isPending) return;
     const lang = pickContentLang(i18n.language);
     try {
       const result = await bootstrapMika.mutateAsync({
         workspaceSlug: wsSlug,
-        runtimeId: runtime.id,
+        runtimeId,
+        model: model || undefined,
         ...getMikaOnboarding(lang),
       });
+      setOpen(false);
       navigation.push(paths.chatSession(result.chatSession.id));
     } catch (error) {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : t(($) => $.mika_setup.failed),
+        error instanceof Error ? error.message : t(($) => $.mika_setup.failed),
       );
     }
   };
 
   return (
-    <div className="mb-6 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center">
-      <span
-        role="img"
-        aria-label={t(($) => $.mika_setup.title)}
-        className="flex size-10 shrink-0 select-none items-center justify-center rounded-full bg-muted text-title-lg leading-none"
-      >
-        {MIKA_PLACEHOLDER_EMOJI}
-      </span>
-      <div className="min-w-0 flex-1">
-        <h2 className="text-sm font-semibold">
-          {t(($) => $.mika_setup.title)}
-        </h2>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          {t(($) => $.mika_setup.description)}
-        </p>
+    <>
+      <div className="mb-6 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center">
+        <span
+          role="img"
+          aria-label={t(($) => $.mika_setup.title)}
+          className="flex size-10 shrink-0 select-none items-center justify-center rounded-full bg-muted text-title-lg leading-none"
+        >
+          {MIKA_PLACEHOLDER_EMOJI}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-body font-semibold">
+            {t(($) => $.mika_setup.title)}
+          </h2>
+          <p className="mt-1 text-body leading-relaxed text-muted-foreground">
+            {t(($) => $.mika_setup.description)}
+          </p>
+        </div>
+        <Button className="shrink-0" onClick={() => setOpen(true)}>
+          {t(($) => $.mika_setup.action)}
+        </Button>
       </div>
-      <Button
-        className="shrink-0"
-        disabled={bootstrapMika.isPending}
-        onClick={handleStart}
-      >
-        {bootstrapMika.isPending && (
-          <Loader2 aria-hidden className="size-4 animate-spin" />
-        )}
-        {t(($) => $.mika_setup.action)}
-      </Button>
-    </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.mika_setup.dialog_title)}</DialogTitle>
+            <DialogDescription>
+              {t(($) => $.mika_setup.dialog_description)}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-3">
+            <RuntimePicker
+              runtimes={runtimes}
+              runtimesLoading={runtimesLoading}
+              members={[]}
+              currentUserId={currentUserId}
+              selectedRuntimeId={runtimeId}
+              onSelect={(id) => {
+                // Models are per-runtime, so a value picked for the previous
+                // one may not exist on this one.
+                if (id !== runtimeId) setModel("");
+                setSelectedId(id);
+              }}
+              disabled={bootstrapMika.isPending}
+            />
+            <ModelDropdown
+              runtimeId={runtimeId || null}
+              runtimeOnline={selected?.status === "online"}
+              value={model}
+              onChange={setModel}
+              disabled={!runtimeId || bootstrapMika.isPending}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setOpen(false)}
+              disabled={bootstrapMika.isPending}
+            >
+              {t(($) => $.mika_setup.cancel)}
+            </Button>
+            <Button
+              onClick={handleStart}
+              disabled={!runtimeId || bootstrapMika.isPending}
+            >
+              {bootstrapMika.isPending && (
+                <Loader2 aria-hidden className="size-4 animate-spin" />
+              )}
+              {t(($) => $.mika_setup.action)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
